@@ -1,0 +1,10 @@
+# Greetings played at random when wake word is detected.
+# One filename per line (relative to speech/wav/).
+# Lines starting with # are ignored.
+
+hello.wav
+hellopeasants.wav
+imbender.wav
+yo.wav
+heyheresanidea.wav
+iknowwhatthisisabout.wav
