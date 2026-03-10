@@ -1,0 +1,20 @@
+# Wake word model (contains API key embedded, keep private)
+*.ppn
+
+# Credentials
+*.key
+*.token
+config.local.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+env/
+
+# Logs
+logs/*.log
+
+# Audio (large binary files, stored on rpi-share)
+speech/wav/
