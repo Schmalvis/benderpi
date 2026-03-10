@@ -20,11 +20,10 @@ def rms(data, sample_width):
     return float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
 
 
-def rms_to_level(value):
-    """Map RMS value to LED count (0–NUM_LEDS)."""
+def rms_to_ratio(value):
+    """Map RMS value to a 0.0–1.0 brightness ratio."""
     clamped = max(0, value - RMS_FLOOR)
-    ratio   = min(clamped / (RMS_CEILING - RMS_FLOOR), 1.0)
-    return round(ratio * leds.NUM_LEDS)
+    return min(clamped / (RMS_CEILING - RMS_FLOOR), 1.0)
 
 
 def play(wav_path):
@@ -42,8 +41,7 @@ def play(wav_path):
         data = wf.readframes(CHUNK)
         while data:
             stream.write(data)
-            level = rms_to_level(rms(data, wf.getsampwidth()))
-            leds.set_level(level)
+            leds.set_level(rms_to_ratio(rms(data, wf.getsampwidth())))
             data = wf.readframes(CHUNK)
 
         stream.stop_stream()

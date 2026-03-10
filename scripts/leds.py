@@ -11,7 +11,7 @@ import neopixel_spi
 NUM_LEDS   = 12
 BRIGHTNESS = 0.8
 
-# Colour used for VU meter (R, G, B) — warm amber
+# Colour (R, G, B) — warm amber
 COLOUR = (255, 120, 0)
 
 _spi    = busio.SPI(board.SCK, MOSI=board.MOSI)
@@ -28,17 +28,11 @@ def all_on(colour=COLOUR):
     pixels.show()
 
 
-def set_level(level):
-    """Light up `level` LEDs (0–NUM_LEDS) as a VU meter."""
-    level = max(0, min(level, NUM_LEDS))
-    for i in range(NUM_LEDS):
-        if i < level:
-            # Gradient: amber at low end, bright white at peak
-            ratio = i / (NUM_LEDS - 1)
-            r = 255
-            g = int(120 + 135 * ratio)
-            b = int(200 * ratio)
-            pixels[i] = (r, g, b)
-        else:
-            pixels[i] = (0, 0, 0)
+def set_level(ratio):
+    """Flash all LEDs at brightness proportional to amplitude (0.0–1.0)."""
+    ratio = max(0.0, min(ratio, 1.0))
+    r = int(COLOUR[0] * ratio)
+    g = int(COLOUR[1] * ratio)
+    b = int(COLOUR[2] * ratio)
+    pixels.fill((r, g, b))
     pixels.show()
