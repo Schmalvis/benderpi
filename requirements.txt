@@ -4,3 +4,7 @@ pvrecorder==1.2.7
 
 # Audio I/O (used by PyAudio, future STT work)
 PyAudio==0.2.13
+
+# WS2812B LED strip (SPI, GPIO 10)
+adafruit-blinka==8.70.0
+adafruit-circuitpython-neopixel-spi==1.0.14
