@@ -9,16 +9,17 @@ Requires:
     - PORCUPINE_ACCESS_KEY env var (or .env in project root)
     - hey-bender.ppn in the same directory (trained at console.picovoice.ai)
     - pvporcupine, pvrecorder  (pip3 install pvporcupine pvrecorder)
-    - alsa-utils  (aplay)
 
 On detection: plays a random greeting from ../speech/greetings.txt
+              with real-time LED amplitude visualisation
 """
 
 import os
 import random
-import subprocess
 import pvporcupine
 from pvrecorder import PvRecorder
+import audio
+import leds
 
 # --- Config ---
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -28,10 +29,10 @@ if os.path.exists(_env_path):
             if _line.startswith("PORCUPINE_ACCESS_KEY="):
                 os.environ["PORCUPINE_ACCESS_KEY"] = _line.strip().split("=", 1)[1]
 
-ACCESS_KEY      = os.environ.get("PORCUPINE_ACCESS_KEY", "YOUR_ACCESS_KEY_HERE")
-KEYWORD_PATH    = os.path.join(os.path.dirname(__file__), "hey-bender.ppn")
-SPEECH_DIR      = os.path.join(os.path.dirname(__file__), "..", "speech", "wav")
-GREETINGS_FILE  = os.path.join(os.path.dirname(__file__), "..", "speech", "greetings.txt")
+ACCESS_KEY     = os.environ.get("PORCUPINE_ACCESS_KEY", "YOUR_ACCESS_KEY_HERE")
+KEYWORD_PATH   = os.path.join(os.path.dirname(__file__), "hey-bender.ppn")
+SPEECH_DIR     = os.path.join(os.path.dirname(__file__), "..", "speech", "wav")
+GREETINGS_FILE = os.path.join(os.path.dirname(__file__), "..", "speech", "greetings.txt")
 
 
 def load_greetings():
@@ -52,7 +53,7 @@ def play_greeting(greetings):
     clip = random.choice(greetings)
     path = os.path.join(SPEECH_DIR, clip)
     if os.path.exists(path):
-        subprocess.run(["aplay", "-q", path])
+        audio.play(path)
     else:
         print(f"[warn] clip not found: {path}")
 
@@ -93,6 +94,7 @@ def main():
         recorder.stop()
         recorder.delete()
         porcupine.delete()
+        leds.all_off()
 
 
 if __name__ == "__main__":
