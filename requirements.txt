@@ -1,0 +1,6 @@
+# Wake word detection
+pvporcupine==4.0.2
+pvrecorder==1.2.7
+
+# Audio I/O (used by PyAudio, future STT work)
+PyAudio==0.2.13
