@@ -58,3 +58,14 @@ sudo alsactl store
 ## History
 - Originally fitted with Pimoroni Audio AMP SHIM (MAX98357A) — replaced with Adafruit Voice Bonnet
 - Voice Bonnet adds microphone input enabling wake word detection and future STT capability
+
+## Future / Roadmap
+
+### Migrate wake word to OpenWakeWord
+Replace Porcupine (requires API key) with **[OpenWakeWord](https://github.com/dscripka/openWakeWord)** for a fully local, no-account solution.
+
+Key notes:
+- The existing `hey-bender.ppn` cannot be reused — OpenWakeWord uses ONNX format
+- A new model must be trained using OpenWakeWords automated pipeline, which synthesises "hey bender" audio via TTS and trains a small neural net
+- Training should be done off-device (Google Colab recommended, ~30–60 mins)
+- Code change is low effort — detection loop structure is near-identical to current Porcupine implementation
