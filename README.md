@@ -13,28 +13,48 @@
 - Driver: `seeed-voicecard` (HinTak fork, v6.12 branch) installed via DKMS
 - ALSA default: card 2 (WM8960) — configured in `/etc/asound.conf`
 - Playback and capture both on card 2, device 0
-- I2C address: 0x1A
+- Volume persisted via `alsactl store` — stored in `/var/lib/alsa/asound.state`
 
 ## Project Structure
 ```
 ~/bender/
 ├── README.md          — this file
+├── .env               — local credentials (not committed)
 ├── speech/
 │   ├── metadata.csv   — pipe-separated: wav/filename.wav | transcript
-│   └── wav/           — 88 Bender (Futurama) speech clips (.wav, 44100Hz mono)
-├── scripts/           — automation / playback scripts
+│   └── wav/           — Bender (Futurama) speech clips (.wav, 44100Hz mono)
+├── scripts/
+│   ├── wake.py        — wake word detection + greeting playback
+│   └── hey-bender.ppn — Porcupine wake word model (Raspberry Pi / arm64)
 └── logs/              — runtime logs
 ```
 
-## Speech Clips
-- Source: rpi-share (`/home/pi/share/bender-sounds/wav/`)
-- 88 .wav clips, Bender (Futurama) character voice
-- Metadata: `speech/metadata.csv` — pipe-separated, col1=relative path, col2=transcript
+## Wake Word
+Wake word detection uses **[Porcupine](https://picovoice.ai/platform/porcupine/)** (Picovoice). On detecting "Hey Bender", a random greeting clip is played through the speaker.
 
-## Network Share
-- rpi-share mounted at `/home/pi/share` (CIFS from RPi5, `//192.168.68.139/rpi5-share`)
-- fstab entry: `x-systemd.automount`
+### Setup
+1. Obtain a free access key from [console.picovoice.ai](https://console.picovoice.ai)
+2. Train a custom "Hey Bender" wake word and download the `.ppn` for Raspberry Pi (arm64)
+3. Place the `.ppn` in `scripts/`
+4. Create `.env` in the project root:
+   ```
+   PORCUPINE_ACCESS_KEY=your_key_here
+   ```
+
+### Running
+```bash
+cd ~/bender/scripts
+python3 wake.py
+```
+
+Say **"Hey Bender"** — the terminal will confirm detection and a greeting will play.
+
+### Persisting Volume
+ALSA mixer state is saved across reboots via:
+```bash
+sudo alsactl store
+```
 
 ## History
-- Originally fitted with Pimoroni Audio AMP SHIM (MAX98357A) — replaced with Voice Bonnet
-- Voice Bonnet adds microphone input for future STT/wake-word capability
+- Originally fitted with Pimoroni Audio AMP SHIM (MAX98357A) — replaced with Adafruit Voice Bonnet
+- Voice Bonnet adds microphone input enabling wake word detection and future STT capability
