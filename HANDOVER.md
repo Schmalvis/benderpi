@@ -6,6 +6,10 @@ Last updated: 2026-03-15
 - Monitor STT hallucination rate to decide if Whisper model upgrade is needed
 - Watch intent multi-match warnings to identify patterns needing further tightening
 - Run prebuild_responses.py on the Pi to generate thinking sound WAVs
+- Deploy web UI service on Pi (`sudo cp systemd/bender-web.service /etc/systemd/system/`)
+- Set up sudoers for service control
+- Set `BENDER_WEB_PIN` in `.env` (don't use default)
+- Wire `speech_rate` config field into `tts_generate.speak()` (Piper `--length-scale` parameter)
 
 ## Recent Decisions
 - Chose interleaved approach: foundation (logging/metrics) first, then modularity, then improvements
@@ -13,6 +17,9 @@ Last updated: 2026-03-15
 - Extracted response chain into responder.py — wake_converse.py is now a thin orchestrator
 - Chose not to purchase AI HAT+ for now — software improvements offer better ROI (see docs/ai-hat-plus-analysis.md)
 - Thinking sounds play after response generation (not during) — architectural limitation to address when adding async generation
+- Web UI built with FastAPI + vanilla HTML/CSS/JS (no framework, no build step)
+- Puppet-only mode toggle stops/starts bender-converse service
+- Volume control via amixer, speech rate via config (Piper --length-scale, not yet wired)
 
 ## Known Issues
 - Piper --json-input mode needs verification on the Pi (persistent subprocess not yet implemented — using warm-up fallback)
@@ -28,3 +35,5 @@ Last updated: 2026-03-15
 - Persistent Piper process (verify --json-input on Pi first)
 - AI HAT+ if camera/vision features are added (see docs/ai-hat-plus-analysis.md)
 - Split get_response() into classify() + generate() to enable thinking sounds during generation
+- Wire speech_rate into tts_generate.py (use Piper --length-scale parameter)
+- Add LED GPIO pin config to bender_config.json if hardware changes

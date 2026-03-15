@@ -1,0 +1,16 @@
+[Unit]
+Description=BenderPi Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/bender
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/pi/bender/.env
+ExecStart=/home/pi/bender/venv/bin/uvicorn scripts.web.app:app --host 0.0.0.0 --port ${BENDER_WEB_PORT:-8080}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

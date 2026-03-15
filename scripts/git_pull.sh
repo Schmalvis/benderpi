@@ -31,4 +31,11 @@ echo "Pull complete. Restarting $SERVICE..."
 sudo systemctl restart "$SERVICE"
 echo "Generating status report..."
 "$REPO_DIR/venv/bin/python" "$REPO_DIR/scripts/generate_status.py" || true
+
+# Restart web UI if running
+if systemctl is-active --quiet bender-web; then
+    sudo systemctl restart bender-web
+    echo "Web UI restarted."
+fi
+
 echo "Done."

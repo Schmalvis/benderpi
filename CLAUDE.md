@@ -294,6 +294,48 @@ The timer polls every 5 minutes. If the pull changes any Python files or `.env.e
 
 ---
 
+## Web UI
+
+A browser-based admin panel and puppet mode served by FastAPI.
+
+### Running locally (development)
+```bash
+BENDER_WEB_PIN=2904 python -m uvicorn scripts.web.app:app --reload --port 8080
+```
+
+### Service setup (on Pi)
+```bash
+sudo cp systemd/bender-web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable bender-web
+sudo systemctl start bender-web
+```
+
+### Sudoers (required for service actions)
+```bash
+# /etc/sudoers.d/bender-web
+pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bender-converse
+pi ALL=(ALL) NOPASSWD: /bin/systemctl stop bender-converse
+pi ALL=(ALL) NOPASSWD: /bin/systemctl start bender-converse
+pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bender-web
+pi ALL=(ALL) NOPASSWD: /bin/systemctl status bender-converse
+```
+
+### Features
+- **Puppet mode** — type text for Bender to speak, soundboard with favourites, volume control
+- **Dashboard** — health, performance metrics, usage stats, watchdog alerts
+- **Logs** — conversation browser, system log viewer, metrics explorer, downloads
+- **Config** — edit bender_config.json and watchdog_config.json, LED colour/brightness, speech rate
+- **Actions** — restart service, refresh briefings, rebuild responses, puppet-only mode toggle
+
+### Key files
+- `scripts/web/app.py` — FastAPI application with all API routes
+- `scripts/web/auth.py` — PIN authentication middleware
+- `scripts/web/static/` — HTML, CSS, JS frontend (vanilla, no build step)
+- `systemd/bender-web.service` — systemd service file
+
+---
+
 ## Adding / Changing Things
 
 ### Add a new intent response

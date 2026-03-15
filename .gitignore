@@ -38,3 +38,6 @@ speech/responses/daily/
 STATUS.md
 logs/bender.log*
 logs/metrics.jsonl*
+.superpowers/
+
+favourites.json
