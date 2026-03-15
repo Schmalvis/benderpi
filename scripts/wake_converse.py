@@ -12,7 +12,9 @@ Flow:
 Response priority chain lives in responder.py.
 """
 
+import json
 import os
+import random
 import time
 import sys
 import struct
@@ -48,6 +50,29 @@ log = get_logger("converse")
 
 KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
 SILENCE_TIMEOUT = 8.0   # seconds of silence before session ends
+
+# ---------------------------------------------------------------------------
+# Thinking clips
+# ---------------------------------------------------------------------------
+
+_thinking_clips = []
+
+
+def _load_thinking_clips():
+    global _thinking_clips
+    index_path = os.path.join(BASE_DIR, "speech", "responses", "index.json")
+    try:
+        with open(index_path) as f:
+            index = json.load(f)
+        _thinking_clips = [
+            os.path.join(BASE_DIR, p)
+            for p in index.get("thinking", [])
+            if os.path.exists(os.path.join(BASE_DIR, p))
+        ]
+        log.info("Loaded %d thinking clip(s)", len(_thinking_clips))
+    except Exception as e:
+        log.warning("Could not load thinking clips: %s", e)
+        _thinking_clips = []
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +153,9 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         response = responder.get_response(text, ai)
 
-        # Play thinking sound if needed (clips don't exist yet -- empty list for now)
-        # This will be wired in Task 12
+        # Play thinking sound while slow response is being generated
+        if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
+            audio.play(random.choice(_thinking_clips))
 
         # Play response
         audio.play(response.wav_path)
@@ -161,6 +187,10 @@ def main():
     responder = Responder()
     import threading
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
+    # Warm up Piper TTS (pre-loads ONNX model)
+    tts_generate.warm_up()
+    # Load thinking clips from index
+    _load_thinking_clips()
     log.info("Listening for 'Hey Bender'...")
     while True:
         try:

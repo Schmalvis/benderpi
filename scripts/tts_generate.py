@@ -105,3 +105,14 @@ def speak(text: str) -> str:
             os.unlink(raw_tmp.name)
 
         return out_tmp.name
+
+
+def warm_up():
+    """Pre-warm Piper by running a dummy synthesis. Call at service start."""
+    log.info("Warming up Piper TTS...")
+    try:
+        wav = speak("test")
+        os.unlink(wav)
+        log.info("Piper warm-up complete")
+    except Exception as e:
+        log.warning("Piper warm-up failed (expected if not on Pi): %s", e)

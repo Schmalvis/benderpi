@@ -67,6 +67,13 @@ HA_CONFIRM_RESPONSES = [
     "Executed. Feel free to thank me anytime. Go on.",
 ]
 
+THINKING_SOUNDS = [
+    "Hmm.",
+    "Let me think.",
+    "Hang on.",
+    "One sec.",
+]
+
 # Promoted responses — AI fallback queries promoted to static offline clips.
 # Add entries here when review_log.py flags a frequent AI fallback.
 # Each entry: slug (filename), pattern (regex), text (Bender's response).
@@ -123,6 +130,13 @@ def build_promoted():
         generate(entry["text"], os.path.join(out_dir, f"{slug}.wav"))
 
 
+def build_thinking():
+    out_dir = os.path.join(RESPONSES_DIR, "thinking")
+    os.makedirs(out_dir, exist_ok=True)
+    for i, text in enumerate(THINKING_SOUNDS, 1):
+        generate(text, os.path.join(out_dir, f"thinking_{i:03d}.wav"))
+
+
 def build_index():
     index = {
         "greeting": [
@@ -176,6 +190,10 @@ def build_index():
             }
             for entry in PROMOTED_RESPONSES
         ],
+        "thinking": [
+            f"speech/responses/thinking/thinking_{i:03d}.wav"
+            for i in range(1, len(THINKING_SOUNDS) + 1)
+        ],
     }
     index_path = os.path.join(RESPONSES_DIR, "index.json")
     with open(index_path, "w") as f:
@@ -198,6 +216,8 @@ if __name__ == "__main__":
     build_ha_confirm()
     print("Building promoted responses...")
     build_promoted()
+    print("Building thinking sounds...")
+    build_thinking()
     print("Writing index.json...")
     build_index()
     print("\nDone. Response library ready.")
