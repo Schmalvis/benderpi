@@ -1,7 +1,7 @@
 # BenderPi Quality, Observability & Modularity — Design Spec
 
 **Date:** 2026-03-15
-**Status:** Draft
+**Status:** Reviewed
 **Scope:** Logging, metrics, session handover, audio/speed improvements, intent hardening, health watchdog, and modularity refactoring for future web UI support.
 
 ---
@@ -29,7 +29,7 @@
 
 ### 2.1 Fix PyAudio crash risk in stt.py
 
-**Problem:** `stt.py:55-56` creates a new `pyaudio.PyAudio()` instance per utterance and calls `pa.terminate()` after. This risks crashing PortAudio if it collides with the shared instance in `audio.py`. Contradicts the documented constraint in CLAUDE.md.
+**Problem:** `stt.py:55` creates a new `pyaudio.PyAudio()` instance inside `_record_utterance()`, and line 93 calls `pa.terminate()` in the finally block. This risks crashing PortAudio if it collides with the shared instance in `audio.py`. Contradicts the documented constraint in CLAUDE.md.
 
 **Fix:** Import `audio.get_pa()` and use the shared instance. Remove the `pa.terminate()` call. The mic stream is still opened/closed per utterance (correct — must release `hw:2,0` for output).
 
@@ -37,7 +37,7 @@
 
 - **`scripts/handlers/ha_status.py`** — Never imported or called. `ha_control.py` handles its own TTS responses. Delete file.
 - **`scripts/handlers/weather.py`** — Superseded by `briefings.py`. Delete file.
-- **`ha_control.py:296-299`** — Duplicate `if action is None` check. Line 280 already handles this case and returns. Remove lines 296-299.
+- **`ha_control.py`** — Duplicate `if action is None` check at approximately line 298 (after the temperature-set path). The first check at line 280 already handles this case and returns. Remove the duplicate block.
 
 ### 2.3 Fix thread safety in briefings.py
 
@@ -70,7 +70,7 @@ class Config:
     sample_rate: int          # 44100
     silence_pre: float        # 0.02 (seconds)
     silence_post: float       # 0.08
-    output_device: int        # 0
+    output_device: int        # 0 (PyAudio device index for hw:2,0 seeed-2mic-voicecard)
 
     # STT
     whisper_model: str        # "tiny.en"
@@ -90,6 +90,7 @@ class Config:
     # Conversation
     silence_timeout: float    # 8.0
     thinking_sound: bool      # True
+    simple_intent_max_words: int  # 6
 
     # HA
     ha_url: str
@@ -135,7 +136,8 @@ Committed to repo with sensible defaults. Contains only non-secret tunables. For
   "news_ttl": 7200,
   "log_level": "INFO",
   "led_brightness": 0.8,
-  "led_colour": [255, 120, 0]
+  "led_colour": [255, 120, 0],
+  "simple_intent_max_words": 6
 }
 ```
 
@@ -243,9 +245,9 @@ Rolling file: same rotation as bender.log (5MB x 3).
 | API call | timer `ai_api_call` | `ai_response.py` |
 | HA REST call | timer `ha_call` | `ha_control.py` |
 | Audio playback | timer `audio_play` | `audio.py` |
-| End-to-end response | timer `response_total` | `responder.py` |
+| End-to-end response | timer `response_total` | `responder.py` (added in step 5 when responder.py is created) |
 | Briefing generation | timer `briefing_generate` | `briefings.py` |
-| Intent classified | count `intent` | `responder.py` |
+| Intent classified | count `intent` | `responder.py` (added in step 5 when responder.py is created) |
 | STT empty return | count `stt_empty` | `stt.py` |
 | Whisper hallucination filtered | count `stt_hallucination` | `stt.py` |
 | API call made | count `api_call` | `ai_response.py` |
@@ -387,6 +389,7 @@ class Response:
     intent: str             # classified intent
     sub_key: str | None     # intent sub-key
     is_temp: bool           # True if wav_path is a temp file (caller must unlink)
+    needs_thinking: bool    # True if response required generation time (play thinking sound first)
     model: str | None       # AI model used, if any
 
 def get_response(user_text: str, ai: AIResponder) -> Response:
@@ -452,6 +455,8 @@ After transcription, if `text.lower().strip()` is in the blocklist, log a warnin
 
 Replace subprocess-per-call with a long-running Piper process.
 
+**Prerequisite:** Verify the deployed aarch64 Piper binary supports `--json-input` by running `piper/piper --help` on the Pi. If `--json-input` is not available, fall back to keeping the subprocess-per-call approach but pre-warming the model by running a dummy synthesis at startup (smaller win, but still eliminates first-call latency).
+
 ```python
 class PiperProcess:
     """Manages a persistent Piper process using --json-input mode."""
@@ -471,9 +476,11 @@ class PiperProcess:
 
 Piper's `--json-input` mode reads JSON lines from stdin:
 ```json
-{"text": "Bite my shiny metal ass!"}
+{"text": "Bite my shiny metal ass!", "output_file": "/tmp/bender_tts_001.wav"}
 ```
-And writes WAV data to the specified output path.
+And writes WAV data to the specified output path per request.
+
+**Completion detection:** Piper writes a JSON line to stdout after each synthesis completes (e.g. `{"success": true}`). The `PiperProcess.speak()` method reads this line to know when the output WAV is ready before returning. If no stdout response arrives within a timeout (5s), the process is assumed dead and restarted, falling back to subprocess-per-call for that request.
 
 Expected improvement: ~0.5-1s faster per dynamic TTS call (eliminates model load cold start).
 
@@ -492,9 +499,20 @@ THINKING_SOUNDS = [
 ]
 ```
 
-Stored in `speech/responses/thinking/`. When `responder.get_response()` determines the response will require generation time (AI fallback, HA control, briefing cache miss), it plays a random thinking clip first via `audio.play()` before starting generation.
+Stored in `speech/responses/thinking/`.
 
-The thinking clip plays synchronously (it's ~0.5s), then generation proceeds. This fills the silence gap so the user knows Bender heard them.
+**Architecture:** The thinking sound is NOT played inside `responder.get_response()` — that would create a dependency from `responder` onto `audio`, violating the module boundary. Instead, `responder.get_response()` returns a `needs_thinking: bool` field in the `Response` dataclass. The orchestrator (`wake_converse.py`) checks this flag and plays the thinking clip before the response WAV:
+
+```python
+response = responder.get_response(text, ai)
+if response.needs_thinking and cfg.thinking_sound:
+    audio.play(random.choice(thinking_clips))
+audio.play(response.wav_path)
+```
+
+`needs_thinking` is True when the response method is `ai_fallback`, `handler_ha`, or any handler that required generation (not cached). For pre-gen clips and cached briefings, it's False.
+
+The thinking clip plays synchronously (it's ~0.5s), then the main response plays. This fills the silence gap so the user knows Bender heard them.
 
 Controlled by `cfg.thinking_sound` (default True).
 
@@ -504,6 +522,8 @@ Current: 50ms pre-silence, 200ms post-silence.
 New defaults: 20ms pre-silence, 80ms post-silence.
 
 Values come from `cfg.silence_pre` and `cfg.silence_post` so they can be tuned without code changes. Logged at startup at DEBUG level.
+
+**Note:** `tts_generate.py` already sets its own silence padding to 0.0, correctly delegating to `audio.py` for all gap management. The `cfg.silence_pre`/`cfg.silence_post` values apply to `audio.py` only. `tts_generate.py`'s constants remain at 0.0 and are not configurable (by design — there should be exactly one place controlling silence gaps).
 
 ### 8.5 Direct PCM to Whisper — stt.py
 
@@ -677,10 +697,10 @@ Committed to repo. All thresholds overridable:
 | `scripts/intent.py` | Tighter patterns. Priority reorder. Length heuristic. Multi-match logging. |
 | `scripts/briefings.py` | Thread-safe meta. Separated text/WAV APIs. Logging + metrics. |
 | `scripts/ha_control.py` | execute() + control() split. Remove dead code. Logging + metrics. |
-| `scripts/conversation_log.py` | Uses logger.py instead of raw file writes (JSONL format preserved). |
+| `scripts/conversation_log.py` | Add get_logger for diagnostic messages. JSONL event writes remain as direct file writes (format preserved and unchanged). Fix missing `handler_news` in docstring. |
 | `scripts/review_log.py` | Reads metrics.jsonl in addition to conversation JSONL. |
 | `scripts/prebuild_responses.py` | Thinking sounds added. Logging. |
-| `scripts/git_pull.sh` | Calls generate_status.py after successful pull. |
+| `scripts/git_pull.sh` | Calls generate_status.py after successful pull (guarded: `venv/bin/python scripts/generate_status.py \|\| true` so failure does not block service restart). |
 | `scripts/leds.py` | Logging (minimal — startup config only). |
 | `CLAUDE.md` | Updated with HANDOVER.md convention, new file descriptions, logging instructions. |
 | `.gitignore` | Add STATUS.md, logs/bender.log*, logs/metrics.jsonl* |
