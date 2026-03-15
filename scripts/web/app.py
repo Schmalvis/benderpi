@@ -267,6 +267,47 @@ async def action_toggle_mode(body: dict = Body(...)):
 # ── Puppet Endpoints ───────────────────────────────────
 
 
+async def _puppet_play(wav_path: str) -> None:
+    """Play a WAV, pausing bender-converse first if it's running.
+
+    The WM8960 is a single-rate codec. bender-converse locks it at 16 kHz
+    (porcupine mic). bender-web needs 44100 Hz for output. Stopping the
+    service releases the device so play_oneshot can open at the correct rate.
+    """
+    import audio
+
+    if not _IS_LINUX:
+        await asyncio.to_thread(audio.play_oneshot, wav_path)
+        return
+
+    # Check current state
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["systemctl", "is-active", "bender-converse"],
+        capture_output=True, text=True, timeout=5,
+    )
+    was_running = result.stdout.strip() == "active"
+
+    if was_running:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["sudo", "systemctl", "stop", "bender-converse"],
+            capture_output=True, text=True, timeout=15,
+        )
+        # Brief pause so PortAudio/ALSA releases the device
+        await asyncio.sleep(0.5)
+
+    try:
+        await asyncio.to_thread(audio.play_oneshot, wav_path)
+    finally:
+        if was_running:
+            await asyncio.to_thread(
+                subprocess.run,
+                ["sudo", "systemctl", "start", "bender-converse"],
+                capture_output=True, text=True, timeout=15,
+            )
+
+
 @app.post("/api/puppet/speak", dependencies=[Depends(require_pin)])
 async def puppet_speak(body: dict = Body(...)):
     text = body.get("text", "").strip()
@@ -275,10 +316,9 @@ async def puppet_speak(body: dict = Body(...)):
     if len(text) > 500:
         raise HTTPException(status_code=400, detail="Text too long (max 500 chars)")
     import tts_generate
-    import audio
     wav_path = await asyncio.to_thread(tts_generate.speak, text)
     try:
-        await asyncio.to_thread(audio.play_oneshot, wav_path)
+        await _puppet_play(wav_path)
     finally:
         try:
             os.unlink(wav_path)
@@ -300,8 +340,7 @@ async def puppet_clip(body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="Clip not found")
-    import audio
-    await asyncio.to_thread(audio.play_oneshot, resolved)
+    await _puppet_play(resolved)
     return {"status": "ok", "path": path}
 
 
