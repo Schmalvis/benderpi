@@ -49,7 +49,8 @@ This is why `audio.py` uses `open_session()` / `close_session()` rather than a p
 ```
 bender/
 ├── scripts/
-│   ├── wake_converse.py      — main loop: wake word → conversation session
+│   ├── wake_converse.py      — main loop: wake word → conversation session (thin orchestrator)
+│   ├── responder.py          — response priority chain (extracted from wake_converse.py)
 │   ├── audio.py              — WAV playback + LED sync (session-scoped output stream)
 │   ├── stt.py                — speech-to-text (faster-whisper + webrtcvad-wheels)
 │   ├── intent.py             — intent classifier (keyword/regex)
@@ -59,9 +60,15 @@ bender/
 │   ├── conversation_log.py   — JSON Lines per-session logging to logs/
 │   ├── review_log.py         — log analysis: method breakdown, promotion candidates
 │   ├── prebuild_responses.py — generate all static TTS WAV files
+│   ├── config.py             — centralised configuration (reads bender_config.json + .env)
+│   ├── logger.py             — structured logging (console + logs/bender.log)
+│   ├── metrics.py            — timing and counter metrics (logs/metrics.jsonl)
+│   ├── watchdog.py           — health anomaly detection (thresholds from watchdog_config.json)
+│   ├── generate_status.py    — auto-generates STATUS.md from logs/metrics
 │   ├── leds.py               — WS2812B LED control (SPI)
 │   ├── wake.py               — clips-only mode (simple, no conversation)
 │   ├── wake_tts.py           — TTS-only mode (random lines on wake word)
+│   ├── git_pull.sh           — auto-pull script (called by systemd timer)
 │   ├── switch_mode.sh        — switch between clips/tts/converse modes
 │   ├── hey-bender.ppn        — Porcupine wake word model (gitignored — contains key)
 │   └── handlers/
@@ -72,12 +79,16 @@ bender/
 │   └── responses/            — pre-generated TTS WAVs (gitignored)
 │       ├── index.json        — maps intents to WAV paths (committed)
 │       └── daily/            — cached briefing WAVs: weather_briefing.wav, news_briefing.wav (gitignored)
-├── logs/                     — conversation logs YYYY-MM-DD.jsonl (gitignored)
+├── logs/                     — conversation logs YYYY-MM-DD.jsonl + bender.log (gitignored)
 ├── models/                   — bender.onnx + bender.onnx.json (gitignored, download from HF)
 ├── piper/                    — Piper inference binary (gitignored, download separately)
 ├── venv/                     — Python venv (gitignored)
 ├── .env                      — secrets (gitignored)
 ├── .env.example              — template
+├── bender_config.json        — runtime-overridable config defaults
+├── watchdog_config.json      — health check thresholds
+├── HANDOVER.md               — session handover context (decisions, priorities, notes)
+├── STATUS.md                 — auto-generated device status (gitignored, regenerated on deploy)
 ├── requirements.txt
 └── README.md
 ```
@@ -257,6 +268,29 @@ cd /home/pi/bender && git pull origin main
 ```
 
 The timer polls every 5 minutes. If the pull changes any Python files or `.env.example`, it restarts `bender-converse` automatically.
+
+---
+
+## Session Handover
+
+- **`HANDOVER.md`** — committed context file for decisions, priorities, and notes between Claude sessions. **Update this before finishing any session that makes changes.**
+- **`STATUS.md`** — auto-generated on the Pi by `scripts/generate_status.py`. Contains performance metrics, health alerts, usage stats. **Read this at the start of a session for device status.** Gitignored — regenerated after every deploy.
+- **`scripts/generate_status.py`** — generates STATUS.md from logs/metrics. Called by git_pull.sh after deploys. Can also run manually.
+- **`scripts/watchdog.py`** — health anomaly detection with configurable thresholds (`watchdog_config.json`). Feeds into STATUS.md.
+
+### New modules added (March 2026 quality overhaul)
+
+| Module | Purpose |
+|---|---|
+| `scripts/config.py` | Centralised configuration (reads bender_config.json + .env) |
+| `scripts/logger.py` | Structured logging (console + logs/bender.log) |
+| `scripts/metrics.py` | Timing and counter metrics (logs/metrics.jsonl) |
+| `scripts/responder.py` | Response priority chain (extracted from wake_converse.py) |
+| `scripts/watchdog.py` | Health anomaly detection |
+| `scripts/generate_status.py` | Auto-generates STATUS.md |
+| `bender_config.json` | Runtime-overridable config defaults |
+| `watchdog_config.json` | Health check thresholds |
+| `HANDOVER.md` | Session handover context |
 
 ---
 

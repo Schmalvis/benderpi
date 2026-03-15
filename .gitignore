@@ -33,3 +33,8 @@ models/
 
 # Cached briefing metadata (regenerated at runtime)
 speech/responses/daily/
+
+# Auto-generated status and metrics (regenerated after each deploy)
+STATUS.md
+logs/bender.log*
+logs/metrics.jsonl*

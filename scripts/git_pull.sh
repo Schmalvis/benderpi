@@ -29,4 +29,6 @@ git pull origin main --ff-only
 
 echo "Pull complete. Restarting $SERVICE..."
 sudo systemctl restart "$SERVICE"
+echo "Generating status report..."
+"$REPO_DIR/venv/bin/python" "$REPO_DIR/scripts/generate_status.py" || true
 echo "Done."
