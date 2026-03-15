@@ -133,6 +133,8 @@ def _normalise(text: str) -> str:
     # Split CamelCase: "MartinsOffice" → "martins office"
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
     text = text.lower()
+    # Strip apostrophes so "martin's" matches "martins"
+    text = re.sub(r"'", '', text)
     # Remove hyphens/underscores
     text = re.sub(r'[-_]', ' ', text)
     # Strip lighting noise words when matching (keep in display)
@@ -195,8 +197,19 @@ def _parse_room_term(text: str) -> str | None:
     ):
         t = t.replace(phrase, " ")
 
-    # Remove trailing noise words
-    for word in ("light", "lights", "lamp", "switch", "on", "off"):
+    # Strip reversed-order action verbs: "turn the heating off" → strip "turn"
+    t = re.sub(r"\b(turn|switch|put)\b", " ", t)
+    # Strip bare prepositions left after phrase removal
+    t = re.sub(r"\b(in|at|for|of|the|a)\b", " ", t)
+
+    # Strip temperature-set phrasing: "set X to 20 degrees"
+    t = re.sub(r"\bset\b", " ", t)
+    t = re.sub(r"\bto\s+\d+(?:\.\d+)?\s*(?:degrees?|deg)?\b", " ", t)
+    t = re.sub(r"\d+(?:\.\d+)?\s*(?:degrees?|deg)\b", " ", t)
+
+    # Remove trailing noise words (lights and heating device terms)
+    for word in ("light", "lights", "lamp", "switch", "on", "off",
+                 "radiator", "thermostat", "heating", "temperature", "temp", "trv"):
         t = re.sub(rf"\b{word}\b", "", t)
 
     return t.strip() or None
@@ -289,6 +302,12 @@ def execute(user_text: str) -> dict:
     if not matches:
         return {"action": action, "entities": [], "room_display": room_term,
                 "temperature": None, "error": "no_match"}
+
+    # For on/off actions, exclude climate entities unless they're the only match
+    if action in ("on", "off"):
+        non_climate = [e for e in matches if e["domain"] != "climate"]
+        if non_climate:
+            matches = non_climate
 
     target_temp = _parse_temperature(user_text)
     if target_temp and any(e["domain"] == "climate" for e in matches):
