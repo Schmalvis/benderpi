@@ -8,6 +8,19 @@
   var el = window.bender.el;
   var apiJson = window.bender.apiJson;
 
+  // Pending restart banner
+  var restartBannerEl = null;
+
+  function showRestartBanner() {
+    if (!restartBannerEl) return;
+    restartBannerEl.classList.remove("hidden");
+  }
+
+  function hideRestartBanner() {
+    if (!restartBannerEl) return;
+    restartBannerEl.classList.add("hidden");
+  }
+
   // Track original values for dirty detection
   var originalConfig = {};
   var originalWatchdog = {};
@@ -417,6 +430,7 @@
         currentConfig = deepCopy(data.config);
         renderForm(currentConfig);
         showFeedback(section, "Configuration saved", false);
+        showRestartBanner();
       }).catch(function (err) {
         showFeedback(section, "Save failed: " + err.message, true);
       }).finally(function () {
@@ -528,6 +542,7 @@
         currentWatchdog = deepCopy(data.config);
         renderForm(currentWatchdog);
         showFeedback(section, "Watchdog config saved", false);
+        showRestartBanner();
       }).catch(function (err) {
         showFeedback(section, "Save failed: " + err.message, true);
       }).finally(function () {
@@ -558,6 +573,31 @@
     if (initialised) return;
     initialised = true;
     panel.textContent = "";
+
+    // Pending restart banner
+    restartBannerEl = el("div", { className: "cfg-restart-banner hidden" });
+    var bannerIcon = el("span", { className: "cfg-restart-banner-icon", textContent: "\u26A0" });
+    var bannerText = el("span", { className: "cfg-restart-banner-text",
+      textContent: "Changes saved \u2014 restart required to apply." });
+    var applyBtn = el("button", { className: "btn btn-warning cfg-restart-apply-btn",
+      textContent: "Apply Now" });
+    applyBtn.addEventListener("click", function () {
+      applyBtn.disabled = true;
+      applyBtn.textContent = "Restarting\u2026";
+      apiJson("/api/actions/restart", { method: "POST", body: "{}" }).then(function () {
+        hideRestartBanner();
+        showFeedback(document.getElementById("panel-config"), "Service restarted \u2014 changes applied.", false);
+      }).catch(function (err) {
+        showFeedback(document.getElementById("panel-config"), "Restart failed: " + err.message, true);
+      }).finally(function () {
+        applyBtn.disabled = false;
+        applyBtn.textContent = "Apply Now";
+      });
+    });
+    restartBannerEl.appendChild(bannerIcon);
+    restartBannerEl.appendChild(bannerText);
+    restartBannerEl.appendChild(applyBtn);
+    panel.appendChild(restartBannerEl);
 
     panel.appendChild(buildServiceSection(panel));
     panel.appendChild(buildConfigEditor(panel));

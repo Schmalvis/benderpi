@@ -1523,3 +1523,29 @@ details[open] .session-summary::before {
     grid-template-columns: 100px 1fr 36px;
   }
 }
+
+/* ── Pending restart banner ──────────────────────────────────── */
+.cfg-restart-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: rgba(240, 165, 0, 0.12);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  color: var(--warning);
+}
+.cfg-restart-banner.hidden { display: none; }
+.cfg-restart-banner-icon { font-size: 1.2rem; flex-shrink: 0; }
+.cfg-restart-banner-text { flex: 1; font-size: 0.9rem; }
+.btn-warning {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #1a1a1a;
+  font-weight: 600;
+}
+.btn-warning:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.cfg-restart-apply-btn { flex-shrink: 0; }
