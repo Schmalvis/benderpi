@@ -36,10 +36,12 @@ import tts_generate
 import stt
 import intent as intent_mod
 import briefings
-from ai_response import AIResponder, MODEL
+from ai_response import AIResponder
 from handlers import ha_control
 from conversation_log import SessionLogger
 from logger import get_logger
+from config import cfg
+from metrics import metrics
 
 log = get_logger("converse")
 
@@ -115,6 +117,7 @@ def wait_for_wakeword():
 # ---------------------------------------------------------------------------
 
 def run_session(ai: AIResponder, log: SessionLogger):
+    metrics.count("session", event="start")
     log.session_start()
     audio.open_session()
 
@@ -142,6 +145,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
         if not text:
             if time.time() - last_heard > SILENCE_TIMEOUT:
                 log.info("Silence timeout -- ending session")
+                metrics.count("session", event="end", turns=log.turn, reason="timeout")
                 log.session_end("timeout")
                 audio.close_session()
                 return
@@ -168,6 +172,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 audio.play(wav)
                 os.unlink(wav)
                 log.log_turn(text, intent_name, None, "pre_gen_tts", response_text=reply)
+            metrics.count("session", event="end", turns=log.turn, reason="dismissal")
             log.session_end("dismissal")
             audio.close_session()
             return
@@ -243,7 +248,7 @@ def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,
         audio.play(wav)
         os.unlink(wav)
         log.log_turn(user_text, intent_name, sub_key, "ai_fallback",
-                     response_text=reply, model=MODEL)
+                     response_text=reply, model=cfg.ai_model)
     except Exception as e:
         error_text = f"Something went very wrong. Error: {type(e).__name__}."
         wav = tts_generate.speak(error_text)

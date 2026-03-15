@@ -27,6 +27,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_generate
 from logger import get_logger
+from metrics import metrics
 
 log = get_logger("briefings")
 
@@ -212,7 +213,8 @@ def get_weather_wav() -> str:
     if not _is_fresh("weather", WEATHER_TTL) or not os.path.exists(WEATHER_WAV):
         try:
             text = _generate_weather()
-            wav  = tts_generate.speak(text)
+            with metrics.timer("briefing_generate", briefing="weather"):
+                wav = tts_generate.speak(text)
             shutil.move(wav, WEATHER_WAV)
             _mark_fresh("weather")
             log.info("[briefing] Weather refreshed")
@@ -229,7 +231,8 @@ def get_news_wav() -> str:
     if not _is_fresh("news", NEWS_TTL) or not os.path.exists(NEWS_WAV):
         try:
             text = _generate_news()
-            wav  = tts_generate.speak(text)
+            with metrics.timer("briefing_generate", briefing="news"):
+                wav = tts_generate.speak(text)
             shutil.move(wav, NEWS_WAV)
             _mark_fresh("news")
             log.info("[briefing] News refreshed")

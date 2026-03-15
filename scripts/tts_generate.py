@@ -19,6 +19,7 @@ import wave
 import numpy as np
 
 from logger import get_logger
+from metrics import metrics
 
 log = get_logger("tts")
 
@@ -70,36 +71,37 @@ def speak(text: str) -> str:
     Generate TTS audio for text. Returns path to a temp WAV file at 44100Hz.
     Caller is responsible for playing and cleanup.
     """
-    if not os.path.exists(PIPER_BIN):
-        raise FileNotFoundError(f"Piper binary not found: {PIPER_BIN}")
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Bender model not found: {MODEL_PATH}")
+    with metrics.timer("tts_generate"):
+        if not os.path.exists(PIPER_BIN):
+            raise FileNotFoundError(f"Piper binary not found: {PIPER_BIN}")
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(f"Bender model not found: {MODEL_PATH}")
 
-    # Piper writes raw 22050Hz output
-    raw_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    raw_tmp.close()
+        # Piper writes raw 22050Hz output
+        raw_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        raw_tmp.close()
 
-    piper_dir = os.path.dirname(PIPER_BIN)
-    env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = piper_dir + ":" + env.get("LD_LIBRARY_PATH", "")
+        piper_dir = os.path.dirname(PIPER_BIN)
+        env = os.environ.copy()
+        env["LD_LIBRARY_PATH"] = piper_dir + ":" + env.get("LD_LIBRARY_PATH", "")
 
-    result = subprocess.run(
-        [PIPER_BIN, "--model", MODEL_PATH, "--output_file", raw_tmp.name],
-        input=text.encode(),
-        capture_output=True,
-        env=env,
-    )
+        result = subprocess.run(
+            [PIPER_BIN, "--model", MODEL_PATH, "--output_file", raw_tmp.name],
+            input=text.encode(),
+            capture_output=True,
+            env=env,
+        )
 
-    if result.returncode != 0:
-        os.unlink(raw_tmp.name)
-        raise RuntimeError(f"Piper failed: {result.stderr.decode()}")
+        if result.returncode != 0:
+            os.unlink(raw_tmp.name)
+            raise RuntimeError(f"Piper failed: {result.stderr.decode()}")
 
-    # Post-process: resample + pad → final temp file
-    out_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    out_tmp.close()
-    try:
-        _resample_and_pad(raw_tmp.name, out_tmp.name)
-    finally:
-        os.unlink(raw_tmp.name)
+        # Post-process: resample + pad → final temp file
+        out_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        out_tmp.close()
+        try:
+            _resample_and_pad(raw_tmp.name, out_tmp.name)
+        finally:
+            os.unlink(raw_tmp.name)
 
-    return out_tmp.name
+        return out_tmp.name

@@ -21,6 +21,7 @@ import pyaudio
 
 import leds
 from logger import get_logger
+from metrics import metrics
 
 log = get_logger("audio")
 
@@ -116,21 +117,22 @@ def play(wav_path: str):
     Play a WAV file, driving LEDs in sync.
     open_session() must be called first.
     """
-    with _lock:
-        if _stream is None or not _stream.is_active():
-            # Fallback: reopen if session stream was lost
-            open_session()
+    with metrics.timer("audio_play"):
+        with _lock:
+            if _stream is None or not _stream.is_active():
+                # Fallback: reopen if session stream was lost
+                open_session()
 
-        _stream.write(_silence(SILENCE_PRE))
+            _stream.write(_silence(SILENCE_PRE))
 
-        with wave.open(wav_path, 'rb') as wf:
-            sw = wf.getsampwidth()
-            data = wf.readframes(CHUNK)
-            while data:
-                _stream.write(data)
-                leds.set_level(rms_to_ratio(rms(data, sw)))
+            with wave.open(wav_path, 'rb') as wf:
+                sw = wf.getsampwidth()
                 data = wf.readframes(CHUNK)
+                while data:
+                    _stream.write(data)
+                    leds.set_level(rms_to_ratio(rms(data, sw)))
+                    data = wf.readframes(CHUNK)
 
-        _stream.write(_silence(SILENCE_POST))
+            _stream.write(_silence(SILENCE_POST))
 
     leds.all_off()

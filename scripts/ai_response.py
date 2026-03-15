@@ -17,6 +17,8 @@ import anthropic
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_generate
 from logger import get_logger
+from metrics import metrics
+from config import cfg
 
 log = get_logger("ai")
 
@@ -35,7 +37,6 @@ Rules:
 """
 
 MAX_HISTORY = 6  # max turns to keep in rolling window (per turn = user + assistant)
-MODEL = os.environ.get("BENDER_AI_MODEL", "claude-haiku-4-5-20251001")
 
 
 class AIResponder:
@@ -60,12 +61,14 @@ class AIResponder:
         self._trim_history()
 
         try:
-            message = self.client.messages.create(
-                model=MODEL,
-                max_tokens=150,
-                system=BENDER_SYSTEM_PROMPT,
-                messages=self.history,
-            )
+            with metrics.timer("ai_api_call", model=cfg.ai_model):
+                message = self.client.messages.create(
+                    model=cfg.ai_model,
+                    max_tokens=150,
+                    system=BENDER_SYSTEM_PROMPT,
+                    messages=self.history,
+                )
+            metrics.count("api_call", model=cfg.ai_model)
             reply = message.content[0].text.strip()
         except anthropic.AuthenticationError:
             reply = f"Whoever manages my account is out of credit. Sort it out. I'll be here, annoyed."

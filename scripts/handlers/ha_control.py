@@ -20,6 +20,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tts_generate
 from logger import get_logger
+from metrics import metrics
 
 log = get_logger("ha_control")
 
@@ -207,25 +208,26 @@ def _parse_room_term(text: str) -> str | None:
 
 def _ha_call(domain: str, service: str, entity_id: str,
              extra: dict | None = None) -> bool:
-    url  = f"{HA_URL}/api/services/{domain}/{service}"
-    body = {"entity_id": entity_id}
-    if extra:
-        body.update(extra)
-    data = json.dumps(body).encode()
-    req  = urllib.request.Request(
-        url, data=data,
-        headers={
-            "Authorization": f"Bearer {HA_TOKEN}",
-            "Content-Type":  "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status in (200, 201)
-    except Exception as e:
-        log.error("HA call failed (%s): %s", entity_id, e)
-        return False
+    with metrics.timer("ha_call", entity=entity_id):
+        url  = f"{HA_URL}/api/services/{domain}/{service}"
+        body = {"entity_id": entity_id}
+        if extra:
+            body.update(extra)
+        data = json.dumps(body).encode()
+        req  = urllib.request.Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bearer {HA_TOKEN}",
+                "Content-Type":  "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status in (200, 201)
+        except Exception as e:
+            log.error("HA call failed (%s): %s", entity_id, e)
+            return False
 
 
 def _parse_temperature(text: str) -> float | None:

@@ -19,6 +19,7 @@ import webrtcvad
 from faster_whisper import WhisperModel
 
 from logger import get_logger
+from metrics import metrics
 
 log = get_logger("stt")
 
@@ -131,12 +132,15 @@ def listen_and_transcribe() -> str:
     Record one utterance and return the transcribed text.
     Returns empty string if nothing is heard.
     """
-    pcm = _record_utterance()
+    with metrics.timer("stt_record"):
+        pcm = _record_utterance()
     if len(pcm) < FRAME_BYTES * 3:
+        metrics.count("stt_empty", pcm_bytes=len(pcm))
         return ""
     wav_path = _pcm_to_wav(pcm)
     try:
-        text = transcribe(wav_path)
+        with metrics.timer("stt_transcribe", model=WHISPER_MODEL):
+            text = transcribe(wav_path)
     finally:
         os.unlink(wav_path)
     return text
