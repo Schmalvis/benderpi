@@ -2,15 +2,18 @@
 """
 audio.py — WAV playback with LED amplitude visualisation.
 
-Keeps a single PyAudio output stream open at all times to prevent
-WM8960/I2S DAC click/pop between clips. A background keepalive thread
-writes silence continuously so the card never goes idle.
+The output stream is opened at session start and closed at session end.
+This keeps the DAC warm between clips within a conversation (no click),
+while freeing the audio device during wake-word listening so the mic
+stream can operate without sample-rate conflicts on the WM8960.
 
-play() acquires a lock, so keepalive yields cleanly during playback.
+API:
+    open_session()   — open output stream (call after wake word detected)
+    close_session()  — close output stream (call after session ends)
+    play(wav_path)   — play a WAV file
 """
 
 import threading
-import time
 import wave
 
 import numpy as np
@@ -18,51 +21,27 @@ import pyaudio
 
 import leds
 
-CHUNK        = 512      # samples per buffer (~11.6ms at 44100Hz)
+CHUNK        = 512
 SAMPLE_RATE  = 44100
 CHANNELS     = 1
 FORMAT       = pyaudio.paInt16
+OUTPUT_DEVICE = 0       # hw:2,0 — seeed-2mic-voicecard (WM8960)
+
 RMS_FLOOR    = 200
 RMS_CEILING  = 8000
 
 SILENCE_PRE  = 0.05    # 50ms silence before speech (DAC warm-up)
 SILENCE_POST = 0.20    # 200ms silence after speech (DAC settle)
 
-_KEEPALIVE_INTERVAL = CHUNK / SAMPLE_RATE  # ~11.6ms between keepalive writes
-
-# ---------------------------------------------------------------------------
-# Persistent stream
-# ---------------------------------------------------------------------------
-
-_pa     = None
+# Single shared PyAudio instance — never re-created to avoid PortAudio crashes
+_pa    = pyaudio.PyAudio()
 _stream = None
-_lock   = threading.Lock()
-_SILENCE_CHUNK = b'\x00' * (CHUNK * 2 * CHANNELS)
+_lock  = threading.Lock()
 
 
-def _ensure_stream() -> pyaudio.Stream:
-    """Open or re-open the output stream if needed. Call with _lock held."""
-    global _pa, _stream
-    if _stream is not None:
-        try:
-            if _stream.is_active():
-                return _stream
-        except Exception:
-            pass
-    if _pa is not None:
-        try:
-            _pa.terminate()
-        except Exception:
-            pass
-    _pa = pyaudio.PyAudio()
-    _stream = _pa.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=SAMPLE_RATE,
-        output=True,
-        frames_per_buffer=CHUNK,
-    )
-    return _stream
+def get_pa() -> pyaudio.PyAudio:
+    """Return the shared PyAudio instance (used by wake_converse for mic stream)."""
+    return _pa
 
 
 def _silence(duration_s: float) -> bytes:
@@ -70,21 +49,44 @@ def _silence(duration_s: float) -> bytes:
     return b'\x00' * (n * 2 * CHANNELS)
 
 
-def _keepalive_worker():
-    """Background thread: write silence to keep card from going idle."""
-    while True:
-        time.sleep(_KEEPALIVE_INTERVAL)
-        with _lock:
+def open_session():
+    """Open the output stream. Call once after wake word is detected."""
+    global _stream
+    with _lock:
+        if _stream is not None:
             try:
-                _ensure_stream().write(_SILENCE_CHUNK)
+                if _stream.is_active():
+                    return
             except Exception:
-                pass  # _ensure_stream will reopen on next call
+                pass
+            try:
+                _stream.close()
+            except Exception:
+                pass
+        _stream = _pa.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=SAMPLE_RATE,
+            output=True,
+            output_device_index=OUTPUT_DEVICE,
+            frames_per_buffer=CHUNK,
+        )
+        # Warm up the DAC with a brief silence burst
+        _stream.write(_silence(0.1))
 
 
-def start_keepalive():
-    """Start keepalive thread. Call once at startup."""
-    t = threading.Thread(target=_keepalive_worker, daemon=True)
-    t.start()
+def close_session():
+    """Close the output stream. Call after session ends."""
+    global _stream
+    with _lock:
+        if _stream is not None:
+            try:
+                _stream.write(_silence(0.1))  # drain tail
+                _stream.stop_stream()
+                _stream.close()
+            except Exception:
+                pass
+            _stream = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,25 +111,23 @@ def rms_to_ratio(value: float) -> float:
 def play(wav_path: str):
     """
     Play a WAV file, driving LEDs in sync.
-
-    Acquires the global lock, so the keepalive yields during playback.
-    Stream is never closed — no DAC pop between clips.
+    open_session() must be called first.
     """
     with _lock:
-        stream = _ensure_stream()
+        if _stream is None or not _stream.is_active():
+            # Fallback: reopen if session stream was lost
+            open_session()
 
-        # Pre-silence: let DAC settle before speech hits
-        stream.write(_silence(SILENCE_PRE))
+        _stream.write(_silence(SILENCE_PRE))
 
         with wave.open(wav_path, 'rb') as wf:
             sw = wf.getsampwidth()
             data = wf.readframes(CHUNK)
             while data:
-                stream.write(data)
+                _stream.write(data)
                 leds.set_level(rms_to_ratio(rms(data, sw)))
                 data = wf.readframes(CHUNK)
 
-        # Post-silence: let last samples drain before card goes quiet
-        stream.write(_silence(SILENCE_POST))
+        _stream.write(_silence(SILENCE_POST))
 
     leds.all_off()

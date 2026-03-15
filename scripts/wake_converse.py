@@ -84,7 +84,8 @@ def wait_for_wakeword():
         access_key=os.environ["PORCUPINE_ACCESS_KEY"],
         keyword_paths=[KEYWORD_PATH],
     )
-    pa = pyaudio.PyAudio()
+    # Use the shared PyAudio instance — creating a second one crashes PortAudio
+    pa = audio.get_pa()
     stream = pa.open(
         rate=porcupine.sample_rate,
         channels=1,
@@ -103,7 +104,6 @@ def wait_for_wakeword():
     finally:
         stream.stop_stream()
         stream.close()
-        pa.terminate()
         porcupine.delete()
 
 
@@ -113,6 +113,7 @@ def wait_for_wakeword():
 
 def run_session(ai: AIResponder, log: SessionLogger):
     log.session_start()
+    audio.open_session()
 
     # Greeting
     greeting_path = pick_clip("GREETING")
@@ -139,6 +140,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
             if time.time() - last_heard > SILENCE_TIMEOUT:
                 print("Silence timeout -- ending session")
                 log.session_end("timeout")
+                audio.close_session()
                 return
             continue
 
@@ -164,6 +166,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 os.unlink(wav)
                 log.log_turn(text, intent_name, None, "pre_gen_tts", response_text=reply)
             log.session_end("dismissal")
+            audio.close_session()
             return
 
         # --- PROMOTED (AI query promoted to static clip) ---
@@ -253,9 +256,9 @@ def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,
 
 def main():
     ai = AIResponder()
-    audio.start_keepalive()
-    print("Refreshing briefings...")
-    briefings.refresh_all()
+    import threading
+    threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
+    print("Listening for 'Hey Bender'...")
     while True:
         try:
             wait_for_wakeword()
