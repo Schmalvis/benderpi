@@ -1,0 +1,49 @@
+{
+  "greeting": [
+    "speech/wav/hello.wav",
+    "speech/wav/hellopeasants.wav",
+    "speech/wav/imbender.wav",
+    "speech/wav/yo.wav"
+  ],
+  "affirmation": [
+    "speech/wav/gotit.wav",
+    "speech/wav/yougotitgenius.wav",
+    "speech/wav/yessir.wav",
+    "speech/wav/yup.wav",
+    "speech/wav/thankyou.wav"
+  ],
+  "dismissal": [
+    "speech/wav/itwasapleasuremeetingyou.wav",
+    "speech/wav/solongcoffinstuffers.wav",
+    "speech/wav/yesss.wav"
+  ],
+  "joke": [
+    "speech/wav/hahohwaityoureseriousletmelaughevenharder.wav",
+    "speech/wav/compareyourlivestomineandthenkillyourselves.wav",
+    "speech/wav/imgonnagobuildmyownthemepark.wav",
+    "speech/responses/joke/joke_001.wav",
+    "speech/responses/joke/joke_002.wav",
+    "speech/responses/joke/joke_003.wav",
+    "speech/responses/joke/joke_004.wav",
+    "speech/responses/joke/joke_005.wav"
+  ],
+  "personal": {
+    "job": "speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav",
+    "age": "speech/responses/personal/age.wav",
+    "where_live": "speech/responses/personal/where_live.wav",
+    "where_work": "speech/responses/personal/where_work.wav",
+    "can_talk": "speech/responses/personal/can_talk.wav",
+    "are_you_real": "speech/responses/personal/are_you_real.wav",
+    "feelings": "speech/responses/personal/feelings.wav",
+    "what_can_do": "speech/responses/personal/what_can_do.wav",
+    "friend": "speech/responses/personal/friend.wav",
+    "like_me": "speech/responses/personal/like_me.wav",
+    "eat": "speech/responses/personal/eat.wav"
+  },
+  "ha_confirm": [
+    "speech/responses/ha_confirm/confirm_001.wav",
+    "speech/responses/ha_confirm/confirm_002.wav",
+    "speech/responses/ha_confirm/confirm_003.wav"
+  ],
+  "promoted": []
+}

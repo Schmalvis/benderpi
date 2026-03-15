@@ -1,10 +1,24 @@
+# Core dependencies for BenderPi
+# Install into a venv created with --system-site-packages:
+#   python3 -m venv --system-site-packages venv
+#   venv/bin/pip install -r requirements.txt
+
 # Wake word detection
 pvporcupine==4.0.2
-pvrecorder==1.2.7
 
-# Audio I/O (used by PyAudio, future STT work)
-PyAudio==0.2.13
+# Speech-to-text
+faster-whisper==1.2.1
+webrtcvad-wheels==2.0.14
+PyAudio==0.2.14
 
-# WS2812B LED strip (SPI, GPIO 10)
-adafruit-blinka==8.70.0
-adafruit-circuitpython-neopixel-spi==1.0.14
+# TTS (Piper is a standalone binary — see README for download instructions)
+# No Python package needed for inference
+
+# AI fallback
+anthropic==0.84.0
+
+# Home Assistant integration
+# Uses stdlib urllib — no extra packages needed
+
+# Utilities
+python-dotenv==1.2.2

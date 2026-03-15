@@ -1,10 +1,11 @@
 # Wake word model (contains API key embedded, keep private)
 *.ppn
 
-# Credentials
+# Credentials and secrets
 *.key
 *.token
 config.local.*
+.env
 
 # Python
 __pycache__/
@@ -12,10 +13,20 @@ __pycache__/
 *.pyo
 .venv/
 env/
+venv/
 
-# Logs
-logs/*.log
+# Runtime logs (JSON Lines — reviewed locally via review_log.py)
+logs/*.jsonl
 
-# Audio (large binary files, stored on rpi-share)
+# Audio clips (large binaries, stored on rpi-share or rebuilt locally)
 speech/wav/
-.env
+speech/responses/**/*.wav
+
+# TTS training artefacts (demucs venv, separated vocals, dataset)
+tts/
+
+# Piper inference binary (aarch64, ~51MB — download separately, see README)
+piper/
+
+# Trained voice model (ONNX, ~61MB — download from HF Hub, see README)
+models/
