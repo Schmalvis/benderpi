@@ -23,6 +23,12 @@ from metrics import metrics
 
 log = get_logger("tts")
 
+try:
+    from config import Config as _Config
+    _cfg = _Config()
+except Exception:
+    _cfg = None
+
 PIPER_BIN  = os.path.join(os.path.dirname(__file__), "..", "piper", "piper")
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "bender.onnx")
 
@@ -86,7 +92,12 @@ def speak(text: str) -> str:
         env["LD_LIBRARY_PATH"] = piper_dir + ":" + env.get("LD_LIBRARY_PATH", "")
 
         result = subprocess.run(
-            [PIPER_BIN, "--model", MODEL_PATH, "--output_file", raw_tmp.name],
+            [
+            PIPER_BIN,
+            "--model", MODEL_PATH,
+            "--output_file", raw_tmp.name,
+            "--length-scale", str(getattr(_cfg, "speech_rate", 1.0) if _cfg else 1.0),
+        ],
             input=text.encode(),
             capture_output=True,
             env=env,
