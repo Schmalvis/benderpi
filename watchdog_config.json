@@ -1,0 +1,14 @@
+{
+  "stt_empty_rate_threshold": 0.10,
+  "api_fallback_rate_threshold": 0.20,
+  "error_rate_threshold": 0.05,
+  "stt_latency_threshold_ms": 4000,
+  "tts_latency_threshold_ms": 3000,
+  "api_latency_threshold_ms": 5000,
+  "promote_candidate_min_hits": 3,
+  "briefing_stale_weather_s": 7200,
+  "briefing_stale_news_s": 21600,
+  "min_avg_session_turns": 1.5,
+  "log_gap_threshold_s": 86400,
+  "lookback_hours": 168
+}
