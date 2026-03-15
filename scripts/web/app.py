@@ -23,6 +23,11 @@ _WAV_DIR = os.path.join(_BASE_DIR, "speech", "wav")
 _LOG_DIR = os.path.join(_BASE_DIR, "logs")
 _BENDER_LOG = os.path.join(_LOG_DIR, "bender.log")
 _METRICS_LOG = os.path.join(_LOG_DIR, "metrics.jsonl")
+_CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
+_WATCHDOG_CONFIG_PATH = os.path.join(_BASE_DIR, "watchdog_config.json")
+_VENV_PYTHON = os.path.join(_BASE_DIR, "venv", "bin", "python")
+_PREBUILD_SCRIPT = os.path.join(_BASE_DIR, "scripts", "prebuild_responses.py")
+_IS_LINUX = os.name != "nt"
 
 app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None)
 
@@ -108,7 +113,155 @@ async def health():
 
 @app.get("/api/actions/service-status", dependencies=[Depends(require_pin)])
 async def service_status():
-    return {"running": True, "uptime": "unknown"}
+    if not _IS_LINUX:
+        return {"running": False, "uptime": "N/A (not on Pi)"}
+    try:
+        active = await asyncio.to_thread(
+            subprocess.run,
+            ["systemctl", "is-active", "bender-converse"],
+            capture_output=True, text=True, timeout=5,
+        )
+        running = active.stdout.strip() == "active"
+        uptime_str = "unknown"
+        if running:
+            ts_result = await asyncio.to_thread(
+                subprocess.run,
+                ["systemctl", "show", "bender-converse", "--property=ActiveEnterTimestamp"],
+                capture_output=True, text=True, timeout=5,
+            )
+            # Parse ActiveEnterTimestamp=Thu 2025-01-01 12:00:00 UTC
+            ts_line = ts_result.stdout.strip()
+            if "=" in ts_line:
+                ts_val = ts_line.split("=", 1)[1].strip()
+                if ts_val:
+                    uptime_str = ts_val
+        return {"running": running, "uptime": uptime_str}
+    except Exception:
+        return {"running": False, "uptime": "N/A (not on Pi)"}
+
+
+# ── Config Endpoints ───────────────────────────────
+
+
+def _load_json_file(path: str) -> dict:
+    """Read a JSON file, return {} on any error."""
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_json_file(path: str, data: dict) -> None:
+    """Write dict as JSON to file."""
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+@app.get("/api/config", dependencies=[Depends(require_pin)])
+async def config_get():
+    return _load_json_file(_CONFIG_PATH)
+
+
+@app.put("/api/config", dependencies=[Depends(require_pin)])
+async def config_put(body: dict = Body(...)):
+    current = _load_json_file(_CONFIG_PATH)
+    current.update(body)
+    _save_json_file(_CONFIG_PATH, current)
+    return {"status": "ok", "config": current}
+
+
+@app.get("/api/config/watchdog", dependencies=[Depends(require_pin)])
+async def config_watchdog_get():
+    return _load_json_file(_WATCHDOG_CONFIG_PATH)
+
+
+@app.put("/api/config/watchdog", dependencies=[Depends(require_pin)])
+async def config_watchdog_put(body: dict = Body(...)):
+    current = _load_json_file(_WATCHDOG_CONFIG_PATH)
+    current.update(body)
+    _save_json_file(_WATCHDOG_CONFIG_PATH, current)
+    return {"status": "ok", "config": current}
+
+
+# ── Action Endpoints ──────────────────────────────
+
+
+@app.post("/api/actions/restart", dependencies=[Depends(require_pin)])
+async def action_restart():
+    if not _IS_LINUX:
+        return {"status": "ok", "message": "Simulated restart (not on Pi)"}
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["sudo", "systemctl", "restart", "bender-converse"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return {"status": "ok"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/actions/refresh-briefings", dependencies=[Depends(require_pin)])
+async def action_refresh_briefings():
+    if not _IS_LINUX:
+        return {"status": "ok", "message": "Simulated refresh (not on Pi)"}
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["sudo", "systemctl", "restart", "bender-converse"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return {"status": "ok"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/actions/prebuild", dependencies=[Depends(require_pin)])
+async def action_prebuild():
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [_VENV_PYTHON, _PREBUILD_SCRIPT],
+            capture_output=True, text=True, timeout=120,
+            cwd=_BASE_DIR,
+        )
+        return {
+            "status": "ok" if result.returncode == 0 else "error",
+            "output": result.stdout + result.stderr,
+            "returncode": result.returncode,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/actions/generate-status", dependencies=[Depends(require_pin)])
+async def action_generate_status():
+    from generate_status import generate
+    await asyncio.to_thread(generate)
+    return {"status": "ok"}
+
+
+@app.post("/api/actions/toggle-mode", dependencies=[Depends(require_pin)])
+async def action_toggle_mode(body: dict = Body(...)):
+    mode = body.get("mode", "").strip()
+    if mode not in ("puppet_only", "converse"):
+        raise HTTPException(status_code=400, detail="mode must be 'puppet_only' or 'converse'")
+    if not _IS_LINUX:
+        return {"status": "ok", "mode": mode, "message": "Simulated (not on Pi)"}
+    try:
+        if mode == "puppet_only":
+            cmd = ["sudo", "systemctl", "stop", "bender-converse"]
+        else:
+            cmd = ["sudo", "systemctl", "start", "bender-converse"]
+        await asyncio.to_thread(
+            subprocess.run, cmd,
+            capture_output=True, text=True, timeout=15,
+        )
+        return {"status": "ok", "mode": mode}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── Puppet Endpoints ───────────────────────────────────

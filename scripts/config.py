@@ -43,6 +43,7 @@ class Config:
     # TTS
     piper_bin: str = os.path.join(_BASE_DIR, "piper", "piper")
     model_path: str = os.path.join(_BASE_DIR, "models", "bender.onnx")
+    speech_rate: float = 1.0  # Piper --length-scale: >1.0 slower, <1.0 faster
 
     # AI
     ai_model: str = "claude-haiku-4-5-20251001"

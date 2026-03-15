@@ -30,6 +30,20 @@ def test_config_env_overrides(tmp_path, monkeypatch):
     cfg = Config(config_path=str(tmp_path / "nonexistent.json"))
     assert cfg.log_level == "DEBUG"
 
+def test_config_speech_rate_default():
+    """speech_rate should default to 1.0."""
+    from config import Config
+    cfg = Config()
+    assert cfg.speech_rate == 1.0
+
+def test_config_speech_rate_override(tmp_path):
+    """speech_rate should be overridable from JSON."""
+    from config import Config
+    json_path = tmp_path / "bender_config.json"
+    json_path.write_text(json.dumps({"speech_rate": 0.8}))
+    cfg = Config(config_path=str(json_path))
+    assert cfg.speech_rate == 0.8
+
 def test_config_secrets_from_env(monkeypatch):
     """Secrets come from env/.env only, never from config JSON."""
     from config import Config

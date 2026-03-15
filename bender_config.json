@@ -12,5 +12,6 @@
   "log_level": "INFO",
   "led_brightness": 0.8,
   "led_colour": [255, 120, 0],
-  "simple_intent_max_words": 6
+  "simple_intent_max_words": 6,
+  "speech_rate": 1.0
 }

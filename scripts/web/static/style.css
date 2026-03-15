@@ -1072,6 +1072,273 @@ details[open] .session-summary::before {
   }
 }
 
+/* ── Config & Service Control ──────────────────────── */
+
+.cfg-service-section {
+  margin-bottom: 16px;
+}
+
+.cfg-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.cfg-uptime {
+  font-size: 0.82rem;
+}
+
+.cfg-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+}
+
+.cfg-toggle-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 0;
+}
+
+.cfg-toggle-help {
+  font-size: 0.8rem;
+  flex: 1;
+  min-width: 200px;
+}
+
+/* Toggle switch */
+.cfg-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+.cfg-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.cfg-switch-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 24px;
+  transition: background var(--transition);
+}
+
+.cfg-switch-slider::before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform var(--transition);
+}
+
+.cfg-switch input:checked + .cfg-switch-slider {
+  background: var(--accent);
+}
+
+.cfg-switch input:checked + .cfg-switch-slider::before {
+  transform: translateX(20px);
+}
+
+/* Action button grid */
+.cfg-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* Feedback toast */
+.cfg-feedback {
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+  animation: cfg-fade-in 0.2s ease;
+}
+
+.cfg-feedback.success {
+  background: rgba(78, 204, 163, 0.12);
+}
+
+.cfg-feedback.error {
+  background: rgba(233, 69, 96, 0.12);
+}
+
+@keyframes cfg-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Config editor */
+.cfg-editor-section {
+  margin-bottom: 16px;
+}
+
+.cfg-form-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.cfg-group-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cfg-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.cfg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cfg-field label {
+  margin-bottom: 0;
+}
+
+.cfg-field-help {
+  font-size: 0.75rem;
+  display: block;
+}
+
+/* Range slider */
+.cfg-range-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cfg-range-slider {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-input);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.cfg-range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.cfg-range-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.cfg-range-value {
+  min-width: 36px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* Colour picker */
+.cfg-colour-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cfg-colour-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  width: 14px;
+  text-align: right;
+}
+
+.cfg-colour-input {
+  width: 60px !important;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.cfg-colour-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  border: 2px solid var(--border);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+/* Save row */
+.cfg-save-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.cfg-changes-info {
+  font-size: 0.82rem;
+}
+
+@media (max-width: 768px) {
+  .cfg-fields-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cfg-action-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .cfg-toggle-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
+
 /* ── Selection ──────────────────────────────────────── */
 
 ::selection {
