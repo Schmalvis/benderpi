@@ -12,7 +12,7 @@ import board
 import busio
 import neopixel_spi
 
-NUM_LEDS  = 12
+NUM_LEDS  = 45
 BRIGHTNESS = 0.3  # 0.0 – 1.0
 
 spi    = busio.SPI(board.SCK, MOSI=board.MOSI)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 leds.py — WS2812B LED strip control
-12 LEDs on SPI MOSI (GPIO 10, Pin 19)
+45 LEDs on SPI MOSI (GPIO 10, Pin 19)
 """
 
 import board
@@ -11,7 +11,7 @@ from logger import get_logger
 
 log = get_logger("leds")
 
-NUM_LEDS   = 12
+NUM_LEDS   = 45
 BRIGHTNESS = 0.8
 
 # Colour (R, G, B) — warm amber

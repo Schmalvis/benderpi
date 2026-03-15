@@ -73,7 +73,7 @@ class Config:
     log_level_file: str = "DEBUG"
 
     # LED
-    led_count: int = 12
+    led_count: int = 45
     led_brightness: float = 0.8
     led_colour: tuple = (255, 120, 0)
 
