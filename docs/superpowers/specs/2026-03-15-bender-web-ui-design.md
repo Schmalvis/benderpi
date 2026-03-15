@@ -1,7 +1,7 @@
 # BenderPi Web UI — Design Spec
 
 **Date:** 2026-03-15
-**Status:** Draft
+**Status:** Reviewed
 **Scope:** Browser-based admin panel and puppet mode for BenderPi. View logs, adjust config, control the service, and speak through Bender in real-time.
 
 ---
@@ -32,7 +32,7 @@
 A **FastAPI** application in `scripts/web/`. Runs as a separate systemd service (`bender-web`) alongside the existing `bender-converse`.
 
 **Why separate service:** The web server and conversation loop share the same Python modules but run in separate processes. This means:
-- Puppet mode calls `tts_generate.speak()` + `audio.play_oneshot()` directly — `play_oneshot()` acquires `_lock`, safe even during an active conversation session
+- Puppet mode calls `tts_generate.speak()` + `audio.play_oneshot()` directly. **Important:** `play_oneshot()` acquires `_lock` and blocks for the full playback duration. If a conversation clip is playing, the puppet call blocks until it finishes. The FastAPI endpoint must run these blocking calls via `asyncio.to_thread()` to avoid stalling uvicorn's event loop. Set a generous timeout (30s) on puppet endpoints.
 - Config reads are safe (read-only). Config writes go to `bender_config.json` on disk — conversation service picks up changes on restart
 - Log/metrics files are append-only JSONL — safe for concurrent reads
 - A web server crash doesn't take down the voice assistant
@@ -86,14 +86,18 @@ All endpoints are JSON. Every request (except the login page and static files) r
 
 **Clip discovery:** Scans `speech/wav/` for WAV files and reads `speech/responses/index.json` to determine categories. Clip names are derived from filenames (strip `.wav`, replace hyphens/underscores with spaces, title case).
 
-**Favourites storage:** `favourites.json` in the project root (committed or gitignored — it's UI preference state). Simple list of paths.
+**Favourites storage:** `favourites.json` in the project root (gitignored — it's UI preference state). Simple list of paths. **Path resolution:** Use the standard `_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))` pattern (same as all other modules) — never bare relative paths.
+
+**Blocking calls:** The `/api/puppet/speak` and `/api/puppet/clip` endpoints call blocking functions (`tts_generate.speak()`, `audio.play_oneshot()`). These MUST be wrapped in `asyncio.to_thread()` to avoid blocking uvicorn's async event loop.
 
 ### 3.2 Dashboard
 
 | Endpoint | Method | Purpose | Query params | Response |
 |---|---|---|---|---|
-| `/api/status` | GET | Current status data as JSON | — | Parsed STATUS.md equivalent as structured JSON |
+| `/api/status` | GET | Current status data as JSON | — | Structured JSON (see below) |
 | `/api/status/refresh` | POST | Regenerate status and return fresh data | — | Same as GET but freshly generated |
+
+**Implementation note:** Do NOT parse STATUS.md. Instead, extend `generate_status.py` with a `generate_dict()` function that returns structured data (health, performance averages, usage counts, alerts) as a Python dict. The `/api/status` route calls this directly. The existing `generate()` function can be refactored to call `generate_dict()` internally and format it as Markdown.
 
 ### 3.3 Logs
 
@@ -101,9 +105,13 @@ All endpoints are JSON. Every request (except the login page and static files) r
 |---|---|---|---|---|
 | `/api/logs/conversations` | GET | List conversation log files | `?days=7` | `{"files": [{"date": "2026-03-15", "path": "...", "size": 1234}]}` |
 | `/api/logs/conversations/{date}` | GET | Sessions and turns for a date | — | `{"events": [...]}` (parsed JSONL) |
-| `/api/logs/system` | GET | Tail bender.log | `?lines=200&level=ERROR` | `{"lines": [...]}` |
+| `/api/logs/system` | GET | Tail bender.log (handles rotation) | `?lines=200&level=ERROR` | `{"lines": [...]}` |
 | `/api/logs/metrics` | GET | Query metrics | `?name=stt_transcribe&hours=24` | `{"events": [...]}` |
-| `/api/logs/download/{filename}` | GET | Download raw log file | — | File download |
+| `/api/logs/download/{filename}` | GET | Download raw log file | — | File download (via JS fetch + blob, not direct URL — keeps PIN in header) |
+
+**Log rotation:** `bender.log` uses `RotatingFileHandler` (5MB, 3 backups → `bender.log.1`, `.2`, `.3`). The `/api/logs/system` endpoint must read across rotated files if the current file has fewer lines than requested.
+
+**Session duration:** `conversation_log.py` records `ts` (UTC ISO timestamp) on both `session_start` and `session_end` events. Session duration is computed by the API layer as `session_end.ts - session_start.ts` for matching `session_id` values. There is no explicit `duration` field in the log.
 
 ### 3.4 Config
 
@@ -287,9 +295,9 @@ Simple full-page form: PIN input + submit button. PIN stored in `sessionStorage`
 
 ### PIN-based auth
 
-- **PIN source:** `BENDER_WEB_PIN` in `.env`. Default: `2904`.
+- **PIN source:** `BENDER_WEB_PIN` in `.env`. Default: `2904`. The `.env.example` file uses a placeholder (`BENDER_WEB_PIN=CHANGE_ME`) — the actual default is only in the Python code.
 - **Login flow:** Unauthenticated `index.html` loads, shows login overlay. User enters PIN, JS stores it in `sessionStorage`, sends test request to `/api/status`. On 200, hides login overlay and shows the app. On 401, shows error.
-- **Request auth:** Every API `fetch()` includes `X-Bender-Pin` header. File download links append `?pin=` as query param.
+- **Request auth:** Every API `fetch()` includes `X-Bender-Pin` header. File download links use the header too (via JS-initiated `fetch()` + `blob` URL), not query params — avoids leaking the PIN in server access logs or browser history.
 - **Middleware:** FastAPI dependency that checks the header/param on every `/api/` route. Returns 401 JSON on failure. Static files are unprotected (they're just HTML/CSS/JS — the data is behind the API).
 - **No rate limiting** — single user, home network. If PIN is compromised, change it in `.env` and restart.
 
@@ -328,11 +336,22 @@ favourites.json           — UI favourite clips list (project root, gitignored)
 | File | Changes |
 |---|---|
 | `requirements.txt` | Add `fastapi==0.115.0`, `uvicorn==0.32.0` |
-| `.env.example` | Add `BENDER_WEB_PIN=2904`, `BENDER_WEB_PORT=8080` |
+| `.env.example` | Add `BENDER_WEB_PIN=CHANGE_ME`, `BENDER_WEB_PORT=8080` |
 | `.gitignore` | Add `favourites.json` |
 | `scripts/git_pull.sh` | Also restart `bender-web` on deploy |
 | `CLAUDE.md` | Add web UI section to project docs |
 | `HANDOVER.md` | Note web UI addition |
+
+### Deployment prerequisites
+
+The `bender-web` service runs as user `pi`. Service restart actions require passwordless sudo:
+
+```bash
+# /etc/sudoers.d/bender-web
+pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bender-converse
+pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bender-web
+pi ALL=(ALL) NOPASSWD: /bin/systemctl status bender-converse
+```
 
 ### New systemd service
 
