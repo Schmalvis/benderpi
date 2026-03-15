@@ -4,8 +4,10 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Body, Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from web.auth import require_pin
@@ -18,6 +20,9 @@ _BASE_DIR = os.path.dirname(os.path.dirname(_WEB_DIR))
 _FAVOURITES_PATH = os.path.join(_BASE_DIR, "favourites.json")
 _INDEX_PATH = os.path.join(_BASE_DIR, "speech", "responses", "index.json")
 _WAV_DIR = os.path.join(_BASE_DIR, "speech", "wav")
+_LOG_DIR = os.path.join(_BASE_DIR, "logs")
+_BENDER_LOG = os.path.join(_LOG_DIR, "bender.log")
+_METRICS_LOG = os.path.join(_LOG_DIR, "metrics.jsonl")
 
 app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None)
 
@@ -217,6 +222,155 @@ async def volume_set(body: dict = Body(...)):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail="Could not set volume")
     return {"status": "ok", "level": level}
+
+
+# ── Log Endpoints ───────────────────────────────────────────────
+
+
+@app.get("/api/logs/conversations", dependencies=[Depends(require_pin)])
+async def log_conversations_list(days: int = 7):
+    """List conversation JSONL files (excluding metrics.jsonl)."""
+    files = []
+    if os.path.isdir(_LOG_DIR):
+        cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=days - 1)
+        for fname in sorted(os.listdir(_LOG_DIR), reverse=True):
+            if not fname.endswith(".jsonl") or fname == "metrics.jsonl":
+                continue
+            date_str = fname[:-6]  # strip ".jsonl"
+            try:
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                continue
+            fpath = os.path.join(_LOG_DIR, fname)
+            try:
+                size = os.path.getsize(fpath)
+            except OSError:
+                size = 0
+            files.append({"date": date_str, "filename": fname, "size": size})
+    return {"files": files}
+
+
+@app.get("/api/logs/conversations/{date}", dependencies=[Depends(require_pin)])
+async def log_conversations_date(date: str):
+    """Parse JSONL for a given date, return events with computed session durations."""
+    # Validate date format
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format (expected YYYY-MM-DD)")
+    fpath = os.path.join(_LOG_DIR, f"{date}.jsonl")
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Log file not found")
+    events = []
+    session_starts: dict[str, str] = {}
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                etype = event.get("type", "")
+                sid = event.get("session_id", "")
+                if etype == "session_start" and sid:
+                    session_starts[sid] = event.get("ts", "")
+                elif etype == "session_end" and sid:
+                    start_ts = session_starts.get(sid, "")
+                    end_ts = event.get("ts", "")
+                    if start_ts and end_ts:
+                        try:
+                            t0 = datetime.fromisoformat(start_ts.replace("Z", "+00:00"))
+                            t1 = datetime.fromisoformat(end_ts.replace("Z", "+00:00"))
+                            event = dict(event, duration_s=round((t1 - t0).total_seconds(), 1))
+                        except (ValueError, TypeError):
+                            pass
+                events.append(event)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"events": events}
+
+
+@app.get("/api/logs/system", dependencies=[Depends(require_pin)])
+async def log_system(lines: int = 200, level: str = ""):
+    """Read rotated bender.log files, filter by level, return last N lines."""
+    level = level.upper().strip()
+    valid_levels = {"", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    if level not in valid_levels:
+        raise HTTPException(status_code=400, detail="Invalid level")
+    # Collect from rotated files in chronological order (oldest first)
+    log_paths = []
+    for suffix in (".3", ".2", ".1", ""):
+        p = _BENDER_LOG + suffix if suffix else _BENDER_LOG
+        if os.path.isfile(p):
+            log_paths.append(p)
+    all_lines = []
+    for p in log_paths:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                all_lines.extend(f.readlines())
+        except OSError:
+            pass
+    # Filter by level if specified
+    if level:
+        all_lines = [ln for ln in all_lines if level in ln]
+    # Return last N lines
+    result = [ln.rstrip("\n") for ln in all_lines[-lines:]]
+    return {"lines": result}
+
+
+@app.get("/api/logs/metrics", dependencies=[Depends(require_pin)])
+async def log_metrics(name: str = "", hours: int = 24):
+    """Filter metrics.jsonl by name and time window, return last 500 events."""
+    if not os.path.isfile(_METRICS_LOG):
+        return {"events": []}
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+    events = []
+    try:
+        with open(_METRICS_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Filter by name
+                if name and event.get("name") != name:
+                    continue
+                # Filter by time
+                ts_str = event.get("ts", "")
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if ts < cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                events.append(event)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"events": events[-500:]}
+
+
+@app.get("/api/logs/download/{filename}", dependencies=[Depends(require_pin)])
+async def log_download(filename: str):
+    """Download a raw log file. Only allows *.jsonl or bender.log* filenames."""
+    # Security: whitelist allowed filename patterns
+    if not (re.match(r"^[\w.-]+\.jsonl$", filename) or re.match(r"^bender\.log(\.\d+)?$", filename)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    # Resolve and verify path stays within _LOG_DIR
+    resolved = os.path.normpath(os.path.join(_LOG_DIR, filename))
+    if not resolved.startswith(os.path.normpath(_LOG_DIR) + os.sep) and resolved != os.path.normpath(_LOG_DIR):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(resolved, filename=filename, media_type="application/octet-stream")
 
 
 # ── Static files (must be last — catches all unmatched routes) ──

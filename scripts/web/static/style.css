@@ -839,6 +839,239 @@ tbody tr:hover {
   }
 }
 
+/* ── Log Viewer ─────────────────────────────────────── */
+
+.logs-header {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 16px 0 8px;
+}
+
+.logs-body {
+  padding-top: 12px;
+}
+
+.logs-date-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.logs-controls {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.logs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.logs-search {
+  flex: 1;
+  min-width: 160px;
+  max-width: 320px;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+}
+
+.logs-system-block {
+  max-height: 60vh;
+  overflow-y: auto;
+  white-space: pre;
+}
+
+.log-line {
+  display: block;
+  padding: 1px 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-line--error {
+  color: var(--error);
+}
+
+.log-line--warning {
+  color: var(--warning);
+}
+
+.log-line--debug {
+  color: var(--text-muted);
+}
+
+/* Session cards */
+.session-card {
+  margin-bottom: 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.session-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  cursor: pointer;
+  font-size: 0.875rem;
+  list-style: none;
+  transition: background var(--transition);
+}
+
+.session-summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-summary::before {
+  content: "\25B6";
+  display: inline-block;
+  font-size: 0.65rem;
+  transition: transform var(--transition);
+  flex-shrink: 0;
+}
+
+details[open] .session-summary::before {
+  transform: rotate(90deg);
+}
+
+.session-summary:hover {
+  background: var(--bg-input);
+}
+
+.session-id {
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.session-meta {
+  font-size: 0.8rem;
+}
+
+.session-turns {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg);
+}
+
+/* Turn rows */
+.turn-row {
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+  font-size: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.turn-label {
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.turn-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.turn-badge {
+  font-size: 0.72rem;
+}
+
+.turn-response {
+  color: var(--text-muted);
+}
+
+/* Method badge colours in conversations */
+.method-real_clip       { background: rgba(78, 204, 163, 0.15); color: var(--success); }
+.method-pre_gen_tts     { background: rgba(78, 204, 163, 0.15); color: var(--success); }
+.method-promoted_tts    { background: rgba(112, 184, 255, 0.15); color: #70b8ff; }
+.method-handler_weather { background: rgba(112, 184, 255, 0.15); color: #70b8ff; }
+.method-handler_news    { background: rgba(112, 184, 255, 0.15); color: #70b8ff; }
+.method-handler_ha      { background: rgba(112, 184, 255, 0.15); color: #70b8ff; }
+.method-ai_fallback     { background: rgba(240, 165, 0, 0.15); color: var(--warning); }
+.method-error_fallback  { background: rgba(233, 69, 96, 0.15); color: var(--error); }
+
+/* Metrics table */
+.logs-metrics-select {
+  width: auto;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+}
+
+.logs-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Downloads */
+.logs-downloads {
+  margin-top: 24px;
+}
+
+.logs-downloads h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+}
+
+.logs-download-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.logs-download-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.875rem;
+  flex-wrap: wrap;
+}
+
+.logs-download-row .mono {
+  flex: 1;
+  min-width: 160px;
+}
+
+.logs-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.logs-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 0;
+}
+
+@media (max-width: 768px) {
+  .logs-system-block {
+    max-height: 50vh;
+  }
+
+  .session-summary {
+    gap: 6px;
+  }
+}
+
 /* ── Selection ──────────────────────────────────────── */
 
 ::selection {
