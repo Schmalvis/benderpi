@@ -293,4 +293,77 @@ For completeness, here are other approaches that might better serve BenderPi's n
 
 ---
 
-*This analysis is based on the Hailo SDK and Raspberry Pi AI HAT+ ecosystem as known up to mid-2025. The Hailo software stack and model zoo are actively developed -- check https://hailo.ai/developer-zone/ and https://github.com/hailo-ai/hailo_model_zoo for the latest supported models before making purchase decisions.*
+*Sections 1-7 are based on knowledge current to mid-2025. Section 8 below was added March 2026 with current information.*
+
+---
+
+## 8. AI HAT+ 2 Update (March 2026)
+
+The **Raspberry Pi AI HAT+ 2** was released January 15, 2026 at **$130**. It uses the **Hailo-10H** chip with a fundamentally different value proposition than the original AI HAT+.
+
+### Key Specs
+
+| Spec | AI HAT+ (original) | AI HAT+ 2 |
+|---|---|---|
+| Chip | Hailo-8L / Hailo-8 | Hailo-10H |
+| TOPS | 13 / 26 (INT8) | 40 (INT4) |
+| On-board RAM | None (uses system RAM) | **8GB LPDDR4X** (dedicated, invisible to host) |
+| Price | $26 / $70 | $130 |
+| Power | ~1.5W / ~2.5W | ~2.5W typical, 7.2-7.6W system under LLM load |
+| PCIe | Gen 3 x1 | Gen 3 x1 |
+| Target workload | Computer vision (CNNs) | **Generative AI (LLMs, VLMs)** |
+
+The 8GB dedicated RAM is the headline change. It means models no longer compete with the Pi's system memory, and the board can work even with a 2GB Pi 5.
+
+### LLM Capabilities — Now Real, But Limited
+
+The AI HAT+ 2 can run LLMs up to **1.5B parameters** via a Hailo-ported version of **Ollama** (compatible with Open WebUI). Available models:
+
+| Model | Parameters | Hailo-10H (tok/s) | Pi 5 CPU only (tok/s) |
+|---|---|---|---|
+| DeepSeek R1 1.5B | 1.5B | ~6.5 | ~9-10.6 |
+| Qwen2 1.5B | 1.5B | ~6.7 | ~9+ |
+| Qwen2.5 Coder 1.5B | 1.5B | ~6.7 | ~9+ |
+| Llama 3.2 1B | 1B | ~6.5 | ~9+ |
+
+**The uncomfortable truth:** In independent benchmarks (CNX Software, Hackster), the Hailo-10H is **slower than running the same models on the Pi 5 CPU** via llama.cpp/Ollama. The CPU achieves 9-10+ tokens/s while the NPU gets ~6.5-6.7 tokens/s. One reviewer called it "more like an AI decelerator than an AI accelerator."
+
+**However**, the NPU advantage is power efficiency (7.2W vs 10.6W system draw) and freeing the CPU for other tasks. If Bender needs to generate an LLM response while simultaneously listening for a wake word or processing audio, the NPU offload has value.
+
+### What Changed for BenderPi's Workloads
+
+**Local LLM (replacing Claude API):** The assessment partially changes.
+
+- The AI HAT+ 2 CAN run a 1.5B LLM. At ~6.5 tok/s, a 30-token Bender response takes ~4.5s — comparable to the current API round-trip (2-3s network + processing).
+- But 1.5B models are **very weak** — reviewers found them failing basic reasoning tasks. The Bender persona prompt would consume a large portion of the context, leaving little room for quality responses.
+- The CPU runs the same models faster. So the only reason to use the NPU is CPU offload (keeping the CPU free for wake word + STT).
+- **Verdict: Marginal.** A 1.5B model is likely too weak for Bender-quality responses. Claude Haiku remains significantly better at staying in character and answering questions.
+
+**Speech-to-Text (Whisper):** Partially promising.
+
+- Hailo has **demonstrated Whisper running on the Hailo-8** (26 TOPS) accelerator, with the model fitting in on-board memory. The Hailo-10H's 8GB RAM should easily accommodate any Whisper model.
+- However, this is **demo-only** — Hailo has not released the pipeline publicly as of March 2026. The demo showed batch processing (not streaming) and "completes in seconds."
+- If/when Hailo releases the Whisper pipeline, this could enable running `whisper-small.en` or `whisper-medium.en` on the NPU while keeping the CPU free — a genuine improvement for BenderPi.
+- **Verdict: Watch this space.** No actionable pipeline available yet, but this is the most promising future use case.
+
+**TTS (Piper/VITS):** No change. No TTS models in the Hailo model zoo. The persistent Piper subprocess on CPU remains the right approach.
+
+**Intent classification:** No change. Still overkill for a classification task that runs in milliseconds on CPU.
+
+**Computer vision:** Same performance as the original AI HAT+. No improvement. Still the right choice if adding a camera.
+
+### Revised Recommendation
+
+| Question | Original Answer | Updated Answer |
+|---|---|---|
+| Buy AI HAT+ 2 for BenderPi? | N/A | **Not yet.** At $130, the LLM performance doesn't justify the cost — CPU is faster for the same models, and 1.5B models are too weak for quality Bender responses. |
+| When to reconsider? | Camera features or ecosystem maturity | **When Hailo releases a public Whisper pipeline.** Running Whisper-medium on the NPU while the CPU handles everything else would be a genuine win. Also if 3B+ models become supported. |
+| Better investment? | Software improvements ($0) | Still true. Persistent Piper, better Whisper model on CPU, and the observability improvements in this design spec offer far more value. |
+| If buying anyway? | Get the 13 TOPS ($26) | For BenderPi, the **original AI HAT+ 26 TOPS ($70)** is better value IF Hailo's Whisper demo becomes public — it runs on Hailo-8, costs half as much, and doesn't need the LLM RAM. The AI HAT+ 2 only makes sense if you specifically want local LLM capability. |
+
+### Sources
+
+- [Raspberry Pi AI HAT+ 2 product page](https://www.raspberrypi.com/products/ai-hat-plus-2/)
+- [CNX Software review with benchmarks](https://www.cnx-software.com/2026/01/20/raspberry-pi-ai-hat-2-review-a-40-tops-ai-accelerator-tested-with-computer-vision-llm-and-vlm-workloads/)
+- [Hackster hands-on review](https://www.hackster.io/news/gen-ai-on-your-raspberry-pi-a-hands-on-review-of-the-raspberry-pi-ai-hat-2-3c829a8894dd)
+- [Hailo Whisper demo on AI HAT+](https://www.hackster.io/news/hailo-demonstrates-accelerated-llm-based-speech-recognition-on-the-raspberry-pi-ai-hat-63eec0214603)
