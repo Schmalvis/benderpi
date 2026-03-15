@@ -1,31 +1,39 @@
-# Core dependencies for BenderPi
+# BenderPi — Python dependencies
+#
 # Install into a venv created with --system-site-packages:
 #   python3 -m venv --system-site-packages venv
 #   venv/bin/pip install -r requirements.txt
+#
+# --system-site-packages is required for hardware libraries (lgpio,
+# adafruit-blinka, neopixel) that are installed system-wide via apt.
 
-# Wake word detection
+# ── Wake word ───────────────────────────────────────────────────────────────
 pvporcupine==4.0.2
+pvrecorder==1.2.7
 
-# Speech-to-text
+# ── Speech-to-text ──────────────────────────────────────────────────────────
 faster-whisper==1.2.1
 webrtcvad-wheels==2.0.14
 PyAudio==0.2.14
 
-# TTS (Piper is a standalone binary — see README for download instructions)
-# No Python package needed for inference
+# ── Audio processing ────────────────────────────────────────────────────────
+numpy==2.4.3
 
-# AI fallback
+# ── AI fallback ─────────────────────────────────────────────────────────────
 anthropic==0.84.0
 
-# Home Assistant integration
-# Uses stdlib urllib — no extra packages needed
+# ── LED hardware (Raspberry Pi 5 / SPI NeoPixels) ───────────────────────────
+# Requires lgpio system package: sudo apt install python3-lgpio
+Adafruit-Blinka-Raspberry-Pi5-Neopixel==1.0.0rc2
+adafruit-circuitpython-neopixel-spi==1.0.14
 
-# Utilities
-python-dotenv==1.2.2
-
-# Testing (dev only — not needed on Pi)
-pytest==8.3.5
-
-# Web UI
+# ── Web UI ───────────────────────────────────────────────────────────────────
 fastapi==0.115.0
 uvicorn==0.32.0
+
+# ── Hub (asset download via setup.sh) ───────────────────────────────────────
+huggingface_hub==1.7.1
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv==1.2.2
+requests==2.32.3

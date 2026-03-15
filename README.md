@@ -1,6 +1,6 @@
-# BenderPi — Bender Voice Assistant
+# BenderPi
 
-A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodriguez from Futurama. Responds to "Hey Bender", speaks in Bender's voice using a fine-tuned Piper TTS model, and can hold a full conversation using a hybrid offline/AI response system.
+A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodriguez from Futurama. Say "Hey Bender" — he wakes up, listens, and responds in his own voice using a fine-tuned TTS model and a hybrid offline/AI conversation system.
 
 ---
 
@@ -8,102 +8,102 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 
 | Component | Detail |
 |---|---|
-| Device | Raspberry Pi 5 (BenderPi, 192.168.68.132) |
-| Audio HAT | Adafruit Voice Bonnet (WM8960 codec) — I2S, 2x MEMS mics, 1W outputs |
-| Speaker | 3W passive, connected to Voice Bonnet |
-| LEDs | 12x WS2812B addressable RGB, GPIO 10 (SPI MOSI) |
+| Device | Raspberry Pi 5 |
+| Audio HAT | Seeed 2-Mic Pi HAT (WM8960 codec) — I2S, 2x MEMS mics, speaker output |
+| Speaker | 3W passive |
+| LEDs | 45× WS2812B addressable RGB, SPI MOSI (GPIO 10) |
 | ALSA card | Card 2 (`seeed-2mic-voicecard`) |
 
 ---
 
-## Operating Modes
+## Prerequisites
 
-Three modes, switchable at runtime:
+Before running `setup.sh`, these must be in place on a fresh Pi OS (64-bit, aarch64):
 
-| Mode | Service | Description |
-|---|---|---|
-| `clips` | `bender-wakeword` | Plays original Bender WAV clips on wake word |
-| `tts` | `bender-tts` | Plays random TTS-generated lines on wake word |
-| `converse` | `bender-converse` | Full conversation: STT → intent → response |
+### 1. seeed-voicecard driver
+
+The WM8960 codec requires a kernel driver installed via DKMS:
 
 ```bash
-bash scripts/switch_mode.sh clips
-bash scripts/switch_mode.sh tts
-bash scripts/switch_mode.sh converse
-bash scripts/switch_mode.sh status
+git clone https://github.com/HinTak/seeed-voicecard
+cd seeed-voicecard
+sudo ./install.sh
+sudo reboot
 ```
+
+After reboot, verify with `aplay -l` — card 2 should be `seeed-2mic-voicecard`.
+
+Persist volume after install:
+```bash
+amixer -c 2 sset Speaker 85%
+sudo alsactl store
+sudo cp /var/lib/alsa/asound.state /etc/voicecard/wm8960_asound.state
+```
+
+### 2. Enable SPI (for LEDs)
+
+Add to `/boot/firmware/config.txt`:
+```
+dtparam=spi=on
+```
+Then reboot. Verify: `ls /dev/spidev*` should return `/dev/spidev0.0`.
+
+### 3. API keys
+
+You'll need the following before setup:
+
+| Key | Where to get it |
+|---|---|
+| **Picovoice access key** | [console.picovoice.ai](https://console.picovoice.ai) — free tier available |
+| **Anthropic API key** | [console.anthropic.com](https://console.anthropic.com) |
+| **Home Assistant long-lived token** | HA → Profile → Long-Lived Access Tokens |
+| **Hugging Face token** | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — needed to download voice model and audio assets |
 
 ---
 
-## Quick Setup
-
-### 1. Clone and configure
+## Setup
 
 ```bash
 git clone git@github.com:Schmalvis/benderpi.git
 cd benderpi
-cp .env.example .env
-# Fill in all values in .env
+chmod +x setup.sh
+./setup.sh
 ```
 
-### 2. Install Python dependencies
+`setup.sh` handles everything:
+- System package installation
+- Python venv creation (`--system-site-packages` for hardware libs)
+- Piper TTS binary download
+- Voice model + audio clip download from Hugging Face Hub
+- `.env` configuration (interactive prompts)
+- TTS response library pre-build
+- systemd service installation and enablement
+- sudoers configuration for web UI
 
+Once complete, start the services:
 ```bash
-python3 -m venv --system-site-packages venv
-venv/bin/pip install -r requirements.txt
+sudo systemctl start bender-converse
+sudo systemctl start bender-web
 ```
 
-> `--system-site-packages` is required for hardware libraries (`lgpio`, `adafruit-blinka`, `neopixel`) installed system-wide via apt.
-
-### 3. Download the Piper inference binary (aarch64)
-
-```bash
-mkdir -p piper
-cd piper
-curl -L https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz | tar xz
-cd ..
-```
-
-### 4. Download the Bender voice model
-
-From [Schmalvis/bender-tts-model](https://huggingface.co/Schmalvis/bender-tts-model) on Hugging Face:
-
-```bash
-mkdir -p models
-cd models
-wget https://huggingface.co/Schmalvis/bender-tts-model/resolve/main/bender.onnx
-wget https://huggingface.co/Schmalvis/bender-tts-model/resolve/main/bender.onnx.json
-cd ..
-```
-
-### 5. Pre-generate static TTS response library
-
-```bash
-python3 scripts/prebuild_responses.py
-```
-
-This creates `speech/responses/` with all pre-generated WAV files and `speech/responses/index.json`.
-
-### 6. Install systemd services
-
-```bash
-sudo cp systemd/*.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable bender-wakeword  # or bender-converse for conversation mode
-```
+Web UI: `http://<pi-ip>:8080`
 
 ---
 
-## Environment Variables (`.env`)
+## Environment Variables
+
+Stored in `.env` (created by `setup.sh` from `.env.example`):
 
 | Variable | Required | Description |
 |---|---|---|
-| `PORCUPINE_ACCESS_KEY` | Yes | Picovoice access key for wake word detection |
-| `ANTHROPIC_API_KEY` | Converse mode only | Claude API key for AI fallback responses |
-| `HA_TOKEN` | Converse mode only | Home Assistant long-lived access token |
-| `HA_URL` | Converse mode only | HA base URL (default: `http://192.168.68.125:8123`) |
-| `HA_WEATHER_ENTITY` | Optional | HA weather entity ID (default: `weather.forecast_home`) |
+| `PORCUPINE_ACCESS_KEY` | Yes | Picovoice wake word key |
+| `ANTHROPIC_API_KEY` | Yes | Claude API key for AI fallback |
+| `HA_TOKEN` | Yes | Home Assistant long-lived access token |
+| `HA_URL` | Yes | HA base URL (e.g. `http://homeassistant.local:8123`) |
+| `HA_WEATHER_ENTITY` | Optional | HA weather entity (default: `weather.forecast_home`) |
 | `BENDER_AI_MODEL` | Optional | Claude model ID (default: `claude-haiku-4-5-20251001`) |
+| `BENDER_WEB_PIN` | Yes | Web UI access PIN |
+| `BENDER_WEB_PORT` | Optional | Web UI port (default: `8080`) |
 
 ---
 
@@ -111,244 +111,200 @@ sudo systemctl enable bender-wakeword  # or bender-converse for conversation mod
 
 ```
 benderpi/
-├── .env                          — local secrets (not committed)
-├── .env.example                  — template for .env
+├── setup.sh                      — one-shot installer
+├── .env.example                  — environment variable template
 ├── requirements.txt              — Python dependencies
-├── BENDER_CONVERSATION_PLAN.md   — full architecture design doc
 │
 ├── scripts/
-│   ├── wake.py                   — clip mode: wake word + random Bender clip
-│   ├── wake_tts.py               — TTS mode: wake word + random TTS line
-│   ├── wake_converse.py          — converse mode: full conversation loop
+│   ├── wake_converse.py          — main conversation loop (wake → STT → intent → response)
 │   ├── stt.py                    — speech-to-text (faster-whisper + webrtcvad)
 │   ├── intent.py                 — intent classifier (keyword/regex rules)
-│   ├── tts_generate.py           — Piper TTS wrapper (returns WAV path)
+│   ├── tts_generate.py           — Piper TTS wrapper
 │   ├── ai_response.py            — Claude API fallback with Bender persona
-│   ├── conversation_log.py       — JSON-Lines session/turn logger
+│   ├── briefings.py              — cached weather + news WAV generation
+│   ├── audio.py                  — WAV playback with LED amplitude sync
+│   ├── leds.py                   — WS2812B LED strip control
+│   ├── config.py                 — config loader (bender_config.json)
+│   ├── logger.py                 — structured JSON-Lines logger
+│   ├── metrics.py                — performance metrics
+│   ├── prebuild_responses.py     — generates static TTS response library
 │   ├── review_log.py             — log analysis + AI promotion suggestions
-│   ├── prebuild_responses.py     — generates static TTS response WAV library
-│   ├── switch_mode.sh            — switch between clips/tts/converse modes
-│   ├── audio.py                  — WAV playback with real-time LED sync
-│   ├── leds.py                   — WS2812B LED control
-│   ├── leds_test.py              — standalone LED test
-│   └── handlers/
-│       ├── weather.py            — HA weather fetch → Bender response
-│       └── ha_status.py          — parse HA confirmation → Bender reply
+│   ├── git_pull.sh               — auto-pull script (used by systemd timer)
+│   ├── handlers/
+│   │   ├── ha_control.py         — Home Assistant entity control
+│   │   └── weather.py            — HA weather fetch → Bender response text
+│   └── web/
+│       ├── app.py                — FastAPI web UI
+│       ├── auth.py               — PIN authentication
+│       └── static/               — web UI frontend
+│
+├── systemd/
+│   ├── bender-converse.service   — main conversation service
+│   ├── bender-web.service        — web UI service
+│   ├── bender-git-pull.service   — auto-pull from GitHub
+│   └── bender-git-pull.timer     — fires every 5 minutes
 │
 ├── speech/
 │   ├── metadata.csv              — Bender clip transcripts (LJSpeech format)
-│   ├── greetings.txt             — clip filenames for random greeting selection
-│   ├── tts_lines.txt             — TTS mode response lines
-│   ├── wav/                      — original Bender WAV clips (not committed)
+│   ├── greetings.txt             — filenames for random greeting selection
+│   ├── wav/                      — original Bender audio clips (gitignored)
 │   └── responses/
 │       ├── index.json            — intent → WAV path mapping
-│       ├── greeting/             — (uses real clips from speech/wav/)
-│       ├── affirmation/          — (uses real clips from speech/wav/)
-│       ├── dismissal/            — (uses real clips from speech/wav/)
-│       ├── joke/                 — pre-generated TTS jokes (rebuilt by prebuild)
-│       ├── personal/             — pre-generated personal Q&A (rebuilt by prebuild)
-│       ├── ha_confirm/           — generic HA confirmation fallbacks
-│       └── promoted/             — AI responses promoted to static (see below)
+│       ├── thinking/             — played while AI generates response
+│       ├── joke/                 — pre-generated TTS jokes
+│       ├── personal/             — pre-generated personal Q&A
+│       ├── ha_confirm/           — HA confirmation fallbacks
+│       └── daily/                — cached weather + news briefings (gitignored)
 │
-├── models/                       — ONNX voice model (not committed, ~61MB)
-├── piper/                        — inference binary (not committed, ~51MB)
-└── logs/                         — conversation logs (not committed, local only)
+├── models/                       — ONNX voice model (gitignored, ~61MB)
+├── piper/                        — Piper inference binary (gitignored, ~51MB)
+└── logs/                         — conversation logs (gitignored)
 ```
 
 ---
 
-## Conversation System (Converse Mode)
+## How It Works
 
-### Flow
+### Conversation flow
 
 ```
-[Hey Bender detected]
+"Hey Bender" detected
         ↓
-Play greeting clip (real Bender WAV)
+Play greeting clip (original Bender audio)
         ↓
 Listen → VAD silence detection → faster-whisper transcription
         ↓
 Intent classification (keyword/regex, ~0ms)
         ↓
-Response priority chain:
-  1. Real Bender clip       → speech/wav/
-  2. Pre-generated TTS      → speech/responses/<category>/
-  3. Promoted TTS           → speech/responses/promoted/
-  4. Dynamic handler        → briefings.py (weather/news) / ha_control.py (HA devices)
-  5. AI fallback (Claude)   → tts_generate.py
+Response priority:
+  1. Original Bender clip       → speech/wav/
+  2. Pre-generated TTS          → speech/responses/<category>/
+  3. Dynamic handler            → briefings.py / ha_control.py
+  4. AI fallback (Claude)       → tts_generate.py → Piper
         ↓
-Play response + LED sync
+Play response + LED amplitude sync
         ↓
 Loop (8s silence timeout ends session)
 ```
 
-### Intent Categories
+### Intents
 
-| Intent | Triggers | Response source |
+| Intent | Example phrases | Response source |
 |---|---|---|
-| GREETING | "hello", "hey", "how are you" | Real Bender clips |
-| AFFIRMATION | "thanks", "great", "nice one" | Real Bender clips |
-| DISMISSAL | "bye", "goodbye", "stop" | Real Bender clips — ends session |
-| JOKE | "tell me a joke", "say something funny" | Real clips + pre-gen TTS |
-| PERSONAL | "how old are you", "what do you eat" etc. | Pre-gen TTS (11 topics) |
-| WEATHER | "weather", "is it raining", "forecast" | Cached briefing WAV (30min TTL) |
-| NEWS | "news", "headlines", "what's happening" | Cached BBC RSS briefing (2h TTL) |
-| HA_CONTROL | "lights on", "turn off radiator", "set temperature to 20" | Dynamic HA entity control |
-| PROMOTED | (custom patterns, see below) | Promoted TTS clips |
-| UNKNOWN | Everything else | Claude API → TTS |
+| GREETING | "hello", "how are you" | Original clips |
+| AFFIRMATION | "thanks", "nice one" | Original clips |
+| DISMISSAL | "bye", "stop" | Original clips — ends session |
+| JOKE | "tell me a joke" | Original clips + pre-gen TTS |
+| PERSONAL | "how old are you", "what do you eat" | Pre-gen TTS |
+| WEATHER | "what's the weather", "is it raining" | Cached HA briefing (30min TTL) |
+| NEWS | "headlines", "what's happening" | Cached BBC RSS briefing (2h TTL) |
+| HA_CONTROL | "lights on", "set temp to 20" | Live HA entity control |
+| UNKNOWN | Everything else | Claude API → Piper TTS |
 
----
+### Weather & News
 
-## Weather & News Briefings
+Both are pre-generated as WAVs and cached — no live generation on each request.
 
-Weather and news are pre-generated as WAV files and cached — Bender reads from cache rather than generating on demand.
-
-| Briefing | Source | Cache TTL |
+| Briefing | Source | TTL |
 |---|---|---|
 | Weather | Home Assistant `HA_WEATHER_ENTITY` | 30 minutes |
-| News | BBC RSS feeds (UK + England) | 2 hours |
+| News | BBC RSS (UK + England) | 2 hours |
 
-Both are refreshed at service start and lazily when the TTL expires. Cache lives in `speech/responses/daily/` (gitignored). If generation fails, the previous cached WAV is used as fallback.
-
-To force a refresh: `sudo systemctl restart bender-converse`
+Refreshed at service start and lazily on TTL expiry. Force refresh: `sudo systemctl restart bender-converse`
 
 ---
 
-## Adding New Responses
+## Web UI
 
-### Adding to existing categories
+Available at `http://<pi-ip>:8080` — PIN protected.
 
-Edit `scripts/prebuild_responses.py` and add to the relevant list/dict at the top:
+- **Dashboard** — service status, uptime, conversation metrics
+- **Puppet mode** — type text for Bender to speak, or play any audio clip
+- **Config** — speech rate, AI model, VAD sensitivity, silence timeout
+- **Logs** — conversation history, system logs, metrics
 
-```python
-# Add a new joke
-JOKE_RESPONSES = [
-    ...
-    "Your new joke text here.",
-]
-
-# Add a new personal question
-PERSONAL_RESPONSES = {
-    ...
-    "new_topic": "Your Bender response here.",
-}
-```
-
-Then regenerate:
-
-```bash
-python3 scripts/prebuild_responses.py
-```
-
-The index and WAV files update automatically. No service restart needed.
-
-### Promoting frequent AI responses to static (reducing API usage)
-
-When `review_log.py` identifies queries hitting the AI 3+ times, promote them:
-
-1. Add an entry to `PROMOTED_RESPONSES` in `scripts/prebuild_responses.py`:
-
-```python
-PROMOTED_RESPONSES = [
-    {
-        "slug":    "meaning_of_life",              # filename-safe ID
-        "pattern": r"meaning of life",             # regex matched against user input
-        "text":    "Forty. No wait — it's bending. Everything is bending.",
-    },
-]
-```
-
-2. Run:
-
-```bash
-python3 scripts/prebuild_responses.py
-```
-
-The WAV is generated, `index.json` updated, and the pattern is checked before any AI call next session.
-
----
-
-## Conversation Logging
-
-Every session and turn is logged to `logs/YYYY-MM-DD.jsonl` (JSON Lines).
-
-Each turn records: timestamp, session ID, turn number, user text, intent, sub-key, response method, response text, and model (if AI was called).
-
-### Review logs
-
-```bash
-python3 scripts/review_log.py            # last 7 days
-python3 scripts/review_log.py --days 30  # last 30 days
-python3 scripts/review_log.py --all      # all time
-```
-
-Output includes:
-- Local vs API usage breakdown
-- Response method breakdown (real clip / pre-gen / handler / AI)
-- Intent frequency
-- Most common AI fallback queries, with `*** PROMOTE?` flag at ≥3 hits
-
----
-
-## Voice Model
-
-The Bender voice is a **Piper VITS** model fine-tuned from `en_US-lessac-medium` on 82 original Bender speech clips (cleaned, demucs-separated, resampled to 22050Hz).
-
-Training: 5000 epochs, batch size 16, T4 GPU (Hugging Face Jobs).  
-Model: [Schmalvis/bender-tts-model](https://huggingface.co/Schmalvis/bender-tts-model)  
-Dataset: [Schmalvis/bender-tts-dataset](https://huggingface.co/datasets/Schmalvis/bender-tts-dataset)
+Puppet speak/clip temporarily stops `bender-converse` to release the audio device, then restarts it.
 
 ---
 
 ## Service Management
 
 ```bash
-# Switch modes
-bash scripts/switch_mode.sh clips
-bash scripts/switch_mode.sh tts
-bash scripts/switch_mode.sh converse
-bash scripts/switch_mode.sh status
-
-# Manage services directly
+# Services
 sudo systemctl start|stop|restart bender-converse
-journalctl -u bender-converse -f       # live logs
+sudo systemctl start|stop|restart bender-web
+journalctl -u bender-converse -f    # live logs
 
-# Rebuild response library (after editing prebuild_responses.py)
-python3 scripts/prebuild_responses.py
+# Rebuild TTS response library (after editing prebuild_responses.py)
+venv/bin/python3 scripts/prebuild_responses.py
 
 # Review conversation logs
-python3 scripts/review_log.py
+venv/bin/python3 scripts/review_log.py
+venv/bin/python3 scripts/review_log.py --days 30
 ```
 
 ---
 
-## Audio Setup
+## Adding Responses
 
-- Driver: `seeed-voicecard` (HinTak fork, v6.12) via DKMS
-- ALSA default: card 2 (WM8960)
-- Both playback and capture on card 2, device 0
+Edit `scripts/prebuild_responses.py` and add to the relevant section:
 
-### Persist volume across reboots
+```python
+# New joke
+JOKE_RESPONSES = [
+    ...
+    "Your new Bender line here.",
+]
 
+# New personal Q&A topic
+PERSONAL_RESPONSES = {
+    ...
+    "new_topic": "Bender's answer here.",
+}
+```
+
+Then rebuild:
 ```bash
-amixer -c 2 sset Speaker 85%
-sudo alsactl store
-sudo cp /var/lib/alsa/asound.state /etc/voicecard/wm8960_asound.state
+venv/bin/python3 scripts/prebuild_responses.py
 ```
 
+### Promoting frequent AI responses to static
+
+When `review_log.py` flags a query with `*** PROMOTE?`, add it to `PROMOTED_RESPONSES` in `prebuild_responses.py`:
+
+```python
+PROMOTED_RESPONSES = [
+    {
+        "slug":    "meaning_of_life",
+        "pattern": r"meaning of life",
+        "text":    "Forty. No wait — it's bending. Everything is bending.",
+    },
+]
+```
+
+Rebuild, and it'll be served from cache instead of hitting the Claude API.
+
 ---
 
-## LED Behaviour
+## Voice Model
 
-12x WS2812B on SPI (GPIO 10). During audio playback, LEDs flash with brightness proportional to audio amplitude — amplitude-reactive in real time.
+The Bender voice is a Piper VITS model fine-tuned from `en_US-lessac-medium` on original Bender speech clips (cleaned, separated, resampled to 22050Hz). Training: 5000 epochs on a T4 GPU via Hugging Face Jobs.
 
-SPI must be enabled: `dtparam=spi=on` in `/boot/firmware/config.txt`
+To train your own:
+- See `share/bender-piper-training.ipynb` (Google Colab notebook)
+- Dataset format: LJSpeech (WAV + `metadata.csv`)
 
 ---
 
-## History
+## Auto-Deploy
 
-- Originally fitted with Pimoroni Audio AMP SHIM (MAX98357A) — replaced with Adafruit Voice Bonnet for microphone input
-- GPIO data line moved from GPIO 23 → GPIO 10 (SPI MOSI) for Pi 5 compatibility
-- TTS voice model trained March 2026 via HF Jobs (Docker, pytorch/pytorch image)
-- Conversational mode added March 2026 with hybrid offline/AI response system
+A systemd timer (`bender-git-pull.timer`) polls GitHub every 5 minutes. If the branch has advanced, it pulls and restarts `bender-converse` automatically. Push to `main` → live on the Pi within 5 minutes.
+
+---
+
+## Notes for Contributors
+
+- **Audio device**: the WM8960 is a single-rate codec. `bender-converse` holds it at 16 kHz (porcupine mic). The web UI stops `bender-converse` before any audio playback and restarts it after. Keep this constraint in mind when modifying audio handling.
+- **PyAudio**: a single shared `pyaudio.PyAudio()` instance is created at module load in `audio.py`. Do not create additional instances — concurrent init causes PortAudio assertion failures.
+- **venv**: always use `--system-site-packages` — hardware libs (lgpio, adafruit-blinka) are installed system-wide and won't be found otherwise.
+- **Port variables**: host ports in service files must come from environment variables, never hardcoded.
