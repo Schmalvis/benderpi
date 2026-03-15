@@ -15,9 +15,11 @@ import tempfile
 import collections
 import time
 
+import numpy as np
 import webrtcvad
 from faster_whisper import WhisperModel
 
+import audio as audio_mod
 from logger import get_logger
 from metrics import metrics
 
@@ -40,6 +42,13 @@ AUDIO_DEVICE   = None     # None = system default
 
 _model = None  # lazy-loaded
 
+WHISPER_HALLUCINATIONS = {
+    "thank you", "thanks for watching", "subscribe",
+    "like and subscribe", "thanks for listening",
+    "please subscribe", "thank you for watching",
+    "you", "the", "i", "a", "so", "okay",
+}
+
 
 def _load_model():
     global _model
@@ -54,10 +63,10 @@ def _load_model():
 
 def _record_utterance() -> bytes:
     """Record from mic until ~1.5s silence or hard cap. Returns raw PCM bytes."""
-    import pyaudio  # imported here so stt is still importable without pyaudio
+    import pyaudio  # for pyaudio.paInt16 constant
 
     vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-    pa = pyaudio.PyAudio()
+    pa = audio_mod.get_pa()  # shared instance — DO NOT terminate
 
     stream = pa.open(
         format=pyaudio.paInt16,
@@ -95,7 +104,7 @@ def _record_utterance() -> bytes:
     finally:
         stream.stop_stream()
         stream.close()
-        pa.terminate()
+        # DO NOT call pa.terminate() — shared instance managed by audio.py
 
     return b"".join(frames)
 
@@ -137,12 +146,18 @@ def listen_and_transcribe() -> str:
     if len(pcm) < FRAME_BYTES * 3:
         metrics.count("stt_empty", pcm_bytes=len(pcm))
         return ""
-    wav_path = _pcm_to_wav(pcm)
-    try:
-        with metrics.timer("stt_transcribe", model=WHISPER_MODEL):
-            text = transcribe(wav_path)
-    finally:
-        os.unlink(wav_path)
+    # Direct PCM → numpy → Whisper (no temp file)
+    audio_array = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    model = _load_model()
+    with metrics.timer("stt_transcribe", model=WHISPER_MODEL):
+        segments, _ = model.transcribe(audio_array, language="en", beam_size=1)
+        text = " ".join(s.text for s in segments).strip()
+    # Hallucination filter
+    cleaned = text.lower().strip().rstrip(".!?,")
+    if cleaned in WHISPER_HALLUCINATIONS:
+        log.warning("Whisper hallucination filtered: %r (pcm_bytes=%d)", text, len(pcm))
+        metrics.count("stt_hallucination", text=text, pcm_bytes=len(pcm))
+        return ""
     return text
 
 

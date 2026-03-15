@@ -20,6 +20,7 @@ import numpy as np
 import pyaudio
 
 import leds
+from config import cfg
 from logger import get_logger
 from metrics import metrics
 
@@ -34,8 +35,10 @@ OUTPUT_DEVICE = 0       # hw:2,0 — seeed-2mic-voicecard (WM8960)
 RMS_FLOOR    = 200
 RMS_CEILING  = 8000
 
-SILENCE_PRE  = 0.05    # 50ms silence before speech (DAC warm-up)
-SILENCE_POST = 0.20    # 200ms silence after speech (DAC settle)
+SILENCE_PRE  = cfg.silence_pre    # 0.02 from bender_config.json
+SILENCE_POST = cfg.silence_post   # 0.08 from bender_config.json
+
+log.debug("Audio config: silence_pre=%.3fs, silence_post=%.3fs", SILENCE_PRE, SILENCE_POST)
 
 # Single shared PyAudio instance — never re-created to avoid PortAudio crashes
 _pa    = pyaudio.PyAudio()
@@ -135,4 +138,42 @@ def play(wav_path: str):
 
             _stream.write(_silence(SILENCE_POST))
 
+    leds.all_off()
+
+
+def play_oneshot(wav_path: str):
+    """Open stream, play clip, close stream. For use outside a session.
+    Thread-safe — blocks behind _lock if a session is active.
+    """
+    with _lock:
+        was_open = _stream is not None
+        if was_open:
+            try:
+                was_open = _stream.is_active()
+            except Exception:
+                was_open = False
+
+        if not was_open:
+            stream = _pa.open(
+                format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
+                output=True, output_device_index=OUTPUT_DEVICE,
+                frames_per_buffer=CHUNK,
+            )
+        else:
+            stream = _stream
+
+        try:
+            stream.write(_silence(SILENCE_PRE))
+            with wave.open(wav_path, 'rb') as wf:
+                sw = wf.getsampwidth()
+                data = wf.readframes(CHUNK)
+                while data:
+                    stream.write(data)
+                    leds.set_level(rms_to_ratio(rms(data, sw)))
+                    data = wf.readframes(CHUNK)
+            stream.write(_silence(SILENCE_POST))
+        finally:
+            if not was_open:
+                stream.stop_stream()
+                stream.close()
     leds.all_off()
