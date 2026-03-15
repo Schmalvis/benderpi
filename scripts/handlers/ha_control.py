@@ -232,7 +232,7 @@ def _ha_call(domain: str, service: str, entity_id: str,
 
 def _parse_temperature(text: str) -> float | None:
     """Extract a numeric temperature from user text."""
-    m = re.search(r"(\d{1,2})(?:\.\d+)?\s*(?:degrees?|deg|°)?", text.lower())
+    m = re.search(r"(\d{1,2})(?:\.\d+)?\s*(?:degrees?|deg|degrees)?", text.lower())
     return float(m.group(1)) if m else None
 
 
@@ -268,61 +268,87 @@ FAILED_RESPONSES = [
 # Public API
 # ---------------------------------------------------------------------------
 
-def control(user_text: str) -> str:
-    """Parse user_text, call HA, return path to a Bender TTS response WAV."""
-    action    = _parse_action(user_text)
+def execute(user_text: str) -> dict:
+    """Parse user_text, call HA, return structured result.
+    Returns: {
+        "action": "on" | "off" | "set_temp" | None,
+        "entities": [{"entity_id": str, "friendly_name": str, "success": bool}],
+        "room_display": str,
+        "temperature": float | None,
+        "error": None | "no_room" | "no_match" | "no_action" | "ha_failed",
+    }
+    """
+    action = _parse_action(user_text)
     room_term = _parse_room_term(user_text)
 
     if not room_term:
-        return tts_generate.speak(random.choice(UNKNOWN_ROOM_RESPONSES))
+        return {"action": action, "entities": [], "room_display": "",
+                "temperature": None, "error": "no_room"}
 
     matches = _find_entities(room_term)
-
     if not matches:
-        text = f"No idea what {room_term!r} is. Check I have access to it in HA, or try a different name."
-        return tts_generate.speak(text)
+        return {"action": action, "entities": [], "room_display": room_term,
+                "temperature": None, "error": "no_match"}
 
-    if action is None:
-        text = "On or off? Even I need a bit more to go on."
-        return tts_generate.speak(text)
-
-    # Check for temperature set request first
     target_temp = _parse_temperature(user_text)
     if target_temp and any(e["domain"] == "climate" for e in matches):
-        success = False
+        results = []
         for e in [x for x in matches if x["domain"] == "climate"]:
-            log.info("HA: climate.set_temperature → %s @ %s°", e['entity_id'], target_temp)
-            if _ha_call("climate", "set_temperature", e["entity_id"], {"temperature": target_temp}):
-                success = True
-        if success:
-            room_name = _normalise(matches[0]["friendly_name"]).title()
-            text = f"Temperature set to {int(target_temp)} degrees in {room_name}. Don't blame me if you melt."
-            return tts_generate.speak(text)
-        return tts_generate.speak(random.choice(FAILED_RESPONSES))
+            log.info("HA: climate.set_temperature -> %s @ %s deg", e["entity_id"], target_temp)
+            success = _ha_call("climate", "set_temperature", e["entity_id"], {"temperature": target_temp})
+            results.append({"entity_id": e["entity_id"], "friendly_name": e["friendly_name"], "success": success})
+        room_name = _normalise(matches[0]["friendly_name"]).title()
+        return {"action": "set_temp", "entities": results, "room_display": room_name,
+                "temperature": target_temp, "error": None if any(r["success"] for r in results) else "ha_failed"}
 
-    service = f"turn_{action}"
-    success = False
+    if action is None:
+        return {"action": None, "entities": [], "room_display": room_term,
+                "temperature": None, "error": "no_action"}
+
+    results = []
     for e in matches:
         domain = e["domain"]
         if domain == "climate":
-            # climate uses set_hvac_mode, not turn_on/off
             hvac_mode = "heat" if action == "on" else "off"
-            svc = "set_hvac_mode"
-            log.info("HA: climate.set_hvac_mode(%s) → %s", hvac_mode, e['entity_id'])
-            if _ha_call(domain, svc, e["entity_id"], {"hvac_mode": hvac_mode}):
-                success = True
+            log.info("HA: climate.set_hvac_mode(%s) -> %s", hvac_mode, e["entity_id"])
+            success = _ha_call(domain, "set_hvac_mode", e["entity_id"], {"hvac_mode": hvac_mode})
         else:
-            log.info("HA: %s.%s → %s", domain, service, e['entity_id'])
-            if _ha_call(domain, service, e["entity_id"]):
-                success = True
+            service = f"turn_{action}"
+            log.info("HA: %s.%s -> %s", domain, service, e["entity_id"])
+            success = _ha_call(domain, service, e["entity_id"])
+        results.append({"entity_id": e["entity_id"], "friendly_name": e["friendly_name"], "success": success})
 
-    if not success:
-        return tts_generate.speak(random.choice(FAILED_RESPONSES))
+    names = list({e["friendly_name"] for e in matches})
+    display = _normalise(names[0]).title() if names else room_term.title()
+    return {"action": action, "entities": results, "room_display": display,
+            "temperature": None, "error": None if any(r["success"] for r in results) else "ha_failed"}
 
-    names       = list({e["friendly_name"] for e in matches})
-    display     = _normalise(names[0]).title() if names else room_term.title()
-    templates   = ON_RESPONSES if action == "on" else OFF_RESPONSES
-    return tts_generate.speak(random.choice(templates).format(room=display))
+
+def _result_to_speech(result: dict) -> str:
+    """Convert execute() result dict to Bender-style speech text."""
+    error = result.get("error")
+    if error == "no_room":
+        return random.choice(UNKNOWN_ROOM_RESPONSES)
+    if error == "no_match":
+        return f"No idea what {result['room_display']!r} is. Check I have access to it in HA."
+    if error == "no_action":
+        return "On or off? Even I need a bit more to go on."
+    if error == "ha_failed":
+        return random.choice(FAILED_RESPONSES)
+
+    action = result["action"]
+    room = result["room_display"]
+    if action == "set_temp":
+        return f"Temperature set to {int(result['temperature'])} degrees in {room}. Don't blame me if you melt."
+    templates = ON_RESPONSES if action == "on" else OFF_RESPONSES
+    return random.choice(templates).format(room=room)
+
+
+def control(user_text: str) -> str:
+    """Execute + wrap result in Bender TTS. Returns temp WAV path."""
+    result = execute(user_text)
+    text = _result_to_speech(result)
+    return tts_generate.speak(text)
 
 
 # ---------------------------------------------------------------------------
