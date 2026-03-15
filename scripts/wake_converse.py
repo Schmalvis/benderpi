@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-Bender conversational mode -- full conversation loop with logging.
+Bender conversational mode -- thin orchestrator.
 
 Flow:
   1. Wait for "Hey Bender" wake word
   2. Play greeting clip
-  3. Listen -> STT -> intent -> respond
-     Priority: real_clip -> pre_gen_tts -> promoted_tts -> handler -> ai_fallback
-     WEATHER and NEWS use cached briefing WAVs (not temp files -- do not unlink)
+  3. Listen -> STT -> responder.get_response() -> play
   4. Log every turn to logs/YYYY-MM-DD.jsonl
   5. Loop until silence timeout or DISMISSAL
+
+Response priority chain lives in responder.py.
 """
 
 import os
-import random
-import json
 import time
 import sys
 import struct
@@ -34,11 +32,10 @@ import pyaudio
 import audio
 import tts_generate
 import stt
-import intent as intent_mod
 import briefings
 from ai_response import AIResponder
-from handlers import ha_control
 from conversation_log import SessionLogger
+from responder import Responder
 from logger import get_logger
 from config import cfg
 from metrics import metrics
@@ -49,35 +46,8 @@ log = get_logger("converse")
 # Config
 # ---------------------------------------------------------------------------
 
-INDEX_PATH      = os.path.join(BASE_DIR, "speech", "responses", "index.json")
 KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
 SILENCE_TIMEOUT = 8.0   # seconds of silence before session ends
-
-# ---------------------------------------------------------------------------
-# Response library
-# ---------------------------------------------------------------------------
-
-with open(INDEX_PATH) as f:
-    INDEX = json.load(f)
-
-
-def _full_path(relative: str) -> str:
-    return os.path.join(BASE_DIR, relative)
-
-
-def pick_clip(intent_name: str, sub_key: str = None) -> str | None:
-    if intent_name == "PERSONAL":
-        path = INDEX.get("personal", {}).get(sub_key)
-        return _full_path(path) if path else None
-    clips = INDEX.get(intent_name.lower())
-    if not clips or not isinstance(clips, list):
-        return None
-    return _full_path(random.choice(clips))
-
-
-def _is_pre_gen(path: str) -> bool:
-    """True if the clip is from speech/responses/ (not speech/wav/)."""
-    return "speech/responses" in path.replace(BASE_DIR, "")
 
 
 # ---------------------------------------------------------------------------
@@ -116,24 +86,26 @@ def wait_for_wakeword():
 # Conversation session
 # ---------------------------------------------------------------------------
 
-def run_session(ai: AIResponder, log: SessionLogger):
+def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responder):
     metrics.count("session", event="start")
-    log.session_start()
+    session_log.session_start()
     audio.open_session()
 
     # Greeting
-    greeting_path = pick_clip("GREETING")
+    greeting_path = responder.pick_clip("GREETING")
     if greeting_path and os.path.exists(greeting_path):
         audio.play(greeting_path)
-        method = "pre_gen_tts" if _is_pre_gen(greeting_path) else "real_clip"
-        log.log_turn("(wake word)", "GREETING", None, method,
+        method = "pre_gen_tts" if responder._is_pre_gen(greeting_path) else "real_clip"
+        session_log.log_turn("(wake word)", "GREETING", None, method,
                      response_text=os.path.basename(greeting_path))
     else:
         text = "Yo. What do you want?"
         wav = tts_generate.speak(text)
-        audio.play(wav)
-        os.unlink(wav)
-        log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
+        try:
+            audio.play(wav)
+        finally:
+            os.unlink(wav)
+        session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
 
     ai.clear_history()
     last_heard = time.time()
@@ -145,8 +117,8 @@ def run_session(ai: AIResponder, log: SessionLogger):
         if not text:
             if time.time() - last_heard > SILENCE_TIMEOUT:
                 log.info("Silence timeout -- ending session")
-                metrics.count("session", event="end", turns=log.turn, reason="timeout")
-                log.session_end("timeout")
+                session_log.session_end("timeout")
+                metrics.count("session", event="end", turns=session_log.turn, reason="timeout")
                 audio.close_session()
                 return
             continue
@@ -154,108 +126,30 @@ def run_session(ai: AIResponder, log: SessionLogger):
         last_heard = time.time()
         log.info("Heard: %r", text)
 
-        # Classify
-        intent_name, sub_key = intent_mod.classify(text)
-        log.info("Intent: %s%s", intent_name, f" / {sub_key}" if sub_key else "")
+        response = responder.get_response(text, ai)
 
-        # --- DISMISSAL ---
-        if intent_name == "DISMISSAL":
-            clip = pick_clip("DISMISSAL")
-            if clip and os.path.exists(clip):
-                audio.play(clip)
-                method = "pre_gen_tts" if _is_pre_gen(clip) else "real_clip"
-                log.log_turn(text, intent_name, None, method,
-                             response_text=os.path.basename(clip))
-            else:
-                reply = "Yeah yeah, see ya."
-                wav = tts_generate.speak(reply)
-                audio.play(wav)
-                os.unlink(wav)
-                log.log_turn(text, intent_name, None, "pre_gen_tts", response_text=reply)
-            metrics.count("session", event="end", turns=log.turn, reason="dismissal")
-            log.session_end("dismissal")
+        # Play thinking sound if needed (clips don't exist yet -- empty list for now)
+        # This will be wired in Task 12
+
+        # Play response
+        audio.play(response.wav_path)
+        if response.is_temp:
+            try:
+                os.unlink(response.wav_path)
+            except OSError:
+                pass
+
+        session_log.log_turn(text, response.intent, response.sub_key,
+                        response.method, response.text, response.model)
+
+        if response.intent == "DISMISSAL":
+            session_log.session_end("dismissal")
+            metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
             audio.close_session()
             return
 
-        # --- PROMOTED (AI query promoted to static clip) ---
-        elif intent_name == "PROMOTED":
-            clip_path = _full_path(sub_key)  # sub_key holds the file path
-            if os.path.exists(clip_path):
-                audio.play(clip_path)
-                log.log_turn(text, "PROMOTED", None, "promoted_tts",
-                             response_text=os.path.basename(clip_path))
-            else:
-                # File missing -- fall through to AI
-                _respond_ai(text, ai, log)
-
-        # --- GREETING / AFFIRMATION / JOKE / PERSONAL (pre-gen or real clip) ---
-        elif intent_name in ("GREETING", "AFFIRMATION", "JOKE", "PERSONAL"):
-            clip = pick_clip(intent_name, sub_key)
-            if clip and os.path.exists(clip):
-                audio.play(clip)
-                method = "pre_gen_tts" if _is_pre_gen(clip) else "real_clip"
-                log.log_turn(text, intent_name, sub_key, method,
-                             response_text=os.path.basename(clip))
-            else:
-                _respond_ai(text, ai, log, intent_name, sub_key)
-
-        # --- WEATHER ---
-        elif intent_name == "WEATHER":
-            try:
-                wav = briefings.get_weather_wav()
-                audio.play(wav)
-                log.log_turn(text, intent_name, None, "handler_weather")
-            except Exception as e:
-                log.error("Weather handler error: %s", e)
-                _respond_ai(text, ai, log, intent_name)
-
-        # --- NEWS ---
-        elif intent_name == "NEWS":
-            try:
-                wav = briefings.get_news_wav()
-                audio.play(wav)
-                log.log_turn(text, intent_name, None, "handler_news")
-            except Exception as e:
-                log.error("News handler error: %s", e)
-                _respond_ai(text, ai, log, intent_name)
-
-        # --- HA_CONTROL ---
-        elif intent_name == "HA_CONTROL":
-            try:
-                wav = ha_control.control(text)
-                audio.play(wav)
-                os.unlink(wav)
-                log.log_turn(text, intent_name, None, "handler_ha")
-            except Exception as e:
-                log.error("HA control error: %s", e)
-                _respond_ai(text, ai, log, intent_name)
-
-        # --- UNKNOWN -> AI ---
-        else:
-            _respond_ai(text, ai, log)
-
         # Reset timer after Bender finishes -- gives user full window to respond
         last_heard = time.time()
-
-
-def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,
-                intent_name: str = "UNKNOWN", sub_key: str = None):
-    """Call AI fallback, play response, log the turn."""
-    try:
-        wav = ai.respond(user_text)
-        # Grab last assistant reply for the log
-        reply = ai.history[-1]["content"] if ai.history else ""
-        audio.play(wav)
-        os.unlink(wav)
-        log.log_turn(user_text, intent_name, sub_key, "ai_fallback",
-                     response_text=reply, model=cfg.ai_model)
-    except Exception as e:
-        error_text = f"Something went very wrong. Error: {type(e).__name__}."
-        wav = tts_generate.speak(error_text)
-        audio.play(wav)
-        os.unlink(wav)
-        log.log_turn(user_text, intent_name, sub_key, "error_fallback",
-                     response_text=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +158,7 @@ def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,
 
 def main():
     ai = AIResponder()
+    responder = Responder()
     import threading
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
     log.info("Listening for 'Hey Bender'...")
@@ -271,7 +166,7 @@ def main():
         try:
             wait_for_wakeword()
             session_log = SessionLogger()
-            run_session(ai, session_log)
+            run_session(ai, session_log, responder)
         except KeyboardInterrupt:
             log.info("Stopped.")
             break
