@@ -295,10 +295,6 @@ def control(user_text: str) -> str:
             return tts_generate.speak(text)
         return tts_generate.speak(random.choice(FAILED_RESPONSES))
 
-    if action is None:
-        text = "On or off? Even I need a bit more to go on."
-        return tts_generate.speak(text)
-
     service = f"turn_{action}"
     success = False
     for e in matches:

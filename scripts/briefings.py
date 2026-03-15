@@ -19,6 +19,7 @@ import json
 import random
 import time
 import shutil
+import threading
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
@@ -50,16 +51,20 @@ os.makedirs(DAILY_DIR, exist_ok=True)
 # Metadata (timestamps of last successful generation)
 # ---------------------------------------------------------------------------
 
+_meta_lock = threading.Lock()
+
 def _load_meta() -> dict:
-    try:
-        with open(META_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    with _meta_lock:
+        try:
+            with open(META_PATH) as f:
+                return json.load(f)
+        except Exception:
+            return {}
 
 def _save_meta(meta: dict):
-    with open(META_PATH, "w") as f:
-        json.dump(meta, f)
+    with _meta_lock:
+        with open(META_PATH, "w") as f:
+            json.dump(meta, f)
 
 def _is_fresh(key: str, ttl: int) -> bool:
     meta = _load_meta()
