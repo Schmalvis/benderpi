@@ -117,7 +117,7 @@ def _format_condition(raw: str) -> str:
     }
     return mapping.get(raw.lower(), raw.replace("-", " ").replace("_", " "))
 
-def _generate_weather() -> str:
+def get_weather_text() -> str:
     req = urllib.request.Request(
         f"{os.environ.get('HA_URL', HA_URL_DEFAULT)}/api/states/{os.environ.get('HA_WEATHER_ENTITY', HA_ENTITY_DEFAULT)}",
         headers={"Authorization": f"Bearer {os.environ.get('HA_TOKEN', HA_TOKEN_DEFAULT)}"}
@@ -181,7 +181,7 @@ def _fetch_headlines(url: str, count: int) -> list[str]:
     # Skip first (feed title)
     return [t.strip() for t in titles[1:count+1] if t.strip()]
 
-def _generate_news() -> str:
+def get_news_text() -> str:
     sections = []
     for label, url, count in NEWS_FEEDS:
         try:
@@ -212,7 +212,7 @@ def get_weather_wav() -> str:
     """Return path to cached weather briefing WAV, refreshing if stale."""
     if not _is_fresh("weather", WEATHER_TTL) or not os.path.exists(WEATHER_WAV):
         try:
-            text = _generate_weather()
+            text = get_weather_text()
             with metrics.timer("briefing_generate", briefing="weather"):
                 wav = tts_generate.speak(text)
             shutil.move(wav, WEATHER_WAV)
@@ -230,7 +230,7 @@ def get_news_wav() -> str:
     """Return path to cached news briefing WAV, refreshing if stale."""
     if not _is_fresh("news", NEWS_TTL) or not os.path.exists(NEWS_WAV):
         try:
-            text = _generate_news()
+            text = get_news_text()
             with metrics.timer("briefing_generate", briefing="news"):
                 wav = tts_generate.speak(text)
             shutil.move(wav, NEWS_WAV)
@@ -263,14 +263,14 @@ if __name__ == "__main__":
 
     print("=== Weather ===")
     try:
-        text = _generate_weather()
+        text = get_weather_text()
         print(text)
     except Exception as e:
         print(f"Error: {e}")
 
     print("\n=== News ===")
     try:
-        text = _generate_news()
+        text = get_news_text()
         print(text)
     except Exception as e:
         print(f"Error: {e}")
