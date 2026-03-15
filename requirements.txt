@@ -22,3 +22,6 @@ anthropic==0.84.0
 
 # Utilities
 python-dotenv==1.2.2
+
+# Testing (dev only — not needed on Pi)
+pytest==8.3.5
