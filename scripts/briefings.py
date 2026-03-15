@@ -26,6 +26,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_generate
+from config import cfg as _cfg
 from logger import get_logger
 from metrics import metrics
 
@@ -40,7 +41,7 @@ META_PATH    = os.path.join(DAILY_DIR, "briefings_meta.json")
 WEATHER_TTL  = 30 * 60    # 30 minutes
 NEWS_TTL     = 2 * 60 * 60  # 2 hours
 
-HA_URL_DEFAULT    = "http://192.168.68.125:8123"
+HA_URL_DEFAULT    = "http://homeassistant.local:8123"
 HA_TOKEN_DEFAULT  = ""
 HA_ENTITY_DEFAULT = "weather.forecast_home"
 
@@ -100,7 +101,7 @@ WEATHER_COMMENTS = {
     "sunny":        "Sunny. Disgusting. I preferred it when everything was grey.",
     "partlycloudy": "Partly cloudy. Make your mind up, sky.",
     "cloudy":       "Cloudy. Classic British mediocrity.",
-    "rainy":        "It's raining. Shocking news for Nottingham. Truly unprecedented.",
+    "rainy":        f"It's raining. Shocking news for {_cfg.location}. Truly unprecedented.",
     "overcast":     "Overcast. How very appropriate for this country.",
     "snowy":        "It's snowing. Stay inside. I'll pretend to care.",
     "fog":          "Foggy. Perfect conditions for not being found.",

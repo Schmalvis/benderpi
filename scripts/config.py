@@ -56,9 +56,10 @@ class Config:
     simple_intent_max_words: int = 6
 
     # HA
-    ha_url: str = "http://192.168.68.125:8123"
+    ha_url: str = "http://homeassistant.local:8123"
     ha_token: str = ""  # from .env only
     ha_weather_entity: str = "weather.forecast_home"
+    location: str = "your location"  # shown in Bender persona + weather responses
 
     # Secrets (from .env only, never in config JSON)
     anthropic_api_key: str = ""

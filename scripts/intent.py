@@ -87,7 +87,7 @@ HA_CONTROL_PATTERNS = [
     r"\b(on|off) (the )?lights?\b",
     r"\b(radiator|thermostat|heating|temperature|trv)\b",
     r"\bset (it |the temperature )?(to )?[0-9]+ degrees?\b",
-    r"\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|lincoln|attic|cabin|utility|ensuite|living room)\b.{0,30}\b(light|lamp|off|on|radiator|heating)\b",
+    r"\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|cabin|utility|ensuite|living room)\b.{0,30}\b(light|lamp|off|on|radiator|heating)\b",
     r"\b(light|lamp)\b.{0,30}\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|utility|ensuite)\b",
 ]
 

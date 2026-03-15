@@ -11,7 +11,27 @@
   "news_ttl": 7200,
   "log_level": "INFO",
   "led_brightness": 0.8,
-  "led_colour": [255, 120, 0],
+  "led_colour": [
+    255,
+    120,
+    0
+  ],
   "simple_intent_max_words": 6,
-  "speech_rate": 1.0
+  "speech_rate": 0.9,
+  "location": "Nottingham, England",
+  "ha_exclude_entities": [
+    "switch.clock_weather_card_pre_release",
+    "switch.entrance_keypad_chirps",
+    "switch.keypad_07069_chirps",
+    "switch.403100527506007695_bsh_common_setting_powerstate",
+    "switch.ensuite_radiator_plug_hive",
+    "switch.assist_microphone_mute",
+    "switch.lightswitches",
+    "switch.conservatory_lights_led",
+    "switch.conservatory_lamp_led",
+    "switch.led_tree_lights_conservatory",
+    "switch.shelly_bedroom_wall_switch_switch_1",
+    "climate.0xc09b9efffe848bb4",
+    "climate.martins_office_radiator_trv"
+  ]
 }

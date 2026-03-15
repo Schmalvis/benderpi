@@ -24,7 +24,7 @@ from metrics import metrics
 
 log = get_logger("ha_control")
 
-HA_URL   = os.environ.get("HA_URL",   "http://192.168.68.125:8123")
+HA_URL   = os.environ.get("HA_URL",   "http://homeassistant.local:8123")
 HA_TOKEN = os.environ.get("HA_TOKEN", "")
 
 # ---------------------------------------------------------------------------
@@ -44,29 +44,22 @@ EXCLUDE_KEYWORDS = {
     "keypad_chirps", "radiator_plug", "assist_microphone", "dishcare",
     "extractor_fan", "fly_zapper", "heated_airer", "lightswitches",
     "alarm_siren", "motion_warning", "upstairs_snooze", "downstairs_snooze",
-    "motion_sound", "bedroom_do_not", "lincolns_room_do_not", "martins_office_do",
-    "living_room_do_not",
+    "motion_sound", "do_not",  # catches all do_not_disturb sub-entities
 }
 
-# Entity IDs to always exclude even if they pass the keyword filter
-EXCLUDE_ENTITIES = {
-    "switch.clock_weather_card_pre_release",
-    "switch.entrance_keypad_chirps",
-    "switch.keypad_07069_chirps",
-    "switch.403100527506007695_bsh_common_setting_powerstate",
-    "switch.ensuite_radiator_plug_hive",
-    "switch.assist_microphone_mute",
-    "switch.lightswitches",
-    # Conservatory sub-components (prefer switch.conservatory_lights + conservatory_lamp)
-    "switch.conservatory_lights_led",
-    "switch.conservatory_lamp_led",
-    "switch.led_tree_lights_conservatory",
-    # Closet is not a room people ask for by name (part of bedroom physically)
-    "switch.shelly_bedroom_wall_switch_switch_1",
-    # Duplicate/hex-named climate entities (prefer friendly-named ones)
-    "climate.0xc09b9efffe848bb4",
-    "climate.martins_office_radiator_trv",  # _2 is the better entity
-}
+# Entity IDs to always exclude — configured in bender_config.json under
+# "ha_exclude_entities". Add any sub-component or duplicate entities specific
+# to your HA setup that should never be controlled by voice.
+def _load_exclude_entities() -> set:
+    try:
+        import json as _json
+        _cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'bender_config.json')
+        with open(_cfg_path) as _f:
+            return set(_json.load(_f).get('ha_exclude_entities', []))
+    except Exception:
+        return set()
+
+EXCLUDE_ENTITIES = _load_exclude_entities()
 
 # ---------------------------------------------------------------------------
 # Entity cache (refreshed every 60 seconds)
@@ -380,11 +373,11 @@ if __name__ == "__main__":
     os.environ.update({k: v for k, v in env.items() if v})
 
     tests = [
-        "turn on the lights in my office",
+        "turn on the office lights",
         "turn off the kitchen lights",
-        "lights on in lincolns room",
         "bedroom lights off",
         "conservatory lights on",
+        "set the office radiator to 20 degrees",
     ]
     for t in tests:
         action    = _parse_action(t)
