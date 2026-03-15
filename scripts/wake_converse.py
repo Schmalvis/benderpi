@@ -253,6 +253,7 @@ def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,
 
 def main():
     ai = AIResponder()
+    audio.start_keepalive()
     print("Refreshing briefings...")
     briefings.refresh_all()
     while True:

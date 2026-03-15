@@ -22,8 +22,8 @@ PIPER_BIN  = os.path.join(os.path.dirname(__file__), "..", "piper", "piper")
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "bender.onnx")
 
 TARGET_RATE  = 44100   # match real Bender clips
-SILENCE_PRE  = 0.05    # seconds of silence before speech
-SILENCE_POST = 0.10    # seconds of silence after speech
+SILENCE_PRE  = 0.0    # audio.py adds pre-silence for all clips
+SILENCE_POST = 0.0    # audio.py adds post-silence for all clips
 
 
 def _resample_and_pad(in_path: str, out_path: str):
