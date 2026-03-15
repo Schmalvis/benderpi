@@ -45,5 +45,11 @@
     "speech/responses/ha_confirm/confirm_002.wav",
     "speech/responses/ha_confirm/confirm_003.wav"
   ],
-  "promoted": []
+  "promoted": [],
+  "thinking": [
+    "speech/responses/thinking/thinking_001.wav",
+    "speech/responses/thinking/thinking_002.wav",
+    "speech/responses/thinking/thinking_003.wav",
+    "speech/responses/thinking/thinking_004.wav"
+  ]
 }

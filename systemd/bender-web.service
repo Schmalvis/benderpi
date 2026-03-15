@@ -7,8 +7,9 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/bender
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/pi/bender/scripts
 EnvironmentFile=/home/pi/bender/.env
-ExecStart=/home/pi/bender/venv/bin/uvicorn scripts.web.app:app --host 0.0.0.0 --port ${BENDER_WEB_PORT:-8080}
+ExecStart=/home/pi/bender/venv/bin/uvicorn scripts.web.app:app --host 0.0.0.0 --port $BENDER_WEB_PORT
 Restart=on-failure
 RestartSec=5
 
