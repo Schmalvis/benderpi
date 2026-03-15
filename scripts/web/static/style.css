@@ -685,6 +685,160 @@ tbody tr:hover {
   background: var(--text-muted);
 }
 
+/* ── Puppet Mode ───────────────────────────────────── */
+
+.puppet-section {
+  margin-bottom: 16px;
+}
+
+.puppet-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.puppet-volume-slider {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-input);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.puppet-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.puppet-volume-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.puppet-volume-label {
+  min-width: 48px;
+  text-align: right;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.puppet-speak-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 60px;
+}
+
+.puppet-speak-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.puppet-char-counter {
+  font-size: 0.8rem;
+}
+
+.puppet-speak-status {
+  font-size: 0.85rem;
+  flex: 1;
+}
+
+.puppet-empty {
+  padding: 12px 0;
+  font-size: 0.9rem;
+}
+
+.puppet-favs-scroll {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.puppet-fav-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.puppet-fav-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.puppet-unstar {
+  color: var(--warning);
+  font-size: 1rem;
+}
+
+.puppet-play-icon {
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+.puppet-cat-details {
+  margin-bottom: 8px;
+}
+
+.puppet-cat-count {
+  margin-left: 8px;
+}
+
+.puppet-clip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.puppet-clip-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.puppet-clip-play {
+  flex: 1;
+  justify-content: flex-start;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.puppet-star {
+  color: var(--text-muted);
+  font-size: 1.1rem;
+}
+
+.puppet-star-active {
+  color: var(--warning);
+}
+
+@media (max-width: 768px) {
+  .puppet-clip-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Selection ──────────────────────────────────────── */
 
 ::selection {
