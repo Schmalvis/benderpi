@@ -1,0 +1,127 @@
+"""Centralised configuration for BenderPi.
+
+Loading order:
+  1. Hardcoded defaults
+  2. bender_config.json overrides (committed, runtime-editable)
+  3. .env overrides (secrets only)
+  4. Environment variable overrides (BENDER_ prefix)
+"""
+
+import json
+import os
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
+_DEFAULT_ENV_PATH = os.path.join(_BASE_DIR, ".env")
+
+# Mapping of BENDER_ env var names to config fields
+_ENV_OVERRIDES = {
+    "BENDER_LOG_LEVEL": "log_level",
+    "BENDER_LOG_LEVEL_FILE": "log_level_file",
+    "BENDER_AI_MODEL": "ai_model",
+    "BENDER_WHISPER_MODEL": "whisper_model",
+}
+
+
+class Config:
+    """Single source of truth for all BenderPi tunables."""
+
+    # --- Defaults ---
+
+    # Audio
+    sample_rate: int = 44100
+    silence_pre: float = 0.02
+    silence_post: float = 0.08
+    output_device: int = 0  # PyAudio device index for hw:2,0
+
+    # STT
+    whisper_model: str = "tiny.en"
+    vad_aggressiveness: int = 2
+    silence_frames: int = 50
+    max_record_seconds: int = 15
+
+    # TTS
+    piper_bin: str = os.path.join(_BASE_DIR, "piper", "piper")
+    model_path: str = os.path.join(_BASE_DIR, "models", "bender.onnx")
+
+    # AI
+    ai_model: str = "claude-haiku-4-5-20251001"
+    ai_max_tokens: int = 150
+    ai_max_history: int = 6
+
+    # Conversation
+    silence_timeout: float = 8.0
+    thinking_sound: bool = True
+    simple_intent_max_words: int = 6
+
+    # HA
+    ha_url: str = "http://192.168.68.125:8123"
+    ha_token: str = ""  # from .env only
+    ha_weather_entity: str = "weather.forecast_home"
+
+    # Secrets (from .env only, never in config JSON)
+    anthropic_api_key: str = ""
+    porcupine_access_key: str = ""
+
+    # Briefings
+    weather_ttl: int = 1800
+    news_ttl: int = 7200
+
+    # Logging
+    log_level: str = "INFO"
+    log_level_file: str = "DEBUG"
+
+    # LED
+    led_count: int = 12
+    led_brightness: float = 0.8
+    led_colour: tuple = (255, 120, 0)
+
+    def __init__(self, config_path: str = None, env_path: str = None):
+        # 1. Load JSON config overrides
+        path = config_path or _DEFAULT_CONFIG_PATH
+        if os.path.exists(path):
+            with open(path) as f:
+                overrides = json.load(f)
+            for key, value in overrides.items():
+                if hasattr(self, key):
+                    if key == "led_colour" and isinstance(value, list):
+                        value = tuple(value)
+                    setattr(self, key, value)
+
+        # 2. Load .env for secrets
+        ep = env_path or _DEFAULT_ENV_PATH
+        if os.path.exists(ep):
+            self._load_dotenv(ep)
+
+        # 3. Env var overrides
+        for env_var, field in _ENV_OVERRIDES.items():
+            val = os.environ.get(env_var)
+            if val is not None:
+                setattr(self, field, val)
+
+        # 4. Direct env var secrets
+        self.ha_token = os.environ.get("HA_TOKEN", self.ha_token)
+        self.ha_url = os.environ.get("HA_URL", self.ha_url)
+        self.ha_weather_entity = os.environ.get("HA_WEATHER_ENTITY", self.ha_weather_entity)
+        self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", self.anthropic_api_key)
+        self.porcupine_access_key = os.environ.get("PORCUPINE_ACCESS_KEY", self.porcupine_access_key)
+
+    def _load_dotenv(self, path: str):
+        """Minimal .env parser — no dependency on python-dotenv for config module."""
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("'\"")
+                    if value:
+                        os.environ.setdefault(key, value)
+        except Exception:
+            pass
+
+
+# Singleton — import as: from config import cfg
+cfg = Config()
