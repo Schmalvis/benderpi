@@ -35,7 +35,7 @@ import tts_generate
 import stt
 import intent as intent_mod
 from ai_response import AIResponder, MODEL
-from handlers import weather, ha_status
+from handlers import weather, ha_control
 from conversation_log import SessionLogger
 
 # ---------------------------------------------------------------------------
@@ -197,20 +197,23 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 print(f"Weather handler error: {e}")
                 _respond_ai(text, ai, log, intent_name)
 
-        # --- HA_CONFIRM ---
-        elif intent_name == "HA_CONFIRM":
+        # --- HA_CONTROL ---
+        elif intent_name == "HA_CONTROL":
             try:
-                wav = ha_status.get_ha_response(text)
+                wav = ha_control.control(text)
                 audio.play(wav)
                 os.unlink(wav)
                 log.log_turn(text, intent_name, None, "handler_ha")
             except Exception as e:
-                print(f"HA handler error: {e}")
+                print(f"HA control error: {e}")
                 _respond_ai(text, ai, log, intent_name)
 
         # --- UNKNOWN → AI ---
         else:
             _respond_ai(text, ai, log)
+
+        # Reset timer after Bender finishes — gives user full window to respond
+        last_heard = time.time()
 
 
 def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,

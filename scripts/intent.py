@@ -11,7 +11,7 @@ Intents:
   JOKE          — tell me a joke / say something funny
   PERSONAL      — personal questions (sub_key = job/age/etc)
   WEATHER       — weather/forecast/rain
-  HA_CONFIRM    — HA status confirmation messages
+  HA_CONTROL    — Commands to control HA devices (lights, switches)
   UNKNOWN       — everything else → AI fallback
 """
 
@@ -70,12 +70,12 @@ WEATHER_PATTERNS = [
     r"\bgoing to rain\b",
 ]
 
-HA_CONFIRM_PATTERNS = [
-    r"\b(turned|switching|switched|turn) (on|off)\b",
-    r"\blight(s)? (on|off|are)\b",
-    r"\b(heating|thermostat|temperature) (set|is|to)\b",
-    r"\bset to \d+\b",
-    r"\bi('?ve| have) (turned|set|switched)\b",
+HA_CONTROL_PATTERNS = [
+    r"\b(turn|switch|put) (on|off)\b",
+    r"\blights? (on|off)\b",
+    r"\b(on|off) (the )?lights?\b",
+    r"\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|lincoln|attic|cabin|utility|ensuite|living room)\b.{0,30}\b(light|lamp|off|on)\b",
+    r"\b(light|lamp)\b.{0,30}\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|utility|ensuite)\b",
 ]
 
 # Personal question sub-keys and their trigger patterns
@@ -132,8 +132,8 @@ def classify(text: str) -> tuple[str, str | None]:
     t = text.strip().lower()
 
     # HA confirm is often a statement, not a question — check early
-    if _match_any(t, HA_CONFIRM_PATTERNS):
-        return ("HA_CONFIRM", None)
+    if _match_any(t, HA_CONTROL_PATTERNS):
+        return ("HA_CONTROL", None)
 
     if _match_any(t, GREETING_PATTERNS):
         return ("GREETING", None)
