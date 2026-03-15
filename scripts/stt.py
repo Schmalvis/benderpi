@@ -18,6 +18,10 @@ import time
 import webrtcvad
 from faster_whisper import WhisperModel
 
+from logger import get_logger
+
+log = get_logger("stt")
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

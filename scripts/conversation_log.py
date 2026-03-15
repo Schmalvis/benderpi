@@ -12,6 +12,7 @@ Response methods:
   pre_gen_tts     — pre-generated TTS from speech/responses/<category>/
   promoted_tts    — AI response promoted to static (speech/responses/promoted/)
   handler_weather — live HA weather fetch + TTS
+  handler_news    — cached BBC news briefing + TTS
   handler_ha      — HA confirmation handler + TTS
   ai_fallback     — called Claude API
   error_fallback  — exception during response generation
@@ -21,6 +22,10 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+
+from logger import get_logger
+
+log = get_logger("conversation_log")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR  = os.path.join(BASE_DIR, "logs")

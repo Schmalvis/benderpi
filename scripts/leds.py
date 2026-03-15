@@ -7,6 +7,9 @@ leds.py — WS2812B LED strip control
 import board
 import busio
 import neopixel_spi
+from logger import get_logger
+
+log = get_logger("leds")
 
 NUM_LEDS   = 12
 BRIGHTNESS = 0.8

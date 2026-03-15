@@ -18,6 +18,10 @@ import tempfile
 import wave
 import numpy as np
 
+from logger import get_logger
+
+log = get_logger("tts")
+
 PIPER_BIN  = os.path.join(os.path.dirname(__file__), "..", "piper", "piper")
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "bender.onnx")
 

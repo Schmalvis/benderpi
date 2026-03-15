@@ -39,6 +39,9 @@ import briefings
 from ai_response import AIResponder, MODEL
 from handlers import ha_control
 from conversation_log import SessionLogger
+from logger import get_logger
+
+log = get_logger("converse")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -93,13 +96,13 @@ def wait_for_wakeword():
         input=True,
         frames_per_buffer=porcupine.frame_length,
     )
-    print("Listening for 'Hey Bender'...")
+    log.info("Listening for 'Hey Bender'...")
     try:
         while True:
             pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
             pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
             if porcupine.process(pcm_unpacked) >= 0:
-                print("Wake word detected!")
+                log.info("Wake word detected")
                 return
     finally:
         stream.stop_stream()
@@ -138,18 +141,18 @@ def run_session(ai: AIResponder, log: SessionLogger):
 
         if not text:
             if time.time() - last_heard > SILENCE_TIMEOUT:
-                print("Silence timeout -- ending session")
+                log.info("Silence timeout -- ending session")
                 log.session_end("timeout")
                 audio.close_session()
                 return
             continue
 
         last_heard = time.time()
-        print(f"Heard: {text!r}")
+        log.info("Heard: %r", text)
 
         # Classify
         intent_name, sub_key = intent_mod.classify(text)
-        print(f"Intent: {intent_name}" + (f" / {sub_key}" if sub_key else ""))
+        log.info("Intent: %s%s", intent_name, f" / {sub_key}" if sub_key else "")
 
         # --- DISMISSAL ---
         if intent_name == "DISMISSAL":
@@ -198,7 +201,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 audio.play(wav)
                 log.log_turn(text, intent_name, None, "handler_weather")
             except Exception as e:
-                print(f"Weather handler error: {e}")
+                log.error("Weather handler error: %s", e)
                 _respond_ai(text, ai, log, intent_name)
 
         # --- NEWS ---
@@ -208,7 +211,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 audio.play(wav)
                 log.log_turn(text, intent_name, None, "handler_news")
             except Exception as e:
-                print(f"News handler error: {e}")
+                log.error("News handler error: %s", e)
                 _respond_ai(text, ai, log, intent_name)
 
         # --- HA_CONTROL ---
@@ -219,7 +222,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 os.unlink(wav)
                 log.log_turn(text, intent_name, None, "handler_ha")
             except Exception as e:
-                print(f"HA control error: {e}")
+                log.error("HA control error: %s", e)
                 _respond_ai(text, ai, log, intent_name)
 
         # --- UNKNOWN -> AI ---
@@ -258,17 +261,17 @@ def main():
     ai = AIResponder()
     import threading
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
-    print("Listening for 'Hey Bender'...")
+    log.info("Listening for 'Hey Bender'...")
     while True:
         try:
             wait_for_wakeword()
-            log = SessionLogger()
-            run_session(ai, log)
+            session_log = SessionLogger()
+            run_session(ai, session_log)
         except KeyboardInterrupt:
-            print("\nStopped.")
+            log.info("Stopped.")
             break
         except Exception as e:
-            print(f"Error: {e}")
+            log.error("Error: %s", e)
             time.sleep(2)
 
 

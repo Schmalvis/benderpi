@@ -27,6 +27,9 @@ import shutil
 
 sys.path.insert(0, os.path.dirname(__file__))
 import tts_generate
+from logger import get_logger
+
+log = get_logger("prebuild")
 
 BASE          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESPONSES_DIR = os.path.join(BASE, "speech", "responses")
@@ -82,9 +85,9 @@ PROMOTED_RESPONSES = [
 
 def generate(text, out_path):
     if os.path.exists(out_path):
-        print(f"  [skip] {os.path.relpath(out_path, BASE)}")
+        log.info("[skip] %s", os.path.relpath(out_path, BASE))
         return
-    print(f"  [gen]  {os.path.relpath(out_path, BASE)}")
+    log.info("[gen]  %s", os.path.relpath(out_path, BASE))
     tmp = tts_generate.speak(text)
     shutil.move(tmp, out_path)
 
@@ -177,9 +180,9 @@ def build_index():
     index_path = os.path.join(RESPONSES_DIR, "index.json")
     with open(index_path, "w") as f:
         json.dump(index, f, indent=2)
-    print(f"  [ok]   speech/responses/index.json")
+    log.info("[ok]   speech/responses/index.json")
     if PROMOTED_RESPONSES:
-        print(f"  [ok]   {len(PROMOTED_RESPONSES)} promoted response(s) in index")
+        log.info("[ok]   %d promoted response(s) in index", len(PROMOTED_RESPONSES))
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,10 @@ import json
 import os
 import re
 
+from logger import get_logger
+
+log = get_logger("intent")
+
 # ---------------------------------------------------------------------------
 # Pattern sets — order matters (more specific first within PERSONAL)
 # ---------------------------------------------------------------------------

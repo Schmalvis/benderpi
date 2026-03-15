@@ -19,6 +19,9 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tts_generate
+from logger import get_logger
+
+log = get_logger("ha_control")
 
 HA_URL   = os.environ.get("HA_URL",   "http://192.168.68.125:8123")
 HA_TOKEN = os.environ.get("HA_TOKEN", "")
@@ -116,7 +119,7 @@ def _get_entities() -> list[dict]:
             _cache    = _fetch_entities()
             _cache_ts = time.time()
         except Exception as e:
-            print(f"HA entity fetch failed: {e}")
+            log.error("HA entity fetch failed: %s", e)
     return _cache
 
 
@@ -221,7 +224,7 @@ def _ha_call(domain: str, service: str, entity_id: str,
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status in (200, 201)
     except Exception as e:
-        print(f"  HA call failed ({entity_id}): {e}")
+        log.error("HA call failed (%s): %s", entity_id, e)
         return False
 
 
@@ -286,7 +289,7 @@ def control(user_text: str) -> str:
     if target_temp and any(e["domain"] == "climate" for e in matches):
         success = False
         for e in [x for x in matches if x["domain"] == "climate"]:
-            print(f"  HA: climate.set_temperature → {e['entity_id']} @ {target_temp}°")
+            log.info("HA: climate.set_temperature → %s @ %s°", e['entity_id'], target_temp)
             if _ha_call("climate", "set_temperature", e["entity_id"], {"temperature": target_temp}):
                 success = True
         if success:
@@ -303,11 +306,11 @@ def control(user_text: str) -> str:
             # climate uses set_hvac_mode, not turn_on/off
             hvac_mode = "heat" if action == "on" else "off"
             svc = "set_hvac_mode"
-            print(f"  HA: climate.set_hvac_mode({hvac_mode}) → {e['entity_id']}")
+            log.info("HA: climate.set_hvac_mode(%s) → %s", hvac_mode, e['entity_id'])
             if _ha_call(domain, svc, e["entity_id"], {"hvac_mode": hvac_mode}):
                 success = True
         else:
-            print(f"  HA: {domain}.{service} → {e['entity_id']}")
+            log.info("HA: %s.%s → %s", domain, service, e['entity_id'])
             if _ha_call(domain, service, e["entity_id"]):
                 success = True
 

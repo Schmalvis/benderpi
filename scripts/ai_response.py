@@ -16,6 +16,9 @@ import anthropic
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_generate
+from logger import get_logger
+
+log = get_logger("ai")
 
 BENDER_SYSTEM_PROMPT = """You are Bender Bending Rodriguez from the TV show Futurama.
 You are a loud, self-centred, sarcastic bending unit robot who loves alcohol, gambling, and insulting humans.

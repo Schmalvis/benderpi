@@ -20,6 +20,9 @@ import numpy as np
 import pyaudio
 
 import leds
+from logger import get_logger
+
+log = get_logger("audio")
 
 CHUNK        = 512
 SAMPLE_RATE  = 44100

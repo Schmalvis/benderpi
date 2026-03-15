@@ -26,6 +26,9 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_generate
+from logger import get_logger
+
+log = get_logger("briefings")
 
 BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAILY_DIR    = os.path.join(BASE_DIR, "speech", "responses", "daily")
@@ -185,7 +188,7 @@ def _generate_news() -> str:
             if headlines:
                 sections.append((label, headlines))
         except Exception as e:
-            print(f"  News fetch failed ({label}): {e}")
+            log.warning("News fetch failed (%s): %s", label, e)
 
     if not sections:
         return "My news feed is down. The internet's probably broken. Again."
@@ -212,9 +215,9 @@ def get_weather_wav() -> str:
             wav  = tts_generate.speak(text)
             shutil.move(wav, WEATHER_WAV)
             _mark_fresh("weather")
-            print(f"  [briefing] Weather refreshed")
+            log.info("[briefing] Weather refreshed")
         except Exception as e:
-            print(f"  [briefing] Weather generation failed: {e}")
+            log.error("[briefing] Weather generation failed: %s", e)
             if not os.path.exists(WEATHER_WAV):
                 fallback = "Weather data unavailable. Assume it's miserable. It usually is."
                 wav = tts_generate.speak(fallback)
@@ -229,9 +232,9 @@ def get_news_wav() -> str:
             wav  = tts_generate.speak(text)
             shutil.move(wav, NEWS_WAV)
             _mark_fresh("news")
-            print(f"  [briefing] News refreshed")
+            log.info("[briefing] News refreshed")
         except Exception as e:
-            print(f"  [briefing] News generation failed: {e}")
+            log.error("[briefing] News generation failed: %s", e)
             if not os.path.exists(NEWS_WAV):
                 fallback = "My news feed exploded. Try again later."
                 wav = tts_generate.speak(fallback)
