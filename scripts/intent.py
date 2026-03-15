@@ -20,7 +20,9 @@ import json
 import os
 import re
 
+from config import cfg
 from logger import get_logger
+from metrics import metrics
 
 log = get_logger("intent")
 
@@ -30,6 +32,7 @@ log = get_logger("intent")
 
 GREETING_PATTERNS = [
     r"\b(hello|hi|hey|howdy)\b",
+    r"\bgood (morning|evening|afternoon)\b",
     r"\bhow are you\b",
     r"\byou there\b",
     r"\bwake up\b",
@@ -38,21 +41,16 @@ GREETING_PATTERNS = [
 
 AFFIRMATION_PATTERNS = [
     r"\bthank(s| you)\b",
-    r"\bgreat\b",
-    r"\bnice one\b",
-    r"\bgood\b",
-    r"\bok(ay)?\b",
-    r"\bbrilliant\b",
-    r"\bawesome\b",
-    r"\bcheers\b",
+    r"^(great|brilliant|awesome|cheers|nice one)$",
+    r"^ok(ay)?(\s+bender)?$",
 ]
 
 DISMISSAL_PATTERNS = [
-    r"\bbye\b",
+    r"^bye\b",
     r"\bgoodbye\b",
     r"\bsee you\b",
-    r"\bstop\b",
-    r"\bthat'?s? all\b",
+    r"^stop(\s+(it|bender))?$",
+    r"\bthat'?s?\s*all\b",
     r"\bno more\b",
 ]
 
@@ -100,12 +98,12 @@ PERSONAL_PATTERNS = [
     ("like_me",     r"\bdo you like me\b|\byou like me\b"),
     ("friend",      r"\b(friend|friends|mate|pal|buddy)\b"),
     ("where_work",  r"\b(where|planet express|delivery)\b.{0,20}\bwork\b|\bwork\b.{0,20}\b(where|company|place)\b"),
-    ("where_live",  r"\b(where|where'?re? you|come from|home|house|live)\b"),
+    ("where_live",  r"\b(where.{0,10}(live|from|come from)|where are you from)\b(?!.*\b(light|lamp|on|off|heating)\b)"),
     ("are_you_real",r"\b(real|robot|machine|computer|artificial)\b"),
     ("can_talk",    r"\bhow (can|do) you talk\b|\bcan you (really |actually )?talk\b|\bcan you speak\b"),
     ("what_can_do", r"\bwhat can you do\b|\babilities\b|\bwhat are you capable\b"),
     ("age",         r"\b(how old|age|born|year|built)\b"),
-    ("job",         r"\b(job|work|do|programmed|purpose|function)\b"),
+    ("job",         r"\b(job|purpose|programmed|function)\b|\bwhat do you do\b"),
 ]
 
 
@@ -139,34 +137,48 @@ def reload_promoted():
     _promoted_cache = None
 
 
+def _check_all_intents(t: str) -> list[str]:
+    """Return all intents that match text (for multi-match diagnostics)."""
+    matched = []
+    if _match_any(t, HA_CONTROL_PATTERNS):
+        matched.append("HA_CONTROL")
+    if _match_any(t, WEATHER_PATTERNS):
+        matched.append("WEATHER")
+    if _match_any(t, NEWS_PATTERNS):
+        matched.append("NEWS")
+    if _match_any(t, DISMISSAL_PATTERNS):
+        matched.append("DISMISSAL")
+    if _match_any(t, JOKE_PATTERNS):
+        matched.append("JOKE")
+    if _match_any(t, GREETING_PATTERNS):
+        matched.append("GREETING")
+    if _match_any(t, AFFIRMATION_PATTERNS):
+        matched.append("AFFIRMATION")
+    for sub_key, pattern in PERSONAL_PATTERNS:
+        if re.search(pattern, t, re.IGNORECASE):
+            matched.append(f"PERSONAL/{sub_key}")
+    return matched
+
+
 def classify(text: str) -> tuple[str, str | None]:
     """
     Classify user text into an intent.
     Returns (intent_name, sub_key_or_None).
     """
     t = text.strip().lower()
+    word_count = len(t.split())
 
-    # HA confirm is often a statement, not a question — check early
+    # Most specific first
     if _match_any(t, HA_CONTROL_PATTERNS):
         return ("HA_CONTROL", None)
-
-    if _match_any(t, GREETING_PATTERNS):
-        return ("GREETING", None)
-
-    if _match_any(t, DISMISSAL_PATTERNS):
-        return ("DISMISSAL", None)
-
-    if _match_any(t, AFFIRMATION_PATTERNS):
-        return ("AFFIRMATION", None)
-
-    if _match_any(t, JOKE_PATTERNS):
-        return ("JOKE", None)
-
     if _match_any(t, WEATHER_PATTERNS):
         return ("WEATHER", None)
-
     if _match_any(t, NEWS_PATTERNS):
         return ("NEWS", None)
+    if _match_any(t, DISMISSAL_PATTERNS):
+        return ("DISMISSAL", None)
+    if _match_any(t, JOKE_PATTERNS):
+        return ("JOKE", None)
 
     # Personal questions — check sub-patterns
     for sub_key, pattern in PERSONAL_PATTERNS:
@@ -177,6 +189,24 @@ def classify(text: str) -> tuple[str, str | None]:
     for entry in _promoted_patterns():
         if re.search(entry["pattern"], t, re.IGNORECASE):
             return ("PROMOTED", entry["file"])
+
+    # Vague catch-all intents — only match on short utterances
+    if word_count <= cfg.simple_intent_max_words:
+        if _match_any(t, GREETING_PATTERNS):
+            return ("GREETING", None)
+        if _match_any(t, AFFIRMATION_PATTERNS):
+            return ("AFFIRMATION", None)
+    else:
+        # Log long utterances that would have matched simple intents
+        for name, patterns in [("GREETING", GREETING_PATTERNS), ("AFFIRMATION", AFFIRMATION_PATTERNS)]:
+            if _match_any(t, patterns):
+                log.info("Long utterance (%d words) would match %s, falling through to UNKNOWN", word_count, name)
+
+    # Multi-match diagnostic
+    all_matches = _check_all_intents(t)
+    if len(all_matches) > 1:
+        log.warning("Multi-match: %s for %r", all_matches, t)
+        metrics.count("intent_multi_match", resolved="UNKNOWN", others=str(all_matches))
 
     return ("UNKNOWN", None)
 
