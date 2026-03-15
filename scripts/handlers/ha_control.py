@@ -61,7 +61,7 @@ EXCLUDE_ENTITIES = {
     "switch.shelly_bedroom_wall_switch_switch_1",
     # Duplicate/hex-named climate entities (prefer friendly-named ones)
     "climate.0xc09b9efffe848bb4",
-    "climate.martins_office_radiator_trv_2",
+    "climate.martins_office_radiator_trv",  # _2 is the better entity
 }
 
 # ---------------------------------------------------------------------------
