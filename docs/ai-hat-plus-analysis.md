@@ -352,6 +352,18 @@ The AI HAT+ 2 can run LLMs up to **1.5B parameters** via a Hailo-ported version 
 
 **Computer vision:** Same performance as the original AI HAT+. No improvement. Still the right choice if adding a camera.
 
+### Raspberry Pi's Own Recommendation: Voice-to-Action Agents
+
+The official Raspberry Pi article ["When and why you might need the AI HAT+ 2"](https://www.raspberrypi.com/news/when-and-why-you-might-need-the-raspberry-pi-ai-hat-plus-2/) specifically calls out **local voice-to-action agents** as a strong use case:
+
+> "A strong application of the AI HAT+ 2 is a local voice-to-action agent, combining high-compute inference with relatively low-bandwidth interaction. These workflows often rely on a large prefill step, i.e. processing a big, changing input context before generating a short response."
+
+This describes BenderPi almost exactly — wake word → STT → intent → short response. The key insight is about **prefill performance**: the Hailo-10H is faster at processing large input contexts (prefill) than at generating tokens. For a voice assistant where you process a system prompt + conversation history (large prefill) and generate 1-3 sentences (short generation), the NPU's architecture is less disadvantaged than raw token/sec benchmarks suggest.
+
+However, the independent reviews (CNX Software, Hackster, Jeff Geerling) all found the CPU outperforming the NPU even for these workloads at the 1.5B parameter level. The prefill advantage may only materialise with larger models or longer contexts — and the Hailo-10H's 8GB RAM limit caps model size at 1.5B.
+
+**Revised assessment:** The voice-to-action framing is more favourable than our initial analysis suggested, but the 1.5B model quality constraint remains the blocking issue. If Hailo's model zoo grows to support 3B+ models (or if Whisper becomes available), the value proposition changes significantly.
+
 ### Revised Recommendation
 
 | Question | Original Answer | Updated Answer |
@@ -364,6 +376,9 @@ The AI HAT+ 2 can run LLMs up to **1.5B parameters** via a Hailo-ported version 
 ### Sources
 
 - [Raspberry Pi AI HAT+ 2 product page](https://www.raspberrypi.com/products/ai-hat-plus-2/)
+- [When and why you might need the AI HAT+ 2 (official)](https://www.raspberrypi.com/news/when-and-why-you-might-need-the-raspberry-pi-ai-hat-plus-2/)
 - [CNX Software review with benchmarks](https://www.cnx-software.com/2026/01/20/raspberry-pi-ai-hat-2-review-a-40-tops-ai-accelerator-tested-with-computer-vision-llm-and-vlm-workloads/)
 - [Hackster hands-on review](https://www.hackster.io/news/gen-ai-on-your-raspberry-pi-a-hands-on-review-of-the-raspberry-pi-ai-hat-2-3c829a8894dd)
+- [Jeff Geerling review](https://www.jeffgeerling.com/blog/2026/raspberry-pi-ai-hat-2/)
+- [Tom's Hardware review (3/5)](https://www.tomshardware.com/raspberry-pi/raspberry-pi-ai-hat-plus-2-review)
 - [Hailo Whisper demo on AI HAT+](https://www.hackster.io/news/hailo-demonstrates-accelerated-llm-based-speech-recognition-on-the-raspberry-pi-ai-hat-63eec0214603)
