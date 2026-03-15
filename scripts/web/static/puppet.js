@@ -8,27 +8,7 @@
 
   var api = window.bender.api;
   var apiJson = window.bender.apiJson;
-
-  // ── DOM helper ───────────────────────────────────────
-
-  function el(tag, attrs, children) {
-    attrs = attrs || {};
-    children = children || [];
-    var e = document.createElement(tag);
-    for (var k in attrs) {
-      if (!attrs.hasOwnProperty(k)) continue;
-      var v = attrs[k];
-      if (k === "className") e.className = v;
-      else if (k === "textContent") e.textContent = v;
-      else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
-      else e.setAttribute(k, v);
-    }
-    children.forEach(function (c) {
-      if (typeof c === "string") e.appendChild(document.createTextNode(c));
-      else if (c) e.appendChild(c);
-    });
-    return e;
-  }
+  var el = window.bender.el;
 
   // ── State ────────────────────────────────────────────
 

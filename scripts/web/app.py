@@ -168,6 +168,22 @@ async def puppet_favourite(body: dict = Body(...)):
     return {"status": "ok", "path": path, "favourite": favourite}
 
 
+# ── Dashboard Endpoints ─────────────────────────────────
+
+
+@app.get("/api/status", dependencies=[Depends(require_pin)])
+async def get_status():
+    from generate_status import generate_dict
+    return await asyncio.to_thread(generate_dict)
+
+
+@app.post("/api/status/refresh", dependencies=[Depends(require_pin)])
+async def refresh_status():
+    from generate_status import generate_dict, generate
+    await asyncio.to_thread(generate)
+    return await asyncio.to_thread(generate_dict)
+
+
 # ── Volume Endpoints ────────────────────────────────────
 
 

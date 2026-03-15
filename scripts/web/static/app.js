@@ -92,11 +92,41 @@
     });
   }
 
+  // ── DOM Helper ─────────────────────────────────────
+
+  /**
+   * Create a DOM element with attributes and children.
+   * Safe: never uses innerHTML. All text goes through textContent/createTextNode.
+   * @param {string} tag - element tag name
+   * @param {object} [attrs] - attributes/properties (className, textContent, onXxx, etc.)
+   * @param {Array} [children] - child elements or strings
+   * @returns {HTMLElement}
+   */
+  function el(tag, attrs, children) {
+    attrs = attrs || {};
+    children = children || [];
+    var e = document.createElement(tag);
+    for (var k in attrs) {
+      if (!attrs.hasOwnProperty(k)) continue;
+      var v = attrs[k];
+      if (k === "className") e.className = v;
+      else if (k === "textContent") e.textContent = v;
+      else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
+      else e.setAttribute(k, v);
+    }
+    children.forEach(function (c) {
+      if (typeof c === "string") e.appendChild(document.createTextNode(c));
+      else if (c) e.appendChild(c);
+    });
+    return e;
+  }
+
   // Expose helpers globally for tab modules
   window.bender = {
     api: api,
     apiJson: apiJson,
-    apiDownload: apiDownload
+    apiDownload: apiDownload,
+    el: el
   };
 
   // ── Login / Logout ─────────────────────────────────

@@ -845,3 +845,181 @@ tbody tr:hover {
   background: rgba(233, 69, 96, 0.3);
   color: var(--text);
 }
+
+/* ── Dashboard ──────────────────────────────────────── */
+
+.dashboard-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 16px;
+}
+
+.dashboard-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 0;
+}
+
+.dashboard-section {
+  margin-bottom: 0;
+}
+
+/* Metric card rows */
+.dashboard-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dashboard-row:last-child {
+  margin-bottom: 0;
+}
+
+.dashboard-metric {
+  padding: 14px 16px;
+  text-align: center;
+}
+
+.dashboard-metric-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.dashboard-metric-value {
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.dashboard-metric--success { color: var(--success); }
+.dashboard-metric--warning { color: var(--warning); }
+.dashboard-metric--error   { color: var(--error); }
+.dashboard-metric--muted   { color: var(--text); }
+
+/* Intent bar chart */
+.dashboard-sub {
+  margin-top: 16px;
+}
+
+.dashboard-sub-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.dashboard-intent-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dashboard-intent-item {
+  display: grid;
+  grid-template-columns: 140px 1fr 40px;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.dashboard-intent-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboard-intent-bar-wrap {
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dashboard-intent-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  min-width: 4px;
+  transition: width 0.4s ease;
+}
+
+.dashboard-intent-count {
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* Alerts */
+.dashboard-alert-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dashboard-alert-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.dashboard-alert-check {
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.dashboard-alert-msg {
+  flex: 1;
+}
+
+/* Recent errors */
+.dashboard-error-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dashboard-error-line {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  word-break: break-all;
+}
+
+/* Git log */
+.dashboard-git-log {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-size: 0.82rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+@media (max-width: 768px) {
+  .dashboard-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .dashboard-intent-item {
+    grid-template-columns: 100px 1fr 36px;
+  }
+}
