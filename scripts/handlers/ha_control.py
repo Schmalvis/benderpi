@@ -59,6 +59,9 @@ EXCLUDE_ENTITIES = {
     "switch.led_tree_lights_conservatory",
     # Closet is not a room people ask for by name (part of bedroom physically)
     "switch.shelly_bedroom_wall_switch_switch_1",
+    # Duplicate/hex-named climate entities (prefer friendly-named ones)
+    "climate.0xc09b9efffe848bb4",
+    "climate.martins_office_radiator_trv_2",
 }
 
 # ---------------------------------------------------------------------------
@@ -85,7 +88,7 @@ def _fetch_entities() -> list[dict]:
         state = s.get("state", "unavailable")
 
         # Only lights and switches
-        if not eid.startswith(("light.", "switch.")):
+        if not eid.startswith(("light.", "switch.", "climate.")):
             continue
         # Skip unavailable/unknown
         if state in ("unavailable", "unknown"):
@@ -199,9 +202,13 @@ def _parse_room_term(text: str) -> str | None:
 # HA service call
 # ---------------------------------------------------------------------------
 
-def _ha_call(domain: str, service: str, entity_id: str) -> bool:
+def _ha_call(domain: str, service: str, entity_id: str,
+             extra: dict | None = None) -> bool:
     url  = f"{HA_URL}/api/services/{domain}/{service}"
-    data = json.dumps({"entity_id": entity_id}).encode()
+    body = {"entity_id": entity_id}
+    if extra:
+        body.update(extra)
+    data = json.dumps(body).encode()
     req  = urllib.request.Request(
         url, data=data,
         headers={
@@ -216,6 +223,12 @@ def _ha_call(domain: str, service: str, entity_id: str) -> bool:
     except Exception as e:
         print(f"  HA call failed ({entity_id}): {e}")
         return False
+
+
+def _parse_temperature(text: str) -> float | None:
+    """Extract a numeric temperature from user text."""
+    m = re.search(r"(\d{1,2})(?:\.\d+)?\s*(?:degrees?|deg|°)?", text.lower())
+    return float(m.group(1)) if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -268,17 +281,43 @@ def control(user_text: str) -> str:
         text = "On or off? Even I need a bit more to go on."
         return tts_generate.speak(text)
 
+    # Check for temperature set request first
+    target_temp = _parse_temperature(user_text)
+    if target_temp and any(e["domain"] == "climate" for e in matches):
+        success = False
+        for e in [x for x in matches if x["domain"] == "climate"]:
+            print(f"  HA: climate.set_temperature → {e['entity_id']} @ {target_temp}°")
+            if _ha_call("climate", "set_temperature", e["entity_id"], {"temperature": target_temp}):
+                success = True
+        if success:
+            room_name = _normalise(matches[0]["friendly_name"]).title()
+            text = f"Temperature set to {int(target_temp)} degrees in {room_name}. Don't blame me if you melt."
+            return tts_generate.speak(text)
+        return tts_generate.speak(random.choice(FAILED_RESPONSES))
+
+    if action is None:
+        text = "On or off? Even I need a bit more to go on."
+        return tts_generate.speak(text)
+
     service = f"turn_{action}"
     success = False
     for e in matches:
-        print(f"  HA: {e['domain']}.{service} → {e['entity_id']}")
-        if _ha_call(e["domain"], service, e["entity_id"]):
-            success = True
+        domain = e["domain"]
+        if domain == "climate":
+            # climate uses set_hvac_mode, not turn_on/off
+            hvac_mode = "heat" if action == "on" else "off"
+            svc = "set_hvac_mode"
+            print(f"  HA: climate.set_hvac_mode({hvac_mode}) → {e['entity_id']}")
+            if _ha_call(domain, svc, e["entity_id"], {"hvac_mode": hvac_mode}):
+                success = True
+        else:
+            print(f"  HA: {domain}.{service} → {e['entity_id']}")
+            if _ha_call(domain, service, e["entity_id"]):
+                success = True
 
     if not success:
         return tts_generate.speak(random.choice(FAILED_RESPONSES))
 
-    # Build a friendly room name for the response
     names       = list({e["friendly_name"] for e in matches})
     display     = _normalise(names[0]).title() if names else room_term.title()
     templates   = ON_RESPONSES if action == "on" else OFF_RESPONSES
