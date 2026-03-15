@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Bender conversational mode — full conversation loop with logging.
+Bender conversational mode -- full conversation loop with logging.
 
 Flow:
   1. Wait for "Hey Bender" wake word
   2. Play greeting clip
-  3. Listen → STT → intent → respond
-     Priority: real_clip → pre_gen_tts → promoted_tts → handler → ai_fallback
+  3. Listen -> STT -> intent -> respond
+     Priority: real_clip -> pre_gen_tts -> promoted_tts -> handler -> ai_fallback
+     WEATHER and NEWS use cached briefing WAVs (not temp files -- do not unlink)
   4. Log every turn to logs/YYYY-MM-DD.jsonl
   5. Loop until silence timeout or DISMISSAL
 """
@@ -34,8 +35,9 @@ import audio
 import tts_generate
 import stt
 import intent as intent_mod
+import briefings
 from ai_response import AIResponder, MODEL
-from handlers import weather, ha_control
+from handlers import ha_control
 from conversation_log import SessionLogger
 
 # ---------------------------------------------------------------------------
@@ -135,7 +137,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
 
         if not text:
             if time.time() - last_heard > SILENCE_TIMEOUT:
-                print("Silence timeout — ending session")
+                print("Silence timeout -- ending session")
                 log.session_end("timeout")
                 return
             continue
@@ -172,7 +174,7 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 log.log_turn(text, "PROMOTED", None, "promoted_tts",
                              response_text=os.path.basename(clip_path))
             else:
-                # File missing — fall through to AI
+                # File missing -- fall through to AI
                 _respond_ai(text, ai, log)
 
         # --- GREETING / AFFIRMATION / JOKE / PERSONAL (pre-gen or real clip) ---
@@ -189,12 +191,21 @@ def run_session(ai: AIResponder, log: SessionLogger):
         # --- WEATHER ---
         elif intent_name == "WEATHER":
             try:
-                wav = weather.get_weather_response()
+                wav = briefings.get_weather_wav()
                 audio.play(wav)
-                os.unlink(wav)
                 log.log_turn(text, intent_name, None, "handler_weather")
             except Exception as e:
                 print(f"Weather handler error: {e}")
+                _respond_ai(text, ai, log, intent_name)
+
+        # --- NEWS ---
+        elif intent_name == "NEWS":
+            try:
+                wav = briefings.get_news_wav()
+                audio.play(wav)
+                log.log_turn(text, intent_name, None, "handler_news")
+            except Exception as e:
+                print(f"News handler error: {e}")
                 _respond_ai(text, ai, log, intent_name)
 
         # --- HA_CONTROL ---
@@ -208,11 +219,11 @@ def run_session(ai: AIResponder, log: SessionLogger):
                 print(f"HA control error: {e}")
                 _respond_ai(text, ai, log, intent_name)
 
-        # --- UNKNOWN → AI ---
+        # --- UNKNOWN -> AI ---
         else:
             _respond_ai(text, ai, log)
 
-        # Reset timer after Bender finishes — gives user full window to respond
+        # Reset timer after Bender finishes -- gives user full window to respond
         last_heard = time.time()
 
 
@@ -242,6 +253,8 @@ def _respond_ai(user_text: str, ai: AIResponder, log: SessionLogger,
 
 def main():
     ai = AIResponder()
+    print("Refreshing briefings...")
+    briefings.refresh_all()
     while True:
         try:
             wait_for_wakeword()

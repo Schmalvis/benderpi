@@ -11,6 +11,7 @@ Intents:
   JOKE          — tell me a joke / say something funny
   PERSONAL      — personal questions (sub_key = job/age/etc)
   WEATHER       — weather/forecast/rain
+  NEWS          — news/headlines/what's happening
   HA_CONTROL    — Commands to control HA devices (lights, switches)
   UNKNOWN       — everything else → AI fallback
 """
@@ -68,6 +69,14 @@ WEATHER_PATTERNS = [
     r"\bwill it rain\b",
     r"\btemperature outside\b",
     r"\bgoing to rain\b",
+]
+
+
+NEWS_PATTERNS = [
+    r"\bnews\b",
+    r"\bheadlines?\b",
+    r"\bwhat.{0,10}happening\b",
+    r"\blatest updates?\b",
 ]
 
 HA_CONTROL_PATTERNS = [
@@ -151,6 +160,9 @@ def classify(text: str) -> tuple[str, str | None]:
 
     if _match_any(t, WEATHER_PATTERNS):
         return ("WEATHER", None)
+
+    if _match_any(t, NEWS_PATTERNS):
+        return ("NEWS", None)
 
     # Personal questions — check sub-patterns
     for sub_key, pattern in PERSONAL_PATTERNS:

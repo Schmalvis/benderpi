@@ -30,3 +30,6 @@ piper/
 
 # Trained voice model (ONNX, ~61MB — download from HF Hub, see README)
 models/
+
+# Cached briefing metadata (regenerated at runtime)
+speech/responses/daily/

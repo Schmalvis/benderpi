@@ -174,7 +174,7 @@ Response priority chain:
   1. Real Bender clip       → speech/wav/
   2. Pre-generated TTS      → speech/responses/<category>/
   3. Promoted TTS           → speech/responses/promoted/
-  4. Dynamic handler        → weather.py / ha_status.py
+  4. Dynamic handler        → briefings.py (weather/news) / ha_control.py (HA devices)
   5. AI fallback (Claude)   → tts_generate.py
         ↓
 Play response + LED sync
@@ -191,10 +191,26 @@ Loop (8s silence timeout ends session)
 | DISMISSAL | "bye", "goodbye", "stop" | Real Bender clips — ends session |
 | JOKE | "tell me a joke", "say something funny" | Real clips + pre-gen TTS |
 | PERSONAL | "how old are you", "what do you eat" etc. | Pre-gen TTS (11 topics) |
-| WEATHER | "weather", "is it raining", "forecast" | HA weather entity → TTS |
-| HA_CONFIRM | "lights on", "temperature set to..." | HA status handler → TTS |
+| WEATHER | "weather", "is it raining", "forecast" | Cached briefing WAV (30min TTL) |
+| NEWS | "news", "headlines", "what's happening" | Cached BBC RSS briefing (2h TTL) |
+| HA_CONTROL | "lights on", "turn off radiator", "set temperature to 20" | Dynamic HA entity control |
 | PROMOTED | (custom patterns, see below) | Promoted TTS clips |
 | UNKNOWN | Everything else | Claude API → TTS |
+
+---
+
+## Weather & News Briefings
+
+Weather and news are pre-generated as WAV files and cached — Bender reads from cache rather than generating on demand.
+
+| Briefing | Source | Cache TTL |
+|---|---|---|
+| Weather | Home Assistant `HA_WEATHER_ENTITY` | 30 minutes |
+| News | BBC RSS feeds (UK + England) | 2 hours |
+
+Both are refreshed at service start and lazily when the TTL expires. Cache lives in `speech/responses/daily/` (gitignored). If generation fails, the previous cached WAV is used as fallback.
+
+To force a refresh: `sudo systemctl restart bender-converse`
 
 ---
 
