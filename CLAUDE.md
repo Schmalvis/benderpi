@@ -17,11 +17,11 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 | Field | Value |
 |---|---|
 | Name | BenderPi |
-| IP | `192.168.68.132` |
+| IP | `<device-ip>` |
 | Hostname | `BenderPi` |
 | User | `pi` |
 | OS | Raspberry Pi OS (Debian trixie, aarch64) |
-| SSH | `ssh pi@192.168.68.132` — key at `~/.ssh/id_ed25519` |
+| SSH | `ssh pi@<device-ip>` — key at `~/.ssh/id_ed25519` |
 | Working dir | `/home/pi/bender` |
 
 ---
@@ -102,7 +102,7 @@ bender/
 | `PORCUPINE_ACCESS_KEY` | Yes | Picovoice API key (free at console.picovoice.ai) |
 | `ANTHROPIC_API_KEY` | Yes (converse) | Claude API key for AI fallback |
 | `HA_TOKEN` | Yes (converse) | Home Assistant Long-Lived Access Token |
-| `HA_URL` | Yes (converse) | HA base URL (default: `http://192.168.68.125:8123`) |
+| `HA_URL` | Yes (converse) | HA base URL (default: `http://<ha-ip>:8123`) |
 | `HA_WEATHER_ENTITY` | Optional | Weather entity (default: `weather.forecast_home`) |
 | `BENDER_AI_MODEL` | Optional | Claude model for fallback (default: `claude-haiku-4-5-20251001`) |
 
@@ -207,7 +207,7 @@ Both refresh at service start (in a background thread) and lazily when TTL expir
 
 **Known entity notes:**
 - `climate.martins_office_radiator_trv_2` is the correct office TRV (exclude `_1`)
-- `climate.0xc09b9efffe848bb4` is Jenn's TRV duplicate (excluded)
+- `climate.0xc09b9efffe848bb4` is a duplicate TRV (excluded)
 - Several Zigbee entities have hex IDs — HA housekeeping task to rename them
 
 ---
@@ -300,7 +300,7 @@ A browser-based admin panel and puppet mode served by FastAPI.
 
 ### Running locally (development)
 ```bash
-BENDER_WEB_PIN=2904 python -m uvicorn scripts.web.app:app --reload --port 8080
+BENDER_WEB_PIN=<your-pin> python -m uvicorn scripts.web.app:app --reload --port 8080
 ```
 
 ### Service setup (on Pi)
