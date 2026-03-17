@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════
    BenderPi Web UI — Puppet Mode
-   TTS speak, soundboard with favourites, volume control
+   TTS speak with speech rate, soundboard with favourites
    ═══════════════════════════════════════════════════════ */
 
 (function () {
@@ -19,6 +19,11 @@
   var clipsContainer = null;
   var initialised = false;
 
+  // Speech rate
+  var speechRateSlider = null;
+  var speechRateLabel = null;
+  var speechRateDebounce = null;
+
   // ── Init ─────────────────────────────────────────────
 
   function initPuppet() {
@@ -31,16 +36,12 @@
       initialised = true;
     }
 
-    loadVolume();
+    loadSpeechRate();
     loadClips();
   }
 
   function buildUI() {
-    // Volume section
-    var volumeSection = buildVolumeSection();
-    panel.appendChild(volumeSection);
-
-    // Speak section
+    // Speak section (with speech rate)
     var speakSection = buildSpeakSection();
     panel.appendChild(speakSection);
 
@@ -65,65 +66,29 @@
     panel.appendChild(clipsSection);
   }
 
-  // ── Volume ───────────────────────────────────────────
+  // ── Speech Rate ────────────────────────────────────────
 
-  var volumeSlider = null;
-  var volumeLabel = null;
-  var volumeDebounce = null;
-
-  function buildVolumeSection() {
-    var section = el("div", { className: "card puppet-section" }, [
-      el("div", { className: "card-header" }, [
-        el("h3", { textContent: "Volume" })
-      ])
-    ]);
-
-    var row = el("div", { className: "puppet-volume-row" });
-
-    volumeSlider = el("input", {
-      type: "range",
-      min: "0",
-      max: "100",
-      value: "80",
-      className: "puppet-volume-slider",
-      onInput: function () {
-        volumeLabel.textContent = volumeSlider.value + "%";
-        clearTimeout(volumeDebounce);
-        volumeDebounce = setTimeout(function () {
-          setVolume(parseInt(volumeSlider.value, 10));
-        }, 300);
-      }
-    });
-
-    volumeLabel = el("span", {
-      className: "puppet-volume-label mono",
-      textContent: "80%"
-    });
-
-    row.appendChild(volumeSlider);
-    row.appendChild(volumeLabel);
-    section.appendChild(row);
-    return section;
-  }
-
-  function loadVolume() {
-    apiJson("/api/config/volume").then(function (data) {
-      if (volumeSlider && data.level !== undefined) {
-        volumeSlider.value = data.level;
-        volumeLabel.textContent = data.level + "%";
+  function loadSpeechRate() {
+    apiJson("/api/config").then(function (data) {
+      if (speechRateSlider && data.speech_rate !== undefined) {
+        speechRateSlider.value = data.speech_rate;
+        speechRateLabel.textContent = "Speed: " + Number(data.speech_rate).toFixed(1) + "x";
       }
     }).catch(function () {
-      // Volume read failed (e.g. not on Pi) — leave default
+      // Config read failed — leave default
     });
   }
 
-  function setVolume(level) {
-    apiJson("/api/config/volume", {
-      method: "POST",
-      body: JSON.stringify({ level: level })
-    }).catch(function () {
-      // Silently fail on dev machine
-    });
+  function setSpeechRate(value) {
+    clearTimeout(speechRateDebounce);
+    speechRateDebounce = setTimeout(function () {
+      apiJson("/api/config", {
+        method: "PUT",
+        body: JSON.stringify({ speech_rate: value })
+      }).catch(function () {
+        // Silently fail
+      });
+    }, 300);
   }
 
   // ── Speak ────────────────────────────────────────────
@@ -182,6 +147,31 @@
       counter.textContent = textarea.value.length + " / 500";
     });
 
+    // Speech rate slider row
+    var rateRow = el("div", { className: "puppet-volume-row" });
+
+    speechRateSlider = el("input", {
+      type: "range",
+      min: "0.5",
+      max: "2.0",
+      step: "0.1",
+      value: "1.0",
+      className: "puppet-volume-slider",
+      onInput: function () {
+        var val = parseFloat(speechRateSlider.value);
+        speechRateLabel.textContent = "Speed: " + val.toFixed(1) + "x";
+        setSpeechRate(val);
+      }
+    });
+
+    speechRateLabel = el("span", {
+      className: "puppet-volume-label mono",
+      textContent: "Speed: 1.0x"
+    });
+
+    rateRow.appendChild(speechRateSlider);
+    rateRow.appendChild(speechRateLabel);
+
     var controls = el("div", { className: "puppet-speak-controls" }, [
       counter,
       statusText,
@@ -189,6 +179,7 @@
     ]);
 
     section.appendChild(textarea);
+    section.appendChild(rateRow);
     section.appendChild(controls);
     return section;
   }
