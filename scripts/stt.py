@@ -161,6 +161,24 @@ def listen_and_transcribe() -> str:
     return text
 
 
+def transcribe_file(wav_path: str) -> str:
+    """Transcribe a pre-recorded WAV file (e.g. uploaded from web remote).
+
+    Applies the same hallucination filter as listen_and_transcribe.
+    Returns empty string if silent or hallucination detected.
+    """
+    model = _load_model()
+    with metrics.timer("stt_transcribe", model=WHISPER_MODEL, source="file"):
+        segments, _ = model.transcribe(wav_path, language="en", beam_size=1)
+        text = " ".join(s.text for s in segments).strip()
+    cleaned = text.lower().strip().rstrip(".!?,")
+    if cleaned in WHISPER_HALLUCINATIONS:
+        log.warning("Whisper hallucination (file) filtered: %r", text)
+        metrics.count("stt_hallucination", text=text, source="file")
+        return ""
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Standalone test
 # ---------------------------------------------------------------------------

@@ -96,7 +96,7 @@ def speak(text: str) -> str:
             PIPER_BIN,
             "--model", MODEL_PATH,
             "--output_file", raw_tmp.name,
-            "--length-scale", str(getattr(_cfg, "speech_rate", 1.0) if _cfg else 1.0),
+            "--length_scale", str(getattr(_cfg, "speech_rate", 1.0) if _cfg else 1.0),
         ],
             input=text.encode(),
             capture_output=True,

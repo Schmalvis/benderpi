@@ -86,7 +86,7 @@ sudo systemctl start bender-converse
 sudo systemctl start bender-web
 ```
 
-Web UI: `http://<pi-ip>:8080`
+Web UI: `https://bender.schmalvis.com` (via nginx reverse proxy)
 
 ---
 
@@ -216,7 +216,7 @@ Refreshed at service start and lazily on TTL expiry. Force refresh: `sudo system
 
 ## Web UI
 
-Available at `http://<pi-ip>:8080` — PIN protected.
+Available at `https://bender.schmalvis.com` (via nginx reverse proxy)
 
 - **Dashboard** — service status, uptime, conversation metrics
 - **Puppet mode** — type text for Bender to speak, or play any audio clip

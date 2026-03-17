@@ -30,6 +30,7 @@ adafruit-circuitpython-neopixel-spi==1.0.14
 # ── Web UI ───────────────────────────────────────────────────────────────────
 fastapi==0.115.0
 uvicorn==0.32.0
+python-multipart==0.0.20
 
 # ── Hub (asset download via setup.sh) ───────────────────────────────────────
 huggingface_hub==1.7.1

@@ -6,7 +6,7 @@ import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Body, Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -563,6 +563,104 @@ async def log_download(filename: str):
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(resolved, filename=filename, media_type="application/octet-stream")
+
+
+
+# ── Remote Voice Endpoint ───────────────────────────────────────────────────
+
+
+@app.post("/api/remote/ask", dependencies=[Depends(require_pin)])
+async def remote_ask(audio: UploadFile = File(...)):
+    """Accept audio from browser, transcribe via Whisper, run pipeline, return WAV as base64."""
+    import base64
+    import tempfile
+    import time
+
+    t_start = time.time()
+    audio_bytes = await audio.read()
+    if len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Audio too short")
+
+    ct = (audio.content_type or "").lower()
+    fn = (audio.filename or "").lower()
+    if "mp4" in ct or "mp4" in fn or "aac" in ct:
+        in_suffix = ".mp4"
+    elif "ogg" in ct or "ogg" in fn:
+        in_suffix = ".ogg"
+    else:
+        in_suffix = ".webm"
+
+    tmp_in = None
+    tmp_wav = None
+    resp_wav = None
+    resp_is_temp = False
+
+    try:
+        # 1. Save upload to temp file
+        with tempfile.NamedTemporaryFile(suffix=in_suffix, delete=False) as f:
+            f.write(audio_bytes)
+            tmp_in = f.name
+        tmp_wav = tmp_in[: -len(in_suffix)] + "_16k.wav"
+
+        # 2. Convert to 16 kHz mono WAV for Whisper
+        conv = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "ffmpeg", "-y", "-i", tmp_in,
+                "-ar", "16000", "-ac", "1", "-f", "wav", tmp_wav,
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if conv.returncode != 0:
+            raise HTTPException(status_code=500, detail="Audio conversion failed")
+
+        # 3. Transcribe
+        import stt as _stt
+        transcript = await asyncio.to_thread(_stt.transcribe_file, tmp_wav)
+
+        # 4. Resolve response through the normal pipeline
+        if not transcript:
+            import tts_generate as _tts
+            resp_text = "I heard absolutely nothing. Either speak up or stop wasting my circuits."
+            resp_wav = await asyncio.to_thread(_tts.speak, resp_text)
+            resp_is_temp = True
+            resp_intent = "SILENCE"
+        else:
+            from responder import Responder
+            from ai_response import AIResponder
+            resp = await asyncio.to_thread(
+                Responder().get_response, transcript, AIResponder()
+            )
+            resp_wav = resp.wav_path
+            resp_is_temp = resp.is_temp
+            resp_text = resp.text
+            resp_intent = resp.intent
+
+        # 5. Encode WAV as base64 and return
+        with open(resp_wav, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+
+        return {
+            "transcript": transcript,
+            "response_text": resp_text,
+            "intent": resp_intent,
+            "audio_b64": audio_b64,
+            "duration_ms": round((time.time() - t_start) * 1000),
+        }
+
+    finally:
+        for p in [tmp_in, tmp_wav]:
+            try:
+                if p:
+                    os.unlink(p)
+            except OSError:
+                pass
+        if resp_is_temp and resp_wav:
+            try:
+                os.unlink(resp_wav)
+            except OSError:
+                pass
 
 
 # ── Static files (must be last — catches all unmatched routes) ──

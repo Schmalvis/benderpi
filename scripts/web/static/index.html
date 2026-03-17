@@ -63,6 +63,10 @@
           <span class="tab-icon">&#x2699;</span>
           <span class="tab-label">Config</span>
         </button>
+        <button class="tab-btn" data-tab="remote" role="tab" aria-selected="false">
+          <span class="tab-icon">&#x1F4F1;</span>
+          <span class="tab-label">Remote</span>
+        </button>
       </nav>
 
       <div class="header-actions">
@@ -123,6 +127,9 @@
           <p class="text-muted">Config — coming soon</p>
         </div>
       </section>
+      <section id="panel-remote" class="tab-panel" role="tabpanel">
+        <!-- content injected by remote.js -->
+      </section>
     </main>
 
   </div>
@@ -133,6 +140,7 @@
   <script src="/dashboard.js"></script>
   <script src="/logs.js"></script>
   <script src="/config.js"></script>
+  <script src="/remote.js"></script>
 
 </body>
 </html>

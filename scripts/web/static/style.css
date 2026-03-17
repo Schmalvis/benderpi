@@ -1549,3 +1549,190 @@ details[open] .session-summary::before {
   filter: brightness(1.15);
 }
 .cfg-restart-apply-btn { flex-shrink: 0; }
+
+/* ── Remote tab ─────────────────────────────────────────────────────────── */
+
+.remote-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem 1rem 3rem;
+  gap: 1.25rem;
+  min-height: 60vh;
+}
+
+.remote-btn-wrap {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.remote-ring {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.remote-ring-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 4;
+}
+
+.remote-ring-prog {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.9s linear;
+}
+
+.remote-btn {
+  position: relative;
+  z-index: 1;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  border: none;
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.remote-btn:active,
+.remote-btn.recording {
+  transform: scale(0.95);
+}
+
+.remote-btn.recording {
+  background: #c0392b;
+  box-shadow: 0 0 0 6px rgba(192,57,43,.25), 0 4px 16px rgba(0,0,0,.4);
+  animation: remote-pulse 1.4s ease-in-out infinite;
+}
+
+.remote-btn.processing {
+  background: var(--surface2);
+  opacity: 0.8;
+}
+
+@keyframes remote-pulse {
+  0%, 100% { box-shadow: 0 0 0 6px rgba(192,57,43,.25), 0 4px 16px rgba(0,0,0,.4); }
+  50%       { box-shadow: 0 0 0 14px rgba(192,57,43,.08), 0 4px 16px rgba(0,0,0,.4); }
+}
+
+.remote-btn-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.remote-spinner {
+  animation: remote-spin 0.8s linear infinite;
+}
+
+@keyframes remote-spin {
+  to { transform: rotate(360deg); }
+}
+
+.remote-countdown {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+}
+
+.remote-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 0;
+}
+
+.remote-status {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 0;
+}
+
+.remote-status.is-error {
+  color: var(--danger, #e74c3c);
+}
+
+.remote-mic-err {
+  background: var(--surface2);
+  border: 1px solid var(--danger, #e74c3c);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  max-width: 320px;
+}
+
+.remote-mic-err p { margin: 0.25rem 0; }
+
+/* ── History ────────────────────────────────────────────────────────────── */
+
+.remote-history {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.remote-hist-item {
+  background: var(--surface2);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  animation: remote-fadein 0.3s ease;
+}
+
+@keyframes remote-fadein {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.remote-hist-you,
+.remote-hist-bender {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.remote-hist-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 3.5rem;
+}
+
+.remote-hist-bender .remote-hist-label {
+  color: var(--accent);
+}
+
+.remote-hist-ms {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+}

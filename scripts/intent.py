@@ -70,10 +70,9 @@ WEATHER_PATTERNS = [
     r"\bis it raining\b",
     r"\bwill it rain\b",
     r"\btemperature outside\b",
+    r"\b(what.{0,15}temperature|temperature in|how (hot|cold|warm))\b",
     r"\bgoing to rain\b",
 ]
-
-
 NEWS_PATTERNS = [
     r"\bnews\b",
     r"\bheadlines?\b",
@@ -85,13 +84,12 @@ HA_CONTROL_PATTERNS = [
     r"\b(turn|switch|put) (on|off)\b",
     r"\blights? (on|off)\b",
     r"\b(on|off) (the )?lights?\b",
-    r"\b(radiator|thermostat|heating|temperature|trv)\b",
+    r"\b(radiator|thermostat|heating|trv)\b",
     r"\bset (it |the temperature )?(to )?[0-9]+ degrees?\b",
     r"\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|cabin|utility|ensuite|living room)\b.{0,30}\b(light|lamp|off|on|radiator|heating)\b",
     r"\b(light|lamp)\b.{0,30}\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|utility|ensuite)\b",
 ]
 
-# Personal question sub-keys and their trigger patterns
 PERSONAL_PATTERNS = [
     ("eat",         r"\b(eat|food|drink|hungry|alcohol|beer|fuel|power)\b"),
     ("feelings",    r"\b(feel(ings?)?|emotion(al)?|happy|sad|angry|upset|care)\b"),
@@ -106,6 +104,42 @@ PERSONAL_PATTERNS = [
     ("job",         r"\b(job|purpose|programmed|function)\b|\bwhat do you do\b"),
 ]
 
+
+
+# Location words to strip from extracted place names
+_WEATHER_NOISE = re.compile(
+    r"(what'?s?|what is|how'?s?|how is|tell me|give me|is it|will it|"
+    r"the|weather|forecast|temperature|rain|raining|like|today|tomorrow|"
+    r"right now|now|currently|outside|there|please|bender)",
+    re.IGNORECASE,
+)
+
+def _extract_weather_location(text: str) -> str | None:
+    """Extract an explicit location from a weather query, or None for local."""
+    t = text.strip()
+    _TRAILING_NOISE_RE = re.compile(
+        r"\s+\b(?:today|tomorrow|now|right\s+now|currently|please|bender)\b.*$",
+        re.IGNORECASE,
+    )
+    _SKIP_WORDS = {"the", "a", "an", "it", "there", "outside", "here"}
+    # Find all standalone "in/for/at" followed by up to 3 words
+    for m in re.finditer(r"\b(?:in|for|at)\b\s+((?:[A-Za-z][A-Za-z\-\']*\s*){1,3})", t, re.IGNORECASE):
+        raw = m.group(1).strip()
+        raw = _TRAILING_NOISE_RE.sub("", raw).strip()
+        if len(raw) < 2:
+            continue
+        first_word = raw.split()[0].lower()
+        if first_word == "the":
+            # "in the Maldives" -> strip leading "the"
+            raw = raw.split(" ", 1)[1].strip() if " " in raw else raw
+            first_word = raw.split()[0].lower() if raw else ""
+        if not raw or first_word in _SKIP_WORDS:
+            continue
+        cleaned = _WEATHER_NOISE.sub("", raw).strip()
+        if not cleaned:
+            continue
+        return raw.title()
+    return None
 
 def _match_any(text: str, patterns: list[str]) -> bool:
     for p in patterns:
@@ -172,7 +206,8 @@ def classify(text: str) -> tuple[str, str | None]:
     if _match_any(t, HA_CONTROL_PATTERNS):
         return ("HA_CONTROL", None)
     if _match_any(t, WEATHER_PATTERNS):
-        return ("WEATHER", None)
+        location = _extract_weather_location(text.strip())
+        return ("WEATHER", location)
     if _match_any(t, NEWS_PATTERNS):
         return ("NEWS", None)
     if _match_any(t, DISMISSAL_PATTERNS):
@@ -222,6 +257,9 @@ if __name__ == "__main__":
         "Goodbye Bender",
         "Tell me a joke",
         "What's the weather like?",
+        "What's the weather like in Leeds today?",
+        "What's the weather like in Portugal right now?",
+        "Is it raining in Paris?",
         "The lights in the kitchen have been turned on",
         "How old are you?",
         "What do you eat?",

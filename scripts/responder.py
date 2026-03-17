@@ -104,7 +104,7 @@ class Responder:
 
             # --- WEATHER ---
             if intent_name == "WEATHER":
-                return self._handle_weather(text, ai)
+                return self._handle_weather(text, sub_key, ai)
 
             # --- NEWS ---
             if intent_name == "NEWS":
@@ -145,9 +145,16 @@ class Responder:
         # Clip missing -- fall through to AI
         return self._respond_ai(text, ai, intent_name, sub_key)
 
-    def _handle_weather(self, text: str, ai) -> Response:
+    def _handle_weather(self, text: str, location: str | None, ai) -> Response:
         try:
             import briefings
+            if location:
+                wav = briefings.get_weather_wav_for_location(location)
+                return Response(
+                    text=f"weather_{location}", wav_path=wav,
+                    method="handler_weather", intent="WEATHER", sub_key=location,
+                    is_temp=True, needs_thinking=True, model=None,
+                )
             wav = briefings.get_weather_wav()
             return Response(
                 text="weather_briefing", wav_path=wav,

@@ -118,10 +118,32 @@ def _format_condition(raw: str) -> str:
     }
     return mapping.get(raw.lower(), raw.replace("-", " ").replace("_", " "))
 
-def get_weather_text() -> str:
+def _get_forecast(ha_url: str, token: str, entity: str) -> list:
+    """Fetch daily forecast via weather.get_forecasts service (HA 2023.9+)."""
+    import urllib.parse
+    data = json.dumps({"entity_id": entity, "type": "daily"}).encode()
     req = urllib.request.Request(
-        f"{os.environ.get('HA_URL', HA_URL_DEFAULT)}/api/states/{os.environ.get('HA_WEATHER_ENTITY', HA_ENTITY_DEFAULT)}",
-        headers={"Authorization": f"Bearer {os.environ.get('HA_TOKEN', HA_TOKEN_DEFAULT)}"}
+        f"{ha_url}/api/services/weather/get_forecasts?return_response",
+        data=data,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result = json.loads(resp.read())
+        return result.get("service_response", {}).get(entity, {}).get("forecast", [])
+    except Exception as e:
+        log.warning("[briefing] Forecast service call failed: %s", e)
+        return []
+
+def get_weather_text() -> str:
+    ha_url  = os.environ.get("HA_URL", HA_URL_DEFAULT)
+    token   = os.environ.get("HA_TOKEN", HA_TOKEN_DEFAULT)
+    entity  = os.environ.get("HA_WEATHER_ENTITY", HA_ENTITY_DEFAULT)
+
+    req = urllib.request.Request(
+        f"{ha_url}/api/states/{entity}",
+        headers={"Authorization": f"Bearer {token}"}
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
         state = json.loads(resp.read())
@@ -132,8 +154,9 @@ def get_weather_text() -> str:
     temp          = round(attrs.get("temperature", 0))
     humidity      = round(attrs.get("humidity", 0))
     wind_speed    = round(attrs.get("wind_speed", 0))
-    wind_dir      = attrs.get("wind_bearing", "")
-    forecast      = attrs.get("forecast", [])
+
+    # Fetch daily forecast via service call (attrs["forecast"] is empty in modern HA)
+    forecast      = _get_forecast(ha_url, token, entity)
     high          = round(forecast[0].get("temperature", temp)) if forecast else temp
     precip        = forecast[0].get("precipitation_probability", None) if forecast else None
 
@@ -253,6 +276,120 @@ def refresh_all():
     _save_meta(meta)
     get_weather_wav()
     get_news_wav()
+
+# ---------------------------------------------------------------------------
+# Location-specific weather (Open-Meteo, no API key required)
+# ---------------------------------------------------------------------------
+
+_OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
+_OPEN_METEO_WEATHER = "https://api.open-meteo.com/v1/forecast"
+
+_WMO_CONDITION = {
+    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "foggy", 48: "foggy",
+    51: "drizzling", 53: "drizzling", 55: "heavy drizzle",
+    61: "raining", 63: "raining", 65: "heavy rain",
+    71: "snowing", 73: "snowing", 75: "heavy snow",
+    80: "showery", 81: "showery", 82: "heavy showers",
+    95: "stormy", 96: "stormy", 99: "stormy",
+}
+
+_WMO_COMMENT = {
+    0: "Clear sky. Disgusting. I preferred it when everything was grey.",
+    1: "Mainly clear. Suspicious.",
+    2: "Partly cloudy. Make your mind up, sky.",
+    3: "Overcast. Perfectly miserable.",
+    45: "Foggy. Perfect conditions for not being found.",
+    48: "Foggy. Perfect conditions for not being found.",
+    61: "Raining. Shocking. Unprecedented.",
+    63: "Raining. Shocking. Unprecedented.",
+    65: "Heavy rain. Someone up there really hates you.",
+    71: "Snowing. Stay inside. I'll pretend to care.",
+    73: "Snowing. Stay inside. I'll pretend to care.",
+    75: "Heavy snow. Absolutely not going outside.",
+    80: "Showery. Typical.",
+    81: "Showery. Typical.",
+    95: "Thunderstorms. Dramatic. I approve.",
+}
+
+
+# Feature codes ranked by preference: country > state/region > city > town
+_FEATURE_RANK = {"PCLI": 4, "PCLP": 4, "PCLS": 4, "ADM1": 3, "ADM2": 2, "PPLA": 1, "PPL": 0}
+
+def _geocode(location: str) -> tuple[float, float, str, str] | None:
+    """Return (lat, lon, resolved_name, country) or None if not found.
+
+    Fetches multiple candidates and prefers countries/regions over small towns.
+    """
+    import urllib.parse
+    params = urllib.parse.urlencode({"name": location, "count": 10, "language": "en", "format": "json"})
+    req = urllib.request.Request(f"{_OPEN_METEO_GEOCODE}?{params}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        results = data.get("results", [])
+        if not results:
+            return None
+        # Score each result: prefer higher feature rank, then higher population
+        def _score(r):
+            rank = _FEATURE_RANK.get(r.get("feature_code", ""), 0)
+            pop  = r.get("population") or 0
+            return (rank, pop)
+        best = max(results, key=_score)
+        return best["latitude"], best["longitude"], best["name"], best.get("country", "")
+    except Exception as e:
+        log.warning("[briefing] Geocode failed for %r: %s", location, e)
+        return None
+
+
+def get_weather_text_for_location(location: str) -> str:
+    """Fetch current weather + daily forecast for any location via Open-Meteo."""
+    geo = _geocode(location)
+    if not geo:
+        return f"I have no idea where {location} is. Sounds made up."
+    lat, lon, place_name, country = geo
+
+    import urllib.parse
+    params = urllib.parse.urlencode({
+        "latitude": lat, "longitude": lon,
+        "current": "temperature_2m,precipitation,weathercode,windspeed_10m,relative_humidity_2m",
+        "daily": "temperature_2m_max,precipitation_probability_max",
+        "timezone": "auto",
+        "forecast_days": 1,
+    })
+    req = urllib.request.Request(f"{_OPEN_METEO_WEATHER}?{params}")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        w = json.loads(r.read())
+
+    cur = w["current"]
+    daily = w["daily"]
+
+    wmo         = int(cur["weathercode"])
+    temp        = round(cur["temperature_2m"])
+    wind_speed  = round(cur.get("windspeed_10m", 0))
+    condition   = _WMO_CONDITION.get(wmo, "doing something unusual")
+    high        = round(daily["temperature_2m_max"][0])
+    precip_pct  = daily.get("precipitation_probability_max", [None])[0]
+
+    location_label = place_name if not country else f"{place_name}, {country}"
+    wind_line = f"Wind at {wind_speed} kilometres per hour." if wind_speed > 10 else ""
+    if precip_pct and precip_pct > 40:
+        wind_line += f" {round(precip_pct)} percent chance of rain."
+
+    comment = _WMO_COMMENT.get(wmo, "Typical. Just absolutely typical.")
+
+    templates = [
+        f"In {location_label}: {temp} degrees and {condition}. High of {high} today. {wind_line} {comment}",
+        f"Weather in {location_label}: {temp} degrees, {condition}. Today's high: {high}. {wind_line} {comment}",
+    ]
+    return random.choice(templates).strip()
+
+
+def get_weather_wav_for_location(location: str) -> str:
+    """Generate and return a temp WAV for location-specific weather. Caller must delete."""
+    text = get_weather_text_for_location(location)
+    return tts_generate.speak(text)
+
 
 # ---------------------------------------------------------------------------
 # Standalone test

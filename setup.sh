@@ -69,6 +69,7 @@ sudo apt-get install -y -qq \
     libsndfile1 \
     espeak-ng \
     curl \
+    ffmpeg \
     git
 
 # ── Python venv ────────────────────────────────────────────────────────────
@@ -210,6 +211,18 @@ else
     warn "Skipping response pre-build (model not present)."
 fi
 
+# ── TLS certificate (for HTTPS web UI) ────────────────────────────────────
+
+TLS_DIR="$REPO_DIR/tls"
+if [[ -f "$TLS_DIR/cert.pem" && -f "$TLS_DIR/key.pem" ]]; then
+    info "TLS certificate already present ✓"
+else
+    info "Generating self-signed TLS certificate..."
+    mkdir -p "$TLS_DIR"
+    openssl req -x509 -newkey rsa:2048 -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/cert.pem" -days 3650 -nodes -subj "/CN=benderpi" 2>/dev/null
+    info "TLS certificate generated ✓  (accept the browser warning once)"
+fi
+
 # ── Systemd services ───────────────────────────────────────────────────────
 
 info "Installing systemd services..."
@@ -258,7 +271,7 @@ echo " Start services:"
 echo "   sudo systemctl start bender-converse"
 echo "   sudo systemctl start bender-web"
 echo ""
-echo " Web UI: http://$(hostname -I | awk '{print $1}'):8080"
+echo " Web UI: https://$(hostname -I | awk '{print $1}'):8080"
 echo ""
 echo " Check logs:"
 echo "   journalctl -u bender-converse -f"
