@@ -18,6 +18,10 @@
   ],
   "simple_intent_max_words": 6,
   "speech_rate": 1.1,
+  "led_listening_colour": [0, 80, 255],
+  "led_talking_colour": [255, 255, 255],
+  "led_listening_enabled": false,
+  "silent_wakeword": false,
   "location": "Nottingham, England",
   "ha_exclude_entities": [
     "switch.clock_weather_card_pre_release",

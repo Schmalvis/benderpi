@@ -30,10 +30,10 @@ def test_config_env_overrides(tmp_path, monkeypatch):
     cfg = Config(config_path=str(tmp_path / "nonexistent.json"))
     assert cfg.log_level == "DEBUG"
 
-def test_config_speech_rate_default():
-    """speech_rate should default to 1.0."""
+def test_config_speech_rate_default(tmp_path):
+    """speech_rate should default to 1.0 when no config file exists."""
     from config import Config
-    cfg = Config()
+    cfg = Config(config_path=str(tmp_path / "nonexistent.json"))
     assert cfg.speech_rate == 1.0
 
 def test_config_speech_rate_override(tmp_path):

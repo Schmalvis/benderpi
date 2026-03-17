@@ -77,6 +77,10 @@ class Config:
     led_count: int = 45
     led_brightness: float = 0.8
     led_colour: tuple = (255, 120, 0)
+    led_listening_colour: tuple = (0, 80, 255)   # blue when listening
+    led_talking_colour: tuple = (255, 255, 255)   # white when talking
+    led_listening_enabled: bool = False            # show LED colour while listening
+    silent_wakeword: bool = False                  # skip audio greeting on wake (requires led_listening_enabled)
 
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
@@ -86,7 +90,7 @@ class Config:
                 overrides = json.load(f)
             for key, value in overrides.items():
                 if hasattr(self, key):
-                    if key == "led_colour" and isinstance(value, list):
+                    if key in ("led_colour", "led_listening_colour", "led_talking_colour") and isinstance(value, list):
                         value = tuple(value)
                     setattr(self, key, value)
 

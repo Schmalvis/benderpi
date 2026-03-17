@@ -35,6 +35,7 @@ import audio
 import tts_generate
 import stt
 import briefings
+import leds
 from ai_response import AIResponder
 from conversation_log import SessionLogger
 from responder import Responder
@@ -116,32 +117,43 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     session_log.session_start()
     audio.open_session()
 
-    # Greeting
-    greeting_path = responder.pick_clip("GREETING")
-    if greeting_path and os.path.exists(greeting_path):
-        audio.play(greeting_path)
-        method = "pre_gen_tts" if responder._is_pre_gen(greeting_path) else "real_clip"
-        session_log.log_turn("(wake word)", "GREETING", None, method,
-                     response_text=os.path.basename(greeting_path))
+    # Greeting — skip audio if silent_wakeword is enabled (LED-only notification)
+    if cfg.silent_wakeword and cfg.led_listening_enabled:
+        log.info("Silent wake word mode — skipping audio greeting")
+        session_log.log_turn("(wake word)", "GREETING", None, "silent",
+                     response_text="(silent — LED only)")
     else:
-        text = "Yo. What do you want?"
-        wav = tts_generate.speak(text)
-        try:
-            audio.play(wav)
-        finally:
-            os.unlink(wav)
-        session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
+        greeting_path = responder.pick_clip("GREETING")
+        if greeting_path and os.path.exists(greeting_path):
+            leds.set_talking()
+            audio.play(greeting_path)
+            method = "pre_gen_tts" if responder._is_pre_gen(greeting_path) else "real_clip"
+            session_log.log_turn("(wake word)", "GREETING", None, method,
+                         response_text=os.path.basename(greeting_path))
+        else:
+            text = "Yo. What do you want?"
+            wav = tts_generate.speak(text)
+            try:
+                leds.set_talking()
+                audio.play(wav)
+            finally:
+                os.unlink(wav)
+            session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
 
     ai.clear_history()
     last_heard = time.time()
 
     while True:
+        # Show listening LEDs
+        leds.set_listening(True)
+
         # Listen
         text = stt.listen_and_transcribe()
 
         if not text:
             if time.time() - last_heard > SILENCE_TIMEOUT:
                 log.info("Silence timeout -- ending session")
+                leds.all_off()
                 session_log.session_end("timeout")
                 metrics.count("session", event="end", turns=session_log.turn, reason="timeout")
                 audio.close_session()
@@ -152,6 +164,9 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         log.info("Heard: %r", text)
 
         response = responder.get_response(text, ai)
+
+        # Switch to talking LEDs
+        leds.set_talking()
 
         # Play thinking sound while slow response is being generated
         if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
@@ -169,6 +184,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                         response.method, response.text, response.model)
 
         if response.intent == "DISMISSAL":
+            leds.all_off()
             session_log.session_end("dismissal")
             metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
             audio.close_session()
