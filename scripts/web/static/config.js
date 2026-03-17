@@ -1,5 +1,6 @@
 /* ═══════════════════════════════════════════════════════
    BenderPi Web UI — Config & Service Control
+   Reorganised groups, collapsible panels, select dropdowns
    ═══════════════════════════════════════════════════════ */
 
 (function () {
@@ -31,12 +32,19 @@
 
   var CONFIG_GROUPS = [
     {
+      title: "Voice",
+      fields: [
+        { key: "speech_rate", label: "Speech Pace", type: "range", step: 0.1, min: 0.5, max: 2.0,
+          help: "Higher = slower speech, lower = faster. 1.0 is normal." },
+        { key: "thinking_sound", label: "Thinking Sound", type: "bool" }
+      ]
+    },
+    {
       title: "Audio",
       fields: [
         { key: "silence_pre", label: "Pre-silence (s)", type: "float", step: 0.01, min: 0, max: 1 },
         { key: "silence_post", label: "Post-silence (s)", type: "float", step: 0.01, min: 0, max: 1 },
-        { key: "speech_rate", label: "Speech Pace", type: "range", step: 0.05, min: 0.7, max: 2.0,
-          help: "Higher = slower speech, lower = faster. 1.0 is normal. Recommended: 1.0–1.3" }
+        { key: "silence_timeout", label: "Silence Timeout (s)", type: "float", step: 0.5, min: 1, max: 30 }
       ]
     },
     {
@@ -56,8 +64,6 @@
     {
       title: "Conversation",
       fields: [
-        { key: "silence_timeout", label: "Silence Timeout (s)", type: "float", step: 0.5, min: 1, max: 30 },
-        { key: "thinking_sound", label: "Thinking Sound", type: "bool" },
         { key: "simple_intent_max_words", label: "Simple Intent Max Words", type: "int", step: 1, min: 1, max: 20 }
       ]
     },
@@ -71,14 +77,21 @@
     {
       title: "Logging",
       fields: [
-        { key: "log_level", label: "Log Level", type: "string" }
+        { key: "log_level", label: "Log Level", type: "select", options: ["DEBUG", "INFO", "WARNING", "ERROR"] }
       ]
     },
     {
       title: "LEDs",
       fields: [
         { key: "led_brightness", label: "LED Brightness", type: "range", step: 0.1, min: 0, max: 1.0 },
-        { key: "led_colour", label: "LED Colour (R, G, B)", type: "colour" }
+        { key: "led_colour", label: "LED Colour (R, G, B)", type: "colour" },
+        { key: "led_listening_colour", label: "Listening Colour", type: "colour" },
+        { key: "led_talking_colour", label: "Talking Colour", type: "colour" },
+        { key: "led_listening_enabled", label: "LED Listening Enabled", type: "bool",
+          help: "Show LED colour while listening for wake word" },
+        { key: "silent_wakeword", label: "Silent Wakeword", type: "bool",
+          help: "Skip audio greeting on wake (requires LED Listening Enabled)",
+          dependsOn: "led_listening_enabled" }
       ]
     }
   ];
@@ -213,7 +226,6 @@
         } else {
           statusBadge.className = "badge badge-error";
           statusBadge.textContent = "Stopped";
-          // If stopped, we're in puppet-only mode
           puppetOnly = true;
         }
         toggleCheckbox.checked = puppetOnly;
@@ -243,6 +255,17 @@
       sw.appendChild(cb);
       sw.appendChild(slider);
       return sw;
+    }
+
+    if (type === "select") {
+      var select = el("select", { className: "config-select" });
+      (fieldDef.options || []).forEach(function (opt) {
+        var option = el("option", { value: opt, textContent: opt });
+        if (opt === value) option.selected = true;
+        select.appendChild(option);
+      });
+      select.addEventListener("change", function () { onChange(select.value); });
+      return select;
     }
 
     if (type === "range") {
@@ -357,6 +380,9 @@
     saveRow.appendChild(changesInfo);
     section.appendChild(saveRow);
 
+    // Track dependent field wrappers for live updates
+    var dependentFields = {};
+
     function getChangedFields() {
       var changed = {};
       for (var key in currentConfig) {
@@ -381,12 +407,31 @@
       }
     }
 
+    function updateDependentFields() {
+      // silent_wakeword depends on led_listening_enabled
+      for (var depKey in dependentFields) {
+        var info = dependentFields[depKey];
+        var parentVal = !!currentConfig[info.dependsOn];
+        if (parentVal) {
+          info.wrapper.classList.remove("cfg-field-disabled");
+          info.note.textContent = "";
+        } else {
+          info.wrapper.classList.add("cfg-field-disabled");
+          info.note.textContent = "Requires " + info.dependsOnLabel + " to be enabled";
+        }
+      }
+    }
+
     function renderForm(config) {
       formBody.textContent = "";
+      dependentFields = {};
+
       CONFIG_GROUPS.forEach(function (group) {
-        var groupEl = el("div", { className: "cfg-group" });
-        var groupTitle = el("h3", { className: "cfg-group-title", textContent: group.title });
-        groupEl.appendChild(groupTitle);
+        var details = el("details", { className: "cfg-group", open: "" });
+        var summary = el("summary", { className: "cfg-group-title" }, [
+          document.createTextNode(group.title)
+        ]);
+        details.appendChild(summary);
 
         var fieldsGrid = el("div", { className: "cfg-fields-grid" });
         group.fields.forEach(function (fieldDef) {
@@ -400,17 +445,44 @@
             fieldWrap.appendChild(helpEl);
           }
 
+          // Dependency note placeholder
+          var depNote = el("span", { className: "text-muted cfg-field-help" });
+          if (fieldDef.dependsOn) {
+            fieldWrap.appendChild(depNote);
+          }
+
           var input = buildFieldInput(fieldDef, config[fieldDef.key], function (val) {
             currentConfig[fieldDef.key] = val;
             updateChangesInfo();
+            updateDependentFields();
           });
           fieldWrap.appendChild(input);
           fieldsGrid.appendChild(fieldWrap);
+
+          // Register dependent fields
+          if (fieldDef.dependsOn) {
+            // Find the parent field label
+            var parentLabel = fieldDef.dependsOn;
+            for (var gi = 0; gi < CONFIG_GROUPS.length; gi++) {
+              for (var fi = 0; fi < CONFIG_GROUPS[gi].fields.length; fi++) {
+                if (CONFIG_GROUPS[gi].fields[fi].key === fieldDef.dependsOn) {
+                  parentLabel = CONFIG_GROUPS[gi].fields[fi].label;
+                }
+              }
+            }
+            dependentFields[fieldDef.key] = {
+              wrapper: fieldWrap,
+              note: depNote,
+              dependsOn: fieldDef.dependsOn,
+              dependsOnLabel: parentLabel
+            };
+          }
         });
-        groupEl.appendChild(fieldsGrid);
-        formBody.appendChild(groupEl);
+        details.appendChild(fieldsGrid);
+        formBody.appendChild(details);
       });
       updateChangesInfo();
+      updateDependentFields();
     }
 
     saveBtn.addEventListener("click", function () {
@@ -495,6 +567,12 @@
 
     function renderForm(config) {
       formBody.textContent = "";
+      var details = el("details", { className: "cfg-group", open: "" });
+      var summary = el("summary", { className: "cfg-group-title" }, [
+        document.createTextNode("Watchdog Thresholds")
+      ]);
+      details.appendChild(summary);
+
       var fieldsGrid = el("div", { className: "cfg-fields-grid" });
       WATCHDOG_FIELDS.forEach(function (fieldDef) {
         if (!(fieldDef.key in config)) return;
@@ -521,7 +599,8 @@
         fieldWrap.appendChild(inp);
         fieldsGrid.appendChild(fieldWrap);
       });
-      formBody.appendChild(fieldsGrid);
+      details.appendChild(fieldsGrid);
+      formBody.appendChild(details);
       updateChangesInfo();
     }
 

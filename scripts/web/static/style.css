@@ -1738,6 +1738,67 @@ details[open] .session-summary::before {
 }
 .cfg-restart-apply-btn { flex-shrink: 0; }
 
+/* config-select dropdown */
+.config-select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+  min-width: 120px;
+}
+.config-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--glow);
+}
+
+/* Disabled dependent field */
+.cfg-field-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  position: relative;
+}
+
+/* Dashboard status banner */
+.dashboard-status-banner {
+  padding: 16px;
+}
+.dashboard-status-text {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.dashboard-status-quote {
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+/* Collapsible details styling for dashboard/config */
+details.card > summary.card-header,
+details.cfg-group > summary.cfg-group-title {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+details.card > summary.card-header::-webkit-details-marker,
+details.cfg-group > summary.cfg-group-title::-webkit-details-marker {
+  display: none;
+}
+details.card > summary.card-header::after,
+details.cfg-group > summary.cfg-group-title::after {
+  content: "\25B6";
+  font-size: 0.7em;
+  margin-left: auto;
+  transition: transform var(--transition);
+}
+details[open].card > summary.card-header::after,
+details[open].cfg-group > summary.cfg-group-title::after {
+  transform: rotate(90deg);
+}
+
 /* ── Remote tab ─────────────────────────────────────────────────────────── */
 
 .remote-container {
