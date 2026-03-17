@@ -1,7 +1,7 @@
 # BenderPi Web UI Redesign — Design Spec
 
 **Date:** 2026-03-17
-**Status:** Draft
+**Status:** Reviewed
 **Scope:** Full visual redesign of the BenderPi web UI. Futurama-themed "robot control panel" aesthetic, reorganised layout with persistent sidebar, collapsible sections, mobile-optimised, context-aware Bender quotes. Also adds end-session control and session status API.
 
 ---
@@ -80,45 +80,31 @@ The sidebar is the "always accessible" control surface. All controls work withou
 
 **Sidebar toggle persistence:** LED, puppet-only, and silent wake toggles write to `bender_config.json` via PUT `/api/config` (same as the config editor). Changes take effect immediately for LED/silent (config is read per-session), and via service stop/start for puppet-only.
 
+**Toggle state management:** Toggles update optimistically (flip the visual state immediately on click). If the PUT fails, revert the visual state and show a brief error toast. Volume slider is debounced (300ms) and fire-and-forget (no revert on error — the physical volume is the source of truth).
+
 ---
 
 ## 4. New Backend Endpoints
 
 ### 4.1 End Session — `POST /api/actions/end-session`
 
-Sets a shared `threading.Event` (`_end_session_flag`) that `wake_converse.py` checks between turns. When set:
-1. The conversation loop breaks after the current turn
-2. Plays a dismissal clip (or silent if silent_wakeword mode)
-3. Logs session_end with reason "remote_end"
-4. Clears the flag
+Since the web server and conversation loop run in **separate processes**, this uses file-based IPC (simple, no dependencies).
 
-**Implementation in `wake_converse.py`:**
-```python
-# Module-level shared flag
-_end_session_flag = threading.Event()
+**File paths (relative to `_BASE_DIR` / project root):**
+- End session flag: `_BASE_DIR/.end_session` (presence = end requested)
+- Session status: `_BASE_DIR/.session_active.json` (presence = session active)
 
-def request_end_session():
-    """Called by web API to request conversation end."""
-    _end_session_flag.set()
+Both files are in the project root (alongside `.env`), gitignored.
 
-def is_session_active() -> bool:
-    """Called by web API to check if a conversation is in progress."""
-    return _session_active
+**Conversation loop (`wake_converse.py`):**
+- At session start: writes `.session_active.json` with `{"active": true, "session_id": "...", "started": "...", "turns": 0}`
+- After each turn: updates the `turns` count in `.session_active.json`
+- Before each `stt.listen_and_transcribe()` call: checks `os.path.exists(_END_SESSION_FILE)`. If found, deletes the file, plays a dismissal clip (or silent if `silent_wakeword` mode), logs `session_end(reason="remote_end")`, and breaks.
+- At session end (any reason): deletes `.session_active.json`
 
-# In run_session(), check after each play:
-if _end_session_flag.is_set():
-    _end_session_flag.clear()
-    log.info("Session ended by remote request")
-    # play dismissal clip if not silent
-    ...
-    break
-```
-
-The web API endpoint calls `wake_converse.request_end_session()`. Since the web server and conversation loop run in **separate processes**, this needs an IPC mechanism. Options:
-- **File-based flag:** Web API writes a `.end_session` file, conversation loop checks for it. Simple, no dependencies.
-- **Shared file + poll:** Same but with a JSON file containing the request timestamp.
-
-File-based is simplest and reliable. The conversation loop checks `os.path.exists(_END_SESSION_FILE)` before each STT listen call. If found, it deletes the file and ends the session.
+**Web API (`app.py`):**
+- `POST /api/actions/end-session`: writes an empty `.end_session` file. Returns `{"status": "ok"}`. If no session is active (`.session_active.json` doesn't exist), returns `{"status": "no_session"}`.
+- `GET /api/actions/session-status`: reads `.session_active.json` if it exists. Returns its contents. If missing, returns `{"active": false}`.
 
 ### 4.2 Session Status — `GET /api/actions/session-status`
 
@@ -132,7 +118,7 @@ Returns whether a conversation is currently active and basic session info.
 
 When the file doesn't exist: `{"active": false}`.
 
-**Polling:** The sidebar JS polls this endpoint every 3 seconds to update the End Session button visibility and the Dashboard status banner.
+**Polling:** The sidebar JS polls this endpoint every 3 seconds to update the End Session button visibility and the Dashboard status banner. **Important:** Polling must only start AFTER successful login (inside the `showApp()` / post-login flow in `app.js`). Must not run while the login overlay is showing, or 401 responses will trigger the auto-logout handler. The poll interval should be cleared on logout.
 
 ---
 
@@ -282,14 +268,14 @@ Three collapsible sections:
 **Bender Config** — sub-panels by group:
 | Group | Fields |
 |---|---|
-| Voice | `speech_rate` (slider), `thinking_sound` (toggle) |
-| Audio | `silence_pre`, `silence_post`, `silence_timeout` (number inputs) |
+| Voice | `speech_rate` (slider), `thinking_sound` (toggle) — **moved from existing "Audio" group** |
+| Audio | `silence_pre`, `silence_post`, `silence_timeout` (number inputs) — `speech_rate` and `thinking_sound` removed from this group |
 | STT | `whisper_model` (text), `vad_aggressiveness` (number 0-3) |
 | AI Fallback | `ai_model` (text), `ai_max_tokens` (number) |
 | Intent | `simple_intent_max_words` (number) |
 | Briefings | `weather_ttl`, `news_ttl` (number, seconds) |
 | LEDs | `led_brightness` (slider), `led_colour` (RGB + swatch), `led_listening_colour` (RGB), `led_talking_colour` (RGB), `led_listening_enabled` (toggle), `silent_wakeword` (toggle, greyed if LED off) |
-| Logging | `log_level` (dropdown) |
+| Logging | `log_level` (dropdown: DEBUG, INFO, WARNING, ERROR — add a new `"select"` field type to `buildFieldInput` in `config.js` with `options` array) |
 
 Save button with diff confirmation.
 
@@ -334,6 +320,7 @@ Footer quote rotates on tab switch. Tab-specific quotes shown in empty states an
 - Sidebar hidden → FAB (56px circle, bottom-left, `var(--accent)` background, robot/gear icon)
 - FAB tap → bottom sheet slides up with all sidebar controls in a 2-column grid
 - Bottom sheet has a drag handle and backdrop overlay (tap to dismiss)
+- **Z-index stacking order:** scan-line overlay `z-index: 1` (cosmetic, must not block interaction), sidebar `z-index: 10`, FAB `z-index: 100`, bottom sheet backdrop `z-index: 200`, bottom sheet `z-index: 201`, login overlay `z-index: 500`. The scan-line overlay must use `z-index: 1` not `9999` — it's decorative and must never block clicks.
 - Tabs: horizontal scroll, full width, smaller font
 - Cards: single column stack
 - Config sub-panels: all collapsed by default
@@ -364,6 +351,18 @@ Footer quote rotates on tab switch. Tab-specific quotes shown in empty states an
 | `scripts/web/static/config.js` | Reorganise: grouped sub-panels with collapsible headers. Add: log_level dropdown. Restyle. |
 | `scripts/web/app.py` | Add: `POST /api/actions/end-session`, `GET /api/actions/session-status`. |
 | `scripts/wake_converse.py` | Add: `_end_session_flag` file-based IPC, `session_active.json` write/delete, check flag in conversation loop. |
+
+### Gitignore additions
+
+Add to `.gitignore`:
+```
+.end_session
+.session_active.json
+```
+
+### Preservation note
+
+If a Remote tab and `remote.js` exist in the current `index.html`, they must survive the rewrite. Include the Remote tab in the new tab bar and preserve its script tag.
 
 ### No new files
 
