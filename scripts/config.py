@@ -54,6 +54,7 @@ class Config:
     silence_timeout: float = 8.0
     thinking_sound: bool = True
     simple_intent_max_words: int = 6
+    timer_alert_max_seconds: int = 60
 
     # HA
     ha_url: str = "http://homeassistant.local:8123"

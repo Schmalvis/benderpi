@@ -9,6 +9,9 @@ Supports three modes:
   - Off: all LEDs off
 """
 
+import threading
+import time
+
 import board
 import busio
 import neopixel_spi
@@ -25,6 +28,10 @@ pixels  = neopixel_spi.NeoPixel_SPI(_spi, NUM_LEDS, brightness=BRIGHTNESS, auto_
 
 # Current mode — used by audio.py to pick the right colour
 _mode = "off"  # "off", "listening", "talking"
+
+# Alert flash state
+_alert_thread = None
+_alert_active = False
 
 
 def all_off():
@@ -72,4 +79,30 @@ def set_level(ratio, colour=None):
     g = int(colour[1] * ratio)
     b = int(colour[2] * ratio)
     pixels.fill((r, g, b))
+    pixels.show()
+
+
+def set_alert_flash(on: bool):
+    """Start/stop fast red-orange alternating flash for timer alerts."""
+    global _alert_thread, _alert_active
+    if on:
+        _alert_active = True
+        if _alert_thread is None or not _alert_thread.is_alive():
+            _alert_thread = threading.Thread(target=_alert_loop, daemon=True)
+            _alert_thread.start()
+    else:
+        _alert_active = False
+
+
+def _alert_loop():
+    """Background thread that alternates red/orange on LEDs."""
+    colours = [(255, 40, 0), (255, 140, 0)]  # red, orange
+    idx = 0
+    while _alert_active:
+        pixels.fill(colours[idx % 2])
+        pixels.show()
+        idx += 1
+        time.sleep(0.2)
+    # Turn off when done
+    pixels.fill((0, 0, 0))
     pixels.show()

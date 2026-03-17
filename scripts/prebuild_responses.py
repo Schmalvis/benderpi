@@ -74,6 +74,17 @@ THINKING_SOUNDS = [
     "One sec.",
 ]
 
+TIMER_ALERT_RESPONSES = [
+    "Hey! Timer's done! Hello?!",
+    "Ding ding ding! That's your timer, meatbag!",
+    "Your timer went off. You're welcome. Now dismiss me.",
+    "Still here. Still alerting. Still being ignored. Story of my life.",
+    "Oh sure, just let the robot keep yelling. That's fine.",
+    "TIMER! DONE! DISMISS ME! Please.",
+    "I've been yelling about this timer for a while now. Just saying.",
+    "Hey! Are you deaf?! Timer!",
+]
+
 # Promoted responses — AI fallback queries promoted to static offline clips.
 # Add entries here when review_log.py flags a frequent AI fallback.
 # Each entry: slug (filename), pattern (regex), text (Bender's response).
@@ -137,6 +148,13 @@ def build_thinking():
         generate(text, os.path.join(out_dir, f"thinking_{i:03d}.wav"))
 
 
+def build_timer_alerts():
+    out_dir = os.path.join(RESPONSES_DIR, "timer_alerts")
+    os.makedirs(out_dir, exist_ok=True)
+    for i, text in enumerate(TIMER_ALERT_RESPONSES, 1):
+        generate(text, os.path.join(out_dir, f"timer_alert_{i:03d}.wav"))
+
+
 def build_index():
     index = {
         "greeting": [
@@ -194,6 +212,10 @@ def build_index():
             f"speech/responses/thinking/thinking_{i:03d}.wav"
             for i in range(1, len(THINKING_SOUNDS) + 1)
         ],
+        "timer_alerts": [
+            f"speech/responses/timer_alerts/timer_alert_{i:03d}.wav"
+            for i in range(1, len(TIMER_ALERT_RESPONSES) + 1)
+        ],
     }
     index_path = os.path.join(RESPONSES_DIR, "index.json")
     with open(index_path, "w") as f:
@@ -218,6 +240,8 @@ if __name__ == "__main__":
     build_promoted()
     print("Building thinking sounds...")
     build_thinking()
+    print("Building timer alert clips...")
+    build_timer_alerts()
     print("Writing index.json...")
     build_index()
     print("\nDone. Response library ready.")

@@ -15,6 +15,7 @@ Response priority chain lives in responder.py.
 import json
 import os
 import random
+import re
 import time
 import sys
 import struct
@@ -99,6 +100,124 @@ def _load_thinking_clips():
     except Exception as e:
         log.warning("Could not load thinking clips: %s", e)
         _thinking_clips = []
+
+
+# ---------------------------------------------------------------------------
+# Timer alert clips
+# ---------------------------------------------------------------------------
+
+_timer_alert_clips = []
+
+
+def _load_timer_alert_clips():
+    global _timer_alert_clips
+    index_path = os.path.join(BASE_DIR, "speech", "responses", "index.json")
+    try:
+        with open(index_path) as f:
+            index = json.load(f)
+        _timer_alert_clips = [
+            os.path.join(BASE_DIR, p)
+            for p in index.get("timer_alerts", [])
+            if os.path.exists(os.path.join(BASE_DIR, p))
+        ]
+        log.info("Loaded %d timer alert clip(s)", len(_timer_alert_clips))
+    except Exception as e:
+        log.warning("Could not load timer alert clips: %s", e)
+        _timer_alert_clips = []
+
+
+# ---------------------------------------------------------------------------
+# Timer dismiss detection
+# ---------------------------------------------------------------------------
+
+TIMER_DISMISS_PATTERNS = [
+    r"\b(stop|enough|ok|okay|shut up|quiet|silence|dismiss)\b",
+    r"\bthat'?s?\s*(enough|ok|fine)\b",
+    r"\bplease stop\b",
+    r"\byes\b",
+    r"\bgot it\b",
+    r"\bthank(s| you)\b",
+]
+
+
+def _is_timer_dismiss(text: str) -> bool:
+    t = text.strip().lower()
+    return any(re.search(p, t, re.IGNORECASE) for p in TIMER_DISMISS_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Timer alert mode
+# ---------------------------------------------------------------------------
+
+def run_timer_alert(fired_timers: list):
+    """Play-pause alert cycle for fired timers until dismissed."""
+    import timers as timers_mod
+
+    labels = [t["label"] for t in fired_timers]
+    label_str = ", ".join(labels) if labels else "timer"
+    log.info("Timer alert: %s", label_str)
+    metrics.count("timer_alert", labels=label_str)
+
+    max_seconds = cfg.timer_alert_max_seconds
+    start_time = time.time()
+    dismissed_by_voice = False
+
+    # Start LED alert flash
+    leds.set_alert_flash(True)
+
+    while time.time() - start_time < max_seconds:
+        # 1. Play an alert clip
+        audio.open_session()
+        if _timer_alert_clips:
+            clip = random.choice(_timer_alert_clips)
+            audio.play(clip)
+        else:
+            # Fallback: generate TTS
+            wav = tts_generate.speak(f"Timer for {label_str} is done!")
+            audio.play(wav)
+            try:
+                os.unlink(wav)
+            except OSError:
+                pass
+        audio.close_session()
+
+        # 2. Listen for dismissal (~3 seconds)
+        text = stt.listen_and_transcribe()
+        if text and _is_timer_dismiss(text):
+            log.info("Timer dismissed by voice: %r", text)
+            dismissed_by_voice = True
+            break
+
+        # Also check web UI dismissal (file-based)
+        remaining_fired = timers_mod.check_fired()
+        if not remaining_fired:
+            log.info("Timer dismissed via UI")
+            break
+
+    # Stop LED flash
+    leds.set_alert_flash(False)
+    leds.all_off()
+
+    # Dismiss all fired timers
+    count = timers_mod.dismiss_all_fired()
+    log.info("Dismissed %d timer(s)", count)
+    metrics.count("timer_dismissed", count=count,
+                  method="voice" if dismissed_by_voice else "timeout")
+
+    # Play dismissal confirmation
+    audio.open_session()
+    responses = [
+        f"Finally. {label_str} timer dismissed.",
+        f"About time. {label_str} done and dismissed.",
+        "Dismissed. You're welcome. Again.",
+    ]
+    wav = tts_generate.speak(random.choice(responses))
+    audio.play(wav)
+    try:
+        os.unlink(wav)
+    except OSError:
+        pass
+    audio.close_session()
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +374,18 @@ def main():
     tts_generate.warm_up()
     # Load thinking clips from index
     _load_thinking_clips()
+    # Load timer alert clips from index
+    _load_timer_alert_clips()
     log.info("Listening for 'Hey Bender'...")
     while True:
         try:
+            # Check for fired timers before listening for wake word
+            import timers as timers_mod
+            fired = timers_mod.check_fired()
+            if fired:
+                run_timer_alert(fired)
+                continue
+
             wait_for_wakeword()
             session_log = SessionLogger()
             run_session(ai, session_log, responder)
