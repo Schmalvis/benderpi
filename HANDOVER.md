@@ -53,20 +53,23 @@ Edit `scripts/tts_generate.py` — add `"--length-scale", str(cfg.speech_rate)` 
 ---
 
 ## Current Priorities
+- Run `venv/bin/python scripts/prebuild_responses.py` on Pi to generate timer alert + thinking clips
+- Test timers: "Hey Bender, set a timer for pasta for 5 minutes"
 - Test UI redesign on phone (mobile FAB/bottom sheet)
 - Tune scan-line opacity and glow intensity on real device
 - Collect metrics baseline (first week)
 - Monitor STT hallucination rate
-- Watch intent multi-match warnings
 
 ## Recent Decisions
+- Added voice-controlled timers and alarms with named labels and concurrent support
+- Timer alerts use play-pause cycle (play clip → listen for dismissal → repeat) respecting WM8960 constraint
+- Timer persistence via timers.json (best-effort, survives restarts)
+- Duration parser supports natural language: "ten minutes", "half an hour", "an hour and a half"
 - UI redesigned with Futurama Theme C (scan lines, glows, gradient cards, animated status)
 - Added persistent sidebar with quick controls (volume, LED, puppet-only, silent wake, end session)
 - End-session via file-based IPC (.end_session / .session_active.json)
 - LED listening/talking colours: blue when listening, white when talking (configurable)
 - Silent wake word mode: LED-only notification, no audio greeting
-- Web UI built with FastAPI + vanilla HTML/CSS/JS (no framework)
-- Puppet-only mode toggle stops/starts bender-converse service
 - Speech rate via config (Piper --length-scale)
 - Chose not to purchase AI HAT+ — software improvements offer better ROI
 
@@ -75,8 +78,11 @@ Edit `scripts/tts_generate.py` — add `"--length-scale", str(cfg.speech_rate)` 
 - Intent false positives reduced but not eliminated
 - Thinking sound timing: plays after get_response() returns, not during generation
 - speech_rate config exists but not yet wired into tts_generate.py
+- Timer alert clips need pre-generating on Pi via prebuild_responses.py
 
 ## Future Considerations
+- Recurring/repeating timers
+- Timer snooze functionality
 - Local ML intent classifier (collecting training data via logging)
 - Whisper model upgrade to base.en or distil-whisper (needs metrics baseline)
 - Local LLM via llama.cpp to reduce API dependency
