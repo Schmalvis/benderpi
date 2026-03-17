@@ -19,6 +19,13 @@
   var statusQuote = null;
   var sessionPollId = null;
 
+  // Timer state
+  var timerSection = null;
+  var timerList = null;
+  var timerPollId = null;
+  var timerTickId = null;
+  var timerData = [];  // cached from last poll
+
   // ── Init ─────────────────────────────────────────────
 
   function initDashboard() {
@@ -29,6 +36,7 @@
     buildShell();
     loadStatus();
     startStatusPoll();
+    startTimerPoll();
   }
 
   function buildShell() {
@@ -44,6 +52,10 @@
       statusQuote
     ]));
     panel.appendChild(statusBanner);
+
+    // Timer section — before main dashboard content
+    timerSection = buildTimerSection();
+    panel.appendChild(timerSection);
 
     var header = el("div", { className: "card-header" }, [
       el("h2", { textContent: "Dashboard" }),
@@ -409,6 +421,250 @@
     }
     section.appendChild(content);
     return section;
+  }
+
+  // ── Timer Section ───────────────────────────────────
+
+  function buildTimerSection() {
+    var section = el("div", { className: "card dashboard-section timer-section" });
+
+    section.appendChild(el("div", { className: "card-header" }, [
+      el("h3", { textContent: "Timers & Alarms" })
+    ]));
+
+    // Quick-set form
+    var form = buildTimerForm();
+    section.appendChild(form);
+
+    // Timer list container
+    timerList = el("div", { className: "timer-list" });
+    section.appendChild(timerList);
+
+    return section;
+  }
+
+  function buildTimerForm() {
+    var form = el("div", { className: "timer-quick-form" });
+
+    var labelInput = el("input", {
+      type: "text",
+      className: "timer-label-input",
+      placeholder: "timer",
+      maxlength: "40"
+    });
+
+    var customInput = el("input", {
+      type: "number",
+      className: "timer-custom-input",
+      placeholder: "min",
+      min: "1",
+      max: "1440"
+    });
+
+    var presets = el("div", { className: "timer-presets" });
+    var presetValues = [
+      { label: "1m", seconds: 60 },
+      { label: "3m", seconds: 180 },
+      { label: "5m", seconds: 300 },
+      { label: "10m", seconds: 600 },
+      { label: "15m", seconds: 900 },
+      { label: "30m", seconds: 1800 },
+      { label: "1h", seconds: 3600 }
+    ];
+
+    presetValues.forEach(function (p) {
+      var btn = el("button", {
+        className: "btn btn-sm timer-preset-btn",
+        textContent: p.label,
+        onClick: function () {
+          createTimerFromUI(labelInput.value.trim(), p.seconds);
+        }
+      });
+      presets.appendChild(btn);
+    });
+
+    var setBtn = el("button", {
+      className: "btn btn-sm timer-set-btn",
+      textContent: "Set Timer",
+      onClick: function () {
+        var mins = parseInt(customInput.value, 10);
+        if (!mins || mins < 1) return;
+        createTimerFromUI(labelInput.value.trim(), mins * 60);
+        customInput.value = "";
+      }
+    });
+
+    var row1 = el("div", { className: "timer-form-row" }, [
+      labelInput,
+      customInput,
+      setBtn
+    ]);
+
+    form.appendChild(row1);
+    form.appendChild(presets);
+
+    return form;
+  }
+
+  function createTimerFromUI(label, durationS) {
+    var body = { label: label || "timer", duration_s: durationS };
+    apiJson("/api/timers", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }).then(function () {
+      pollTimers();
+    }).catch(function (err) {
+      console.error("Failed to create timer:", err);
+    });
+  }
+
+  // ── Timer Polling & Rendering ──────────────────────
+
+  function startTimerPoll() {
+    stopTimerPoll();
+    pollTimers();
+    timerPollId = setInterval(pollTimers, 5000);
+    timerTickId = setInterval(tickTimers, 1000);
+  }
+
+  function stopTimerPoll() {
+    if (timerPollId) {
+      clearInterval(timerPollId);
+      timerPollId = null;
+    }
+    if (timerTickId) {
+      clearInterval(timerTickId);
+      timerTickId = null;
+    }
+  }
+
+  function pollTimers() {
+    apiJson("/api/timers").then(function (data) {
+      timerData = data.timers || [];
+      renderTimerList();
+      // Expose firing count for app.js badge
+      var firingCount = 0;
+      timerData.forEach(function (t) {
+        if (t.remaining_s <= 0) firingCount++;
+      });
+      window.bender._timerCount = timerData.length;
+      window.bender._timerFiring = firingCount;
+    }).catch(function () {});
+  }
+
+  function tickTimers() {
+    // Client-side countdown between polls
+    var changed = false;
+    timerData.forEach(function (t) {
+      if (t.remaining_s > 0) {
+        t.remaining_s = Math.max(0, t.remaining_s - 1);
+        changed = true;
+      }
+    });
+    if (changed) {
+      renderTimerList();
+    }
+    // Update badge counts
+    var firingCount = 0;
+    timerData.forEach(function (t) {
+      if (t.remaining_s <= 0) firingCount++;
+    });
+    window.bender._timerCount = timerData.length;
+    window.bender._timerFiring = firingCount;
+  }
+
+  function renderTimerList() {
+    if (!timerList) return;
+    timerList.textContent = "";
+
+    if (timerData.length === 0) {
+      timerList.appendChild(
+        el("p", { className: "text-muted timer-empty", textContent: "No active timers." })
+      );
+      return;
+    }
+
+    timerData.forEach(function (t) {
+      var isFiring = t.remaining_s <= 0;
+      var cardClass = "card timer-card" + (isFiring ? " timer-firing" : "");
+
+      var icon = t.type === "alarm" ? "\u23F0" : "\u23F1";
+      var iconEl = el("span", { className: "timer-icon", textContent: icon });
+
+      var labelEl = el("span", { className: "timer-label", textContent: t.label });
+
+      var remainEl = el("span", {
+        className: "timer-remaining mono",
+        textContent: isFiring ? "FIRING" : formatRemaining(t.remaining_s)
+      });
+      if (isFiring) {
+        remainEl.classList.add("timer-firing-text");
+      }
+
+      var actions = el("div", { className: "timer-actions" });
+
+      if (isFiring) {
+        var dismissBtn = el("button", {
+          className: "btn btn-sm timer-dismiss-btn",
+          textContent: "Dismiss",
+          onClick: function () {
+            apiJson("/api/timers/" + t.id + "/dismiss", { method: "POST", body: "{}" })
+              .then(function () { pollTimers(); })
+              .catch(function () {});
+          }
+        });
+        actions.appendChild(dismissBtn);
+      }
+
+      var cancelBtn = el("button", {
+        className: "btn btn-sm timer-cancel-btn",
+        textContent: "Cancel",
+        onClick: function () {
+          apiJson("/api/timers/" + t.id, { method: "DELETE" })
+            .then(function () { pollTimers(); })
+            .catch(function () {});
+        }
+      });
+      actions.appendChild(cancelBtn);
+
+      var card = el("div", { className: cardClass }, [
+        el("div", { className: "timer-card-info" }, [iconEl, labelEl]),
+        remainEl,
+        actions
+      ]);
+
+      timerList.appendChild(card);
+    });
+
+    // Dismiss All button if any are firing
+    var firingTimers = timerData.filter(function (t) { return t.remaining_s <= 0; });
+    if (firingTimers.length > 1) {
+      var dismissAllBtn = el("button", {
+        className: "btn btn-sm timer-dismiss-all-btn",
+        textContent: "Dismiss All (" + firingTimers.length + ")",
+        onClick: function () {
+          apiJson("/api/timers/dismiss-all", { method: "POST", body: "{}" })
+            .then(function () { pollTimers(); })
+            .catch(function () {});
+        }
+      });
+      timerList.appendChild(dismissAllBtn);
+    }
+  }
+
+  function formatRemaining(seconds) {
+    seconds = Math.round(seconds);
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    if (h > 0) {
+      return h + ":" + pad2(m) + ":" + pad2(s);
+    }
+    return m + ":" + pad2(s);
+  }
+
+  function pad2(n) {
+    return n < 10 ? "0" + n : String(n);
   }
 
   // ── Register ─────────────────────────────────────────

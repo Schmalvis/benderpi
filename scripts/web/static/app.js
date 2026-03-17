@@ -191,7 +191,9 @@
     apiDownload: apiDownload,
     el: el,
     getQuote: getQuote,
-    BENDER_QUOTES: BENDER_QUOTES
+    BENDER_QUOTES: BENDER_QUOTES,
+    _timerCount: 0,
+    _timerFiring: 0
   };
 
   // ── Login / Logout ─────────────────────────────────
@@ -491,7 +493,37 @@
 
   // ── Session Polling ────────────────────────────────
 
+  // ── Timer Badge ──────────────────────────────────────
+  var timerBadgeEl = null;
+
+  function updateTimerBadge() {
+    var count = window.bender._timerCount || 0;
+    var firing = window.bender._timerFiring || 0;
+
+    if (!timerBadgeEl) {
+      // Create badge next to header subtitle
+      timerBadgeEl = el("span", { className: "timer-badge hidden" });
+      if (headerSubtitle && headerSubtitle.parentNode) {
+        headerSubtitle.parentNode.appendChild(timerBadgeEl);
+      }
+    }
+
+    if (count === 0) {
+      timerBadgeEl.classList.add("hidden");
+      timerBadgeEl.classList.remove("firing");
+    } else {
+      timerBadgeEl.classList.remove("hidden");
+      timerBadgeEl.textContent = String(count);
+      if (firing > 0) {
+        timerBadgeEl.classList.add("firing");
+      } else {
+        timerBadgeEl.classList.remove("firing");
+      }
+    }
+  }
+
   function pollSessionStatus() {
+    updateTimerBadge();
     apiJson("/api/actions/session-status").then(function (data) {
       var wasActive = sidebarState.sessionActive;
       sidebarState.sessionActive = !!data.active;

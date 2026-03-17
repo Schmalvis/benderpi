@@ -588,6 +588,49 @@ async def log_download(filename: str):
 
 
 
+# ── Timer Endpoints ────────────────────────────────────────────────────────
+
+import timers as timers_mod
+
+
+@app.get("/api/timers", dependencies=[Depends(require_pin)])
+async def list_timers():
+    return {"timers": timers_mod.list_timers()}
+
+
+@app.post("/api/timers", dependencies=[Depends(require_pin)])
+async def create_timer_api(body: dict = Body(...)):
+    label = body.get("label", "timer")
+    if "duration_s" in body:
+        timer = timers_mod.create_timer(label, float(body["duration_s"]))
+        return {"status": "ok", "timer": timer}
+    elif "fires_at" in body:
+        fires_at = datetime.fromisoformat(body["fires_at"])
+        timer = timers_mod.create_alarm(label, fires_at)
+        return {"status": "ok", "timer": timer}
+    raise HTTPException(status_code=400, detail="Provide duration_s or fires_at")
+
+
+@app.delete("/api/timers/{timer_id}", dependencies=[Depends(require_pin)])
+async def cancel_timer_api(timer_id: str):
+    if timers_mod.cancel_timer(timer_id):
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Timer not found")
+
+
+@app.post("/api/timers/{timer_id}/dismiss", dependencies=[Depends(require_pin)])
+async def dismiss_timer_api(timer_id: str):
+    if timers_mod.dismiss_timer(timer_id):
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Timer not found")
+
+
+@app.post("/api/timers/dismiss-all", dependencies=[Depends(require_pin)])
+async def dismiss_all_timers():
+    count = timers_mod.dismiss_all_fired()
+    return {"status": "ok", "dismissed": count}
+
+
 # ── Remote Voice Endpoint ───────────────────────────────────────────────────
 
 

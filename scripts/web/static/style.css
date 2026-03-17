@@ -1720,6 +1720,212 @@ details[open] .session-summary::before {
   line-height: 1.6;
 }
 
+/* ── Timer Section ──────────────────────────────────────────── */
+
+.timer-section {
+  margin-bottom: 1rem;
+}
+
+.timer-quick-form {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timer-form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.timer-label-input,
+.timer-custom-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+}
+
+.timer-label-input {
+  flex: 1;
+  min-width: 100px;
+  max-width: 200px;
+}
+
+.timer-custom-input {
+  width: 70px;
+}
+
+.timer-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.timer-preset-btn {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+}
+
+.timer-set-btn {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.timer-list {
+  padding: 0 16px 12px;
+}
+
+.timer-empty {
+  padding: 8px 0;
+  font-size: 0.85rem;
+}
+
+.timer-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.timer-card-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.timer-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.timer-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timer-remaining {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  min-width: 70px;
+  text-align: center;
+}
+
+.timer-firing-text {
+  color: var(--error);
+  animation: timer-flash 0.8s ease-in-out infinite;
+}
+
+.timer-firing {
+  border-color: var(--error);
+  box-shadow: 0 0 8px rgba(233, 69, 96, 0.3);
+  animation: timer-card-flash 1s ease-in-out infinite;
+}
+
+@keyframes timer-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes timer-card-flash {
+  0%, 100% { border-color: var(--error); box-shadow: 0 0 8px rgba(233, 69, 96, 0.3); }
+  50% { border-color: var(--error); box-shadow: 0 0 16px rgba(233, 69, 96, 0.6); }
+}
+
+.timer-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.timer-dismiss-btn {
+  background: var(--error);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.8rem;
+  padding: 4px 10px;
+}
+
+.timer-cancel-btn {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  opacity: 0.7;
+}
+
+.timer-cancel-btn:hover {
+  opacity: 1;
+}
+
+.timer-dismiss-all-btn {
+  margin-top: 4px;
+  background: var(--error);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.8rem;
+  width: 100%;
+}
+
+/* Timer badge (used in sidebar/header) */
+.timer-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--accent);
+  color: #fff;
+  margin-left: 6px;
+}
+
+.timer-badge.firing {
+  background: var(--error);
+  animation: timer-flash 0.8s ease-in-out infinite;
+}
+
+.timer-badge.hidden {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .timer-card {
+    flex-wrap: wrap;
+  }
+  .timer-remaining {
+    width: 100%;
+    text-align: left;
+    font-size: 1rem;
+  }
+  .timer-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .timer-label-input {
+    max-width: 100%;
+  }
+}
+
 /* ── Pending restart banner ──────────────────────────────────── */
 .cfg-restart-banner {
   display: flex;
