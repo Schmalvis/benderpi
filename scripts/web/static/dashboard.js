@@ -1,6 +1,7 @@
 /* ═══════════════════════════════════════════════════════
    BenderPi Web UI — Dashboard Tab
-   Health, performance, usage, alerts, recent errors, git log
+   Status banner, health, performance, usage, alerts,
+   recent errors, git log — collapsible themed cards
    ═══════════════════════════════════════════════════════ */
 
 (function () {
@@ -8,10 +9,15 @@
 
   var apiJson = window.bender.apiJson;
   var el = window.bender.el;
+  var getQuote = window.bender.getQuote;
 
   var panel = null;
   var refreshBtn = null;
   var contentArea = null;
+  var statusBanner = null;
+  var statusText = null;
+  var statusQuote = null;
+  var sessionPollId = null;
 
   // ── Init ─────────────────────────────────────────────
 
@@ -22,9 +28,23 @@
     panel.textContent = "";
     buildShell();
     loadStatus();
+    startStatusPoll();
   }
 
   function buildShell() {
+    // Status banner
+    statusBanner = el("div", { className: "card dashboard-section dashboard-status-banner" });
+    statusText = el("span", { className: "dashboard-status-text", textContent: "Idle" });
+    statusQuote = el("span", { className: "text-muted dashboard-status-quote", textContent: getQuote("dashboard") });
+    statusBanner.appendChild(el("div", { className: "card-header" }, [
+      el("h3", { textContent: "Bender Status" })
+    ]));
+    statusBanner.appendChild(el("div", { className: "dashboard-row" }, [
+      statusText,
+      statusQuote
+    ]));
+    panel.appendChild(statusBanner);
+
     var header = el("div", { className: "card-header" }, [
       el("h2", { textContent: "Dashboard" }),
       (function () {
@@ -39,7 +59,50 @@
     panel.appendChild(contentArea);
   }
 
-  // ── Load / Refresh ────────────────────────────────────
+  // ── Status Polling ──────────────────────────────────
+
+  function startStatusPoll() {
+    stopStatusPoll();
+    pollStatus();
+    sessionPollId = setInterval(pollStatus, 3000);
+  }
+
+  function stopStatusPoll() {
+    if (sessionPollId) {
+      clearInterval(sessionPollId);
+      sessionPollId = null;
+    }
+  }
+
+  function pollStatus() {
+    apiJson("/api/actions/session-status").then(function (data) {
+      if (!statusText) return;
+      if (data.active) {
+        var turn = data.turn || 0;
+        statusText.textContent = "In Conversation (turn " + turn + ")";
+        statusText.className = "dashboard-status-text success";
+      } else {
+        // Check service status
+        apiJson("/api/actions/service-status").then(function (svc) {
+          if (!statusText) return;
+          if (!svc.running) {
+            statusText.textContent = "Puppet Only Mode";
+            statusText.className = "dashboard-status-text warning";
+          } else {
+            statusText.textContent = "Idle";
+            statusText.className = "dashboard-status-text";
+          }
+        }).catch(function () {});
+      }
+    }).catch(function () {
+      if (statusText) {
+        statusText.textContent = "Unknown";
+        statusText.className = "dashboard-status-text text-muted";
+      }
+    });
+  }
+
+  // ── Load / Refresh ──────────────────────────────────
 
   function handleRefresh() {
     setRefreshing(true);
@@ -95,7 +158,7 @@
     );
   }
 
-  // ── Render All ────────────────────────────────────────
+  // ── Render All ──────────────────────────────────────
 
   function renderAll(data) {
     if (!contentArea) return;
@@ -109,13 +172,12 @@
     contentArea.appendChild(renderGitLog(data.git_log));
   }
 
-  // ── Health Row ────────────────────────────────────────
+  // ── Health Row ──────────────────────────────────────
 
   function renderHealthRow(health, alerts) {
     var errors7d = health.errors_7d;
     var alertCount = health.alert_count;
 
-    // Overall health: green if no errors and no alerts, colour by severity otherwise
     var overallStatus, overallColour;
     if (errors7d === 0 && alertCount === 0) {
       overallStatus = "Healthy";
@@ -154,7 +216,7 @@
     return wrapSection(null, row);
   }
 
-  // ── Performance Row ───────────────────────────────────
+  // ── Performance Row ─────────────────────────────────
 
   function renderPerformanceRow(perf) {
     var metrics = [
@@ -186,7 +248,7 @@
     return wrapSection("Performance (7-day avg)", row);
   }
 
-  // ── Usage Section ─────────────────────────────────────
+  // ── Usage Section ───────────────────────────────────
 
   function renderUsageSection(usage) {
     var section = el("div", { className: "card dashboard-section" });
@@ -234,24 +296,25 @@
     return section;
   }
 
-  // ── Alerts Section ────────────────────────────────────
+  // ── Alerts Section (collapsible) ────────────────────
 
   function renderAlertsSection(alerts) {
-    var section = el("div", { className: "card dashboard-section" });
+    var details = el("details", { className: "card dashboard-section" });
 
-    section.appendChild(el("div", { className: "card-header" }, [
+    var summary = el("summary", { className: "card-header" }, [
       el("h3", { textContent: "Watchdog Alerts" }),
       el("span", {
         className: "badge " + (alerts.length === 0 ? "badge-success" : "badge-warning"),
         textContent: String(alerts.length)
       })
-    ]));
+    ]);
+    details.appendChild(summary);
 
     if (!alerts || alerts.length === 0) {
-      section.appendChild(
+      details.appendChild(
         el("p", { className: "text-muted", textContent: "No alerts. All systems nominal." })
       );
-      return section;
+      return details;
     }
 
     var list = el("ul", { className: "dashboard-alert-list" });
@@ -268,25 +331,26 @@
         el("span", { className: "dashboard-alert-msg", textContent: a.message })
       ]));
     });
-    section.appendChild(list);
+    details.appendChild(list);
 
-    return section;
+    return details;
   }
 
-  // ── Recent Errors ─────────────────────────────────────
+  // ── Recent Errors (collapsible) ─────────────────────
 
   function renderRecentErrors(errors) {
-    var section = el("div", { className: "card dashboard-section" });
+    var details = el("details", { className: "card dashboard-section" });
 
-    section.appendChild(el("div", { className: "card-header" }, [
+    var summary = el("summary", { className: "card-header" }, [
       el("h3", { textContent: "Recent Errors" })
-    ]));
+    ]);
+    details.appendChild(summary);
 
     if (!errors || errors.length === 0) {
-      section.appendChild(
+      details.appendChild(
         el("p", { className: "text-muted", textContent: "No recent errors." })
       );
-      return section;
+      return details;
     }
 
     var list = el("ul", { className: "dashboard-error-list" });
@@ -295,37 +359,31 @@
         el("li", { className: "dashboard-error-line mono", textContent: line })
       );
     });
-    section.appendChild(list);
+    details.appendChild(list);
 
-    return section;
+    return details;
   }
 
-  // ── Git Log ───────────────────────────────────────────
+  // ── Git Log (collapsible) ───────────────────────────
 
   function renderGitLog(gitLog) {
-    var section = el("div", { className: "card dashboard-section" });
+    var details = el("details", { className: "card dashboard-section" });
 
-    section.appendChild(el("div", { className: "card-header" }, [
+    var summary = el("summary", { className: "card-header" }, [
       el("h3", { textContent: "Recent Changes" })
-    ]));
+    ]);
+    details.appendChild(summary);
 
     var text = (gitLog || "").trim() || "(no git log available)";
     var pre = el("pre", { className: "dashboard-git-log mono" });
     pre.textContent = text;
-    section.appendChild(pre);
+    details.appendChild(pre);
 
-    return section;
+    return details;
   }
 
-  // ── Helpers ───────────────────────────────────────────
+  // ── Helpers ─────────────────────────────────────────
 
-  /**
-   * Single metric card with label, value, and traffic-light colour.
-   * @param {string} label
-   * @param {string} value
-   * @param {string} colour  "success" | "warning" | "error" | "muted"
-   * @param {string} [extra]  extra className for value text
-   */
   function metricCard(label, value, colour, extra) {
     var colourClass = {
       "success": "dashboard-metric--success",
@@ -342,9 +400,6 @@
     ]);
   }
 
-  /**
-   * Wrap content in a card section with an optional title.
-   */
   function wrapSection(title, content) {
     var section = el("div", { className: "card dashboard-section" });
     if (title) {
