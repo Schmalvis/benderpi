@@ -41,5 +41,6 @@ logs/metrics.jsonl*
 .superpowers/
 
 favourites.json
+timers.json
 .end_session
 .session_active.json
