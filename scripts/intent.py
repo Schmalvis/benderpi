@@ -10,6 +10,9 @@ Intents:
   DISMISSAL     — bye/stop/goodbye
   JOKE          — tell me a joke / say something funny
   PERSONAL      — personal questions (sub_key = job/age/etc)
+  TIMER         — set a timer / set an alarm / remind me in / wake me up
+  TIMER_CANCEL  — cancel/stop/remove/delete a timer or alarm
+  TIMER_STATUS  — how long left / what timers / any alarms
   WEATHER       — weather/forecast/rain
   NEWS          — news/headlines/what's happening
   HA_CONTROL    — Commands to control HA devices (lights, switches)
@@ -78,6 +81,29 @@ NEWS_PATTERNS = [
     r"\bheadlines?\b",
     r"\bwhat.{0,10}happening\b",
     r"\blatest updates?\b",
+]
+
+TIMER_PATTERNS = [
+    r"\bset (a |an )?(timer|alarm)\b",
+    r"\btimer for\b",
+    r"\balarm (for|at)\b",
+    r"\bremind me in\b",
+    r"\bwake me (up )?(at|in)\b",
+]
+
+TIMER_CANCEL_PATTERNS = [
+    r"\bcancel (the |my )?(\w+ )?(timer|alarm)\b",
+    r"\bstop (the |my )?(\w+ )?(timer|alarm)\b",
+    r"\bremove (the |my )?(\w+ )?(timer|alarm)\b",
+    r"\bdelete (the |my )?(\w+ )?(timer|alarm)\b",
+]
+
+TIMER_STATUS_PATTERNS = [
+    r"\bhow (long|much time)\b.{0,20}\b(timer|alarm|left)\b",
+    r"\bwhat timers\b",
+    r"\bany (timers|alarms)\b",
+    r"\btime remaining\b",
+    r"\bhow long left\b",
 ]
 
 HA_CONTROL_PATTERNS = [
@@ -176,6 +202,12 @@ def _check_all_intents(t: str) -> list[str]:
     matched = []
     if _match_any(t, HA_CONTROL_PATTERNS):
         matched.append("HA_CONTROL")
+    if _match_any(t, TIMER_PATTERNS):
+        matched.append("TIMER")
+    if _match_any(t, TIMER_CANCEL_PATTERNS):
+        matched.append("TIMER_CANCEL")
+    if _match_any(t, TIMER_STATUS_PATTERNS):
+        matched.append("TIMER_STATUS")
     if _match_any(t, WEATHER_PATTERNS):
         matched.append("WEATHER")
     if _match_any(t, NEWS_PATTERNS):
@@ -205,6 +237,12 @@ def classify(text: str) -> tuple[str, str | None]:
     # Most specific first
     if _match_any(t, HA_CONTROL_PATTERNS):
         return ("HA_CONTROL", None)
+    if _match_any(t, TIMER_PATTERNS):
+        return ("TIMER", None)
+    if _match_any(t, TIMER_CANCEL_PATTERNS):
+        return ("TIMER_CANCEL", None)
+    if _match_any(t, TIMER_STATUS_PATTERNS):
+        return ("TIMER_STATUS", None)
     if _match_any(t, WEATHER_PATTERNS):
         location = _extract_weather_location(text.strip())
         return ("WEATHER", location)

@@ -57,3 +57,36 @@ def test_long_utterance_not_simple():
 
 def test_unknown_fallthrough():
     assert classify("explain quantum entanglement to me")[0] == "UNKNOWN"
+
+
+# === Timer intents ===
+
+def test_set_timer():
+    assert classify("set a timer for 10 minutes")[0] == "TIMER"
+
+def test_set_timer_named():
+    assert classify("set a timer for pasta for 10 minutes")[0] == "TIMER"
+
+def test_set_alarm():
+    assert classify("set an alarm for 10am")[0] == "TIMER"
+
+def test_wake_me():
+    assert classify("wake me up at 6am")[0] == "TIMER"
+
+def test_remind_me():
+    assert classify("remind me in 30 minutes")[0] == "TIMER"
+
+def test_cancel_timer():
+    assert classify("cancel the pasta timer")[0] == "TIMER_CANCEL"
+
+def test_cancel_alarm():
+    assert classify("cancel my alarm")[0] == "TIMER_CANCEL"
+
+def test_timer_status():
+    assert classify("how long left on the timer")[0] == "TIMER_STATUS"
+
+def test_what_timers():
+    assert classify("what timers do I have")[0] == "TIMER_STATUS"
+
+def test_any_alarms():
+    assert classify("any alarms set")[0] == "TIMER_STATUS"
