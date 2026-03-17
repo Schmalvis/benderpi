@@ -27,6 +27,8 @@ _CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
 _WATCHDOG_CONFIG_PATH = os.path.join(_BASE_DIR, "watchdog_config.json")
 _VENV_PYTHON = os.path.join(_BASE_DIR, "venv", "bin", "python")
 _PREBUILD_SCRIPT = os.path.join(_BASE_DIR, "scripts", "prebuild_responses.py")
+_SESSION_FILE = os.path.join(_BASE_DIR, ".session_active.json")
+_END_SESSION_FILE = os.path.join(_BASE_DIR, ".end_session")
 _IS_LINUX = os.name != "nt"
 
 app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None)
@@ -108,6 +110,26 @@ def _get_clips() -> list[dict]:
 
 @app.get("/api/health")
 async def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/actions/session-status", dependencies=[Depends(require_pin)])
+async def session_status_detail():
+    if os.path.exists(_SESSION_FILE):
+        try:
+            with open(_SESSION_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return {"active": False}
+    return {"active": False}
+
+
+@app.post("/api/actions/end-session", dependencies=[Depends(require_pin)])
+async def end_session():
+    if not os.path.exists(_SESSION_FILE):
+        return {"status": "no_session"}
+    with open(_END_SESSION_FILE, "w") as f:
+        f.write("")
     return {"status": "ok"}
 
 

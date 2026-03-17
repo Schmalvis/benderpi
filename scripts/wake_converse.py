@@ -52,6 +52,31 @@ log = get_logger("converse")
 KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
 SILENCE_TIMEOUT = 8.0   # seconds of silence before session ends
 
+_SESSION_FILE = os.path.join(BASE_DIR, ".session_active.json")
+_END_SESSION_FILE = os.path.join(BASE_DIR, ".end_session")
+
+
+def _write_session_file(session_id: str, turns: int):
+    try:
+        with open(_SESSION_FILE, "w") as f:
+            json.dump({
+                "active": True,
+                "session_id": session_id,
+                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "turns": turns,
+            }, f)
+    except OSError as e:
+        log.warning("Failed to write session file: %s", e)
+
+
+def _remove_session_file():
+    for p in [_SESSION_FILE, _END_SESSION_FILE]:
+        try:
+            if os.path.exists(p):
+                os.unlink(p)
+        except OSError:
+            pass
+
 # ---------------------------------------------------------------------------
 # Thinking clips
 # ---------------------------------------------------------------------------
@@ -115,6 +140,7 @@ def wait_for_wakeword():
 def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responder):
     metrics.count("session", event="start")
     session_log.session_start()
+    _write_session_file(session_log.session_id, 0)
     audio.open_session()
 
     # Greeting — skip audio if silent_wakeword is enabled (LED-only notification)
@@ -144,6 +170,25 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     last_heard = time.time()
 
     while True:
+        # Check for remote end-session request
+        if os.path.exists(_END_SESSION_FILE):
+            try:
+                os.unlink(_END_SESSION_FILE)
+            except OSError:
+                pass
+            log.info("Session ended by remote request")
+            if not (cfg.silent_wakeword and cfg.led_listening_enabled):
+                clip = responder.pick_clip("DISMISSAL")
+                if clip and os.path.exists(clip):
+                    leds.set_talking()
+                    audio.play(clip)
+            leds.all_off()
+            session_log.session_end("remote_end")
+            metrics.count("session", event="end", turns=session_log.turn, reason="remote_end")
+            _remove_session_file()
+            audio.close_session()
+            return
+
         # Show listening LEDs
         leds.set_listening(True)
 
@@ -156,6 +201,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 leds.all_off()
                 session_log.session_end("timeout")
                 metrics.count("session", event="end", turns=session_log.turn, reason="timeout")
+                _remove_session_file()
                 audio.close_session()
                 return
             continue
@@ -182,11 +228,13 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         session_log.log_turn(text, response.intent, response.sub_key,
                         response.method, response.text, response.model)
+        _write_session_file(session_log.session_id, session_log.turn)
 
         if response.intent == "DISMISSAL":
             leds.all_off()
             session_log.session_end("dismissal")
             metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
+            _remove_session_file()
             audio.close_session()
             return
 
