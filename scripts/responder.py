@@ -114,6 +114,18 @@ class Responder:
             if intent_name == "HA_CONTROL":
                 return self._handle_ha(text, ai)
 
+            # --- TIMER ---
+            if intent_name == "TIMER":
+                return self._respond_handler("timer_set", text, ai, intent_name)
+
+            # --- TIMER_CANCEL ---
+            if intent_name == "TIMER_CANCEL":
+                return self._respond_handler("timer_cancel", text, ai, intent_name)
+
+            # --- TIMER_STATUS ---
+            if intent_name == "TIMER_STATUS":
+                return self._respond_handler("timer_status", text, ai, intent_name)
+
             # --- UNKNOWN -> AI ---
             return self._respond_ai(text, ai)
 
@@ -190,6 +202,40 @@ class Responder:
         except Exception as e:
             log.error("HA control error: %s", e)
             return self._respond_ai(text, ai, "HA_CONTROL")
+
+    def _respond_handler(self, handler_type: str, user_text: str, ai,
+                         intent_name: str) -> Response:
+        """Dispatch to a named handler and return a Response."""
+        try:
+            if handler_type == "timer_set":
+                from handlers import timer_handler
+                wav = timer_handler.handle_set(user_text)
+                return Response(
+                    text="(timer set)", wav_path=wav,
+                    method="handler_timer", intent=intent_name, sub_key=None,
+                    is_temp=True, needs_thinking=True, model=None,
+                )
+            elif handler_type == "timer_cancel":
+                from handlers import timer_handler
+                wav = timer_handler.handle_cancel(user_text)
+                return Response(
+                    text="(timer cancel)", wav_path=wav,
+                    method="handler_timer", intent=intent_name, sub_key=None,
+                    is_temp=True, needs_thinking=True, model=None,
+                )
+            elif handler_type == "timer_status":
+                from handlers import timer_handler
+                wav = timer_handler.handle_status(user_text)
+                return Response(
+                    text="(timer status)", wav_path=wav,
+                    method="handler_timer", intent=intent_name, sub_key=None,
+                    is_temp=True, needs_thinking=True, model=None,
+                )
+            else:
+                raise ValueError(f"Unknown handler_type: {handler_type!r}")
+        except Exception as e:
+            log.error("Handler %s error: %s", handler_type, e)
+            return self._respond_ai(user_text, ai, intent_name)
 
     def _respond_ai(self, text: str, ai, intent_name: str = "UNKNOWN",
                     sub_key: str = None) -> Response:
