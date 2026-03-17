@@ -1,5 +1,6 @@
 /* ═══════════════════════════════════════════════════════
    BenderPi Web UI — Log Viewer Tab
+   Segmented controls, collapsible sessions, themed badges
    ═══════════════════════════════════════════════════════ */
 
 (function () {
@@ -8,6 +9,7 @@
   var el = window.bender.el;
   var apiJson = window.bender.apiJson;
   var apiDownload = window.bender.apiDownload;
+  var getQuote = window.bender.getQuote;
 
   // ── State ────────────────────────────────────────────
 
@@ -30,21 +32,23 @@
   function initLogs() {
     root = document.getElementById("panel-logs");
     if (!root) return;
-    // Clear and rebuild
     while (root.firstChild) root.removeChild(root.firstChild);
     buildShell();
     switchView(state.view);
   }
 
-  // ── Shell: sub-view toggle buttons ──────────────────
+  // ── Shell: segmented control toggle ──────────────────
 
   function buildShell() {
-    var header = el("div", { className: "logs-header" }, [
+    var segmented = el("div", { className: "logs-header" });
+
+    var segControl = el("div", { className: "logs-controls" }, [
       buildNavBtn("conversations", "Conversations"),
       buildNavBtn("system", "System Log"),
       buildNavBtn("metrics", "Metrics"),
     ]);
-    root.appendChild(header);
+    segmented.appendChild(segControl);
+    root.appendChild(segmented);
 
     var body = el("div", { id: "logs-body", className: "logs-body" });
     root.appendChild(body);
@@ -62,7 +66,6 @@
 
   function switchView(view) {
     state.view = view;
-    // Update nav button states
     var navBtns = root.querySelectorAll("[data-logs-nav]");
     navBtns.forEach(function (btn) {
       var active = btn.dataset.logsNav === view;
@@ -116,7 +119,6 @@
 
   function loadConvDate(dateStr, body) {
     state.convDate = dateStr;
-    // Update date button states
     var dateBtns = body.querySelectorAll("[data-conv-date]");
     dateBtns.forEach(function (btn) {
       var active = btn.dataset.convDate === dateStr;
@@ -139,7 +141,10 @@
         while (content.firstChild) content.removeChild(content.firstChild);
         var msg = err.message || String(err);
         if (msg.indexOf("404") !== -1) {
-          content.appendChild(el("p", { className: "text-muted logs-empty", textContent: "No log for " + dateStr + "." }));
+          content.appendChild(el("p", {
+            className: "text-muted logs-empty",
+            textContent: getQuote("empty")
+          }));
         } else {
           content.appendChild(el("p", { className: "error", textContent: "Error: " + msg }));
         }
@@ -148,7 +153,10 @@
 
   function renderSessions(container, events) {
     if (!events.length) {
-      container.appendChild(el("p", { className: "text-muted logs-empty", textContent: "No events recorded." }));
+      container.appendChild(el("p", {
+        className: "text-muted logs-empty",
+        textContent: getQuote("empty")
+      }));
       return;
     }
     // Group events by session_id
@@ -206,7 +214,7 @@
     var userText = turn.user_text || turn.text || "";
     var responseText = turn.response_text || turn.response || "";
 
-    var methodClass = "method-" + method;
+    var methodClass = "badge turn-badge method-" + method;
     var row = el("div", { className: "turn-row" }, [
       el("div", { className: "turn-user" }, [
         el("span", { className: "turn-label text-muted", textContent: "You: " }),
@@ -214,7 +222,7 @@
       ]),
       el("div", { className: "turn-meta" }, [
         intent ? el("span", { className: "badge badge-muted turn-badge", textContent: intent }) : null,
-        method ? el("span", { className: "badge turn-badge " + methodClass, textContent: method }) : null,
+        method ? el("span", { className: methodClass, textContent: method }) : null,
       ]),
       responseText ? el("div", { className: "turn-response" }, [
         el("span", { className: "turn-label text-muted", textContent: "Bender: " }),
@@ -240,7 +248,7 @@
     var searchInput = el("input", {
       type: "search",
       className: "logs-search",
-      placeholder: "Search log lines…",
+      placeholder: "Search log lines\u2026",
     });
     searchInput.addEventListener("input", function () {
       state.systemSearch = searchInput.value;
@@ -276,7 +284,6 @@
 
   function setSystemLevel(level) {
     state.systemLevel = level;
-    // Update button states
     var btns = document.querySelectorAll("[data-sys-level]");
     btns.forEach(function (btn) {
       var active = btn.dataset.sysLevel === level;
@@ -287,7 +294,7 @@
 
   function fetchSystemLog(container) {
     while (container.firstChild) container.removeChild(container.firstChild);
-    container.appendChild(el("span", { textContent: "Loading…" }));
+    container.appendChild(el("span", { textContent: "Loading\u2026" }));
 
     var url = "/api/logs/system?lines=500";
     if (state.systemLevel) url += "&level=" + encodeURIComponent(state.systemLevel);
@@ -318,13 +325,15 @@
     }
 
     if (!lines.length) {
-      container.appendChild(el("span", { className: "text-muted", textContent: "No lines to display." }));
+      container.appendChild(el("span", {
+        className: "text-muted",
+        textContent: getQuote("empty")
+      }));
       return;
     }
 
     lines.forEach(function (ln) {
       var lineEl = el("div", { className: "log-line" });
-      // Colour-code by level
       if (ln.indexOf("ERROR") !== -1 || ln.indexOf("CRITICAL") !== -1) {
         lineEl.classList.add("log-line--error");
       } else if (ln.indexOf("WARNING") !== -1) {
@@ -335,7 +344,6 @@
       lineEl.textContent = ln;
       container.appendChild(lineEl);
     });
-    // Scroll to bottom
     container.scrollTop = container.scrollHeight;
   }
 
@@ -357,7 +365,6 @@
   ];
 
   function renderMetrics(body) {
-    // Metric name dropdown
     var nameSelect = el("select", { className: "logs-metrics-select" });
     METRIC_NAMES.forEach(function (n) {
       var opt = el("option", { value: n, textContent: n });
@@ -369,7 +376,6 @@
       fetchMetrics(tableBody);
     });
 
-    // Time range buttons
     var timeRow = el("div", { className: "logs-controls" });
     TIME_RANGES.forEach(function (tr) {
       var btn = el("button", {
@@ -416,7 +422,7 @@
   function fetchMetrics(tableBody) {
     while (tableBody.firstChild) tableBody.removeChild(tableBody.firstChild);
     var loadRow = el("tr", {}, [
-      el("td", { colSpan: "4", textContent: "Loading…" }),
+      el("td", { colSpan: "4", textContent: "Loading\u2026" }),
     ]);
     tableBody.appendChild(loadRow);
 
@@ -429,11 +435,10 @@
         var events = data.events || [];
         if (!events.length) {
           tableBody.appendChild(el("tr", {}, [
-            el("td", { colSpan: "4", className: "text-muted", textContent: "No events in this time window." }),
+            el("td", { colSpan: "4", className: "text-muted", textContent: getQuote("empty") }),
           ]));
           return;
         }
-        // Show most-recent first
         var reversed = events.slice().reverse();
         reversed.forEach(function (ev) {
           var durationMs = ev.duration_ms != null ? String(ev.duration_ms) : "";
@@ -471,7 +476,10 @@
       .then(function (data) {
         var files = data.files || [];
         if (!files.length) {
-          listEl.appendChild(el("p", { className: "text-muted", textContent: "No log files found." }));
+          listEl.appendChild(el("p", {
+            className: "text-muted",
+            textContent: getQuote("empty")
+          }));
           return;
         }
         files.forEach(function (f) {
