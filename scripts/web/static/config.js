@@ -35,8 +35,8 @@
       fields: [
         { key: "silence_pre", label: "Pre-silence (s)", type: "float", step: 0.01, min: 0, max: 1 },
         { key: "silence_post", label: "Post-silence (s)", type: "float", step: 0.01, min: 0, max: 1 },
-        { key: "speech_rate", label: "Speech Rate", type: "range", step: 0.1, min: 0.5, max: 2.0,
-          help: "Piper length-scale: <1.0 = faster, >1.0 = slower" }
+        { key: "speech_rate", label: "Speech Pace", type: "range", step: 0.05, min: 0.7, max: 2.0,
+          help: "Higher = slower speech, lower = faster. 1.0 is normal. Recommended: 1.0–1.3" }
       ]
     },
     {

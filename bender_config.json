@@ -10,14 +10,14 @@
   "weather_ttl": 1800,
   "news_ttl": 7200,
   "log_level": "INFO",
-  "led_brightness": 0.8,
+  "led_brightness": 1.0,
   "led_colour": [
     255,
     120,
     0
   ],
   "simple_intent_max_words": 6,
-  "speech_rate": 0.9,
+  "speech_rate": 1.1,
   "location": "Nottingham, England",
   "ha_exclude_entities": [
     "switch.clock_weather_card_pre_release",
