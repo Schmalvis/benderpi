@@ -65,6 +65,7 @@
 html {
   font-size: 16px;
   -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -73,6 +74,8 @@ body {
   color: var(--text);
   line-height: 1.6;
   min-height: 100vh;
+  overflow-x: hidden;
+  width: 100%;
   transition: background var(--transition), color var(--transition);
 }
 
@@ -646,6 +649,8 @@ details > :not(summary) {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 /* ── Header ─────────────────────────────────────────── */
@@ -800,12 +805,15 @@ details > :not(summary) {
   margin: 0 auto;
   width: 100%;
   flex: 1;
+  overflow-x: hidden;
 }
 
 /* ── Tab Panels ─────────────────────────────────────── */
 
 .tab-panel {
   display: none;
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
 .tab-panel.active {
@@ -2150,6 +2158,8 @@ details[open].cfg-group > summary.cfg-group-title::after {
 
   .app-content {
     margin-left: 0;
+    max-width: 100vw;
+    overflow-x: hidden;
   }
 
   .fab {
@@ -2158,25 +2168,42 @@ details[open].cfg-group > summary.cfg-group-title::after {
 
   .header {
     padding: 0 12px;
-    gap: 8px;
+    gap: 6px;
+    overflow: hidden;
+    max-width: 100vw;
+  }
+
+  .header-brand {
+    min-width: 0;
+    overflow: hidden;
   }
 
   .header-title {
     font-size: 1rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .header-subtitle {
     font-size: 0.55rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-actions {
+    flex-shrink: 0;
   }
 
   .tab-bar {
-    padding: 0 12px;
+    padding: 0 8px;
     width: 100%;
+    max-width: 100vw;
   }
 
   .tab-btn {
     padding: 6px 10px;
     font-size: 0.8rem;
+    flex-shrink: 0;
   }
 
   .tab-icon {
@@ -2185,6 +2212,8 @@ details[open].cfg-group > summary.cfg-group-title::after {
 
   .main {
     padding: 12px;
+    max-width: 100vw;
+    overflow-x: hidden;
   }
 
   .footer {
