@@ -207,7 +207,7 @@ def load_clips_from_index(key: str) -> list[str]:
     ...
 ```
 
-Both `wake_converse.py` (for thinking clips) and `TimerAlertRunner` (for alert clips) call `load_clips_from_index()` with their respective keys.
+Both `wake_converse.py` (for thinking clips) and `TimerAlertRunner` (for alert clips) call `load_clips_from_index()` with their respective keys. **Importantly**, `wake_converse.py` retains its `_thinking_clips` module-level list — only the loading logic is shared. The orchestrator calls `_thinking_clips = load_clips_from_index("thinking")` in `main()` at startup, and reads `_thinking_clips` in `run_session()` as before.
 
 #### Orchestrator change
 
