@@ -77,3 +77,7 @@ def test_dismissal_ends_session_default():
     """cfg.dismissal_ends_session should default to True."""
     from config import cfg
     assert cfg.dismissal_ends_session is True
+
+def test_ha_room_synonyms_default():
+    from config import cfg
+    assert isinstance(cfg.ha_room_synonyms, dict)

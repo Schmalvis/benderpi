@@ -61,6 +61,7 @@ class Config:
     ha_token: str = ""  # from .env only
     ha_weather_entity: str = "weather.forecast_home"
     location: str = "your location"  # shown in Bender persona + weather responses
+    ha_room_synonyms: dict = {}
 
     # Secrets (from .env only, never in config JSON)
     anthropic_api_key: str = ""
@@ -106,6 +107,7 @@ class Config:
 
         # HA exclude entities (loaded from bender_config.json)
         self.ha_exclude_entities: list = overrides.get("ha_exclude_entities", [])
+        self.ha_room_synonyms: dict = overrides.get("ha_room_synonyms", {})
 
         # 2. Load .env for secrets
         ep = env_path or _DEFAULT_ENV_PATH

@@ -47,5 +47,13 @@
     "climate.0xc09b9efffe848bb4",
     "climate.martins_office_radiator_trv"
   ],
-  "dismissal_ends_session": true
+  "dismissal_ends_session": true,
+  "ha_room_synonyms": {
+    "lounge": "living room",
+    "front room": "living room",
+    "sitting room": "living room",
+    "loo": "bathroom",
+    "toilet": "bathroom",
+    "study": "office"
+  }
 }
