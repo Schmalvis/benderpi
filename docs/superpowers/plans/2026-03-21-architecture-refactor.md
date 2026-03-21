@@ -1725,7 +1725,22 @@ In `scripts/wake_converse.py`:
    _alert_runner.run(fired, on_chunk=leds.set_level, on_done=leds.all_off, on_flash=leds.set_alert_flash)
    ```
 7. **Verify** `_SESSION_FILE` / `_END_SESSION_FILE` were already replaced with `cfg.session_file` / `cfg.end_session_file` in Task 8. If Task 8 was completed, no action needed here. If not, do it now.
-8. **Pass LED callbacks** to all `audio.play()` calls in `run_session()`:
+8. **Replace greeting `pick_clip` / `_is_pre_gen` calls** (lines 271–275). These methods are removed from `Responder` in Task 16. Replace with `RealClipHandler`:
+   ```python
+   from handlers.clip_handler import RealClipHandler
+   _greeting_handler = RealClipHandler()
+
+   # In run_session(), replace:
+   #   greeting_path = responder.pick_clip("GREETING")
+   #   method = "pre_gen_tts" if responder._is_pre_gen(greeting_path) else "real_clip"
+   # With:
+   greeting_resp = _greeting_handler.handle("(wake word)", "GREETING")
+   if greeting_resp:
+       greeting_path = greeting_resp.wav_path
+       method = greeting_resp.method
+   ```
+   The `_greeting_handler` can be instantiated at module level (same as `_alert_runner`).
+9. **Pass LED callbacks** to all `audio.play()` calls in `run_session()`:
    ```python
    audio.play(response.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
    ```
