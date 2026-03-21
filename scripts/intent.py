@@ -36,7 +36,6 @@ log = get_logger("intent")
 GREETING_PATTERNS = [
     r"\b(hello|hi|hey|howdy)\b",
     r"\bgood (morning|evening|afternoon)\b",
-    r"\bhow are you\b",
     r"\byou there\b",
     r"\bwake up\b",
     r"\byo\b",
@@ -70,10 +69,8 @@ WEATHER_PATTERNS = [
     r"\bweather\b",
     r"\bforecast\b",
     r"\b(what'?s? it like|what is it like) outside\b",
-    r"\bis it raining\b",
     r"\bwill it rain\b",
     r"\btemperature outside\b",
-    r"\b(what.{0,15}temperature|temperature in|how (hot|cold|warm))\b",
     r"\bgoing to rain\b",
 ]
 NEWS_PATTERNS = [
@@ -118,7 +115,7 @@ HA_CONTROL_PATTERNS = [
 
 PERSONAL_PATTERNS = [
     ("eat",         r"\b(eat|food|drink|hungry|alcohol|beer|fuel|power)\b"),
-    ("feelings",    r"\b(feel(ings?)?|emotion(al)?|happy|sad|angry|upset|care)\b"),
+    ("feelings",    r"\b(feel(ings?)?|emotion(al)?|happy|sad|angry|upset|care)\b|\bhow are you\b"),
     ("like_me",     r"\bdo you like me\b|\byou like me\b"),
     ("friend",      r"\b(friend|friends|mate|pal|buddy)\b"),
     ("where_work",  r"\b(where|planet express|delivery)\b.{0,20}\bwork\b|\bwork\b.{0,20}\b(where|company|place)\b"),
@@ -128,6 +125,18 @@ PERSONAL_PATTERNS = [
     ("what_can_do", r"\bwhat can you do\b|\babilities\b|\bwhat are you capable\b"),
     ("age",         r"\b(how old|age|born|year|built)\b"),
     ("job",         r"\b(job|purpose|programmed|function)\b|\bwhat do you do\b"),
+]
+
+CONTEXTUAL_PATTERNS = [
+    ("time", r"\b(what time|what's the time|tell me the time|current time|time is it)\b"),
+    ("time", r"\b(what hour|how late is it)\b"),
+    ("date", r"\b(what('s| is) the date|what day is it|today's date|current date)\b"),
+    ("date", r"\b(what month|what year is it)\b"),
+    ("weather_detail", r"\b(how (hot|cold|warm|chilly) is it)\b"),
+    ("weather_detail", r"\b(is it (raining|snowing|sunny|cloudy|windy))\b"),
+    ("weather_detail", r"\b(what('s| is) the temperature|how many degrees)\b"),
+    ("status", r"\b(how are you (doing|running)|how('s| is) it going)\b"),
+    ("status", r"\b(system status|your status|health check|you ok|are you ok)\b"),
 ]
 
 
@@ -252,6 +261,12 @@ def classify(text: str) -> tuple[str, str | None]:
         return ("DISMISSAL", None)
     if _match_any(t, JOKE_PATTERNS):
         return ("JOKE", None)
+
+    # CONTEXTUAL (before PERSONAL — more specific patterns)
+    for sub_key, pattern in CONTEXTUAL_PATTERNS:
+        if re.search(pattern, t, re.IGNORECASE):
+            log.debug("Intent: CONTEXTUAL/%s", sub_key)
+            return "CONTEXTUAL", sub_key
 
     # Personal questions — check sub-patterns
     for sub_key, pattern in PERSONAL_PATTERNS:
