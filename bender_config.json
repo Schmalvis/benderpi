@@ -19,9 +19,17 @@
   "simple_intent_max_words": 6,
   "timer_alert_max_seconds": 60,
   "speech_rate": 1.1,
-  "led_listening_colour": [0, 80, 255],
-  "led_talking_colour": [255, 255, 255],
-  "led_listening_enabled": false,
+  "led_listening_colour": [
+    0,
+    80,
+    255
+  ],
+  "led_talking_colour": [
+    255,
+    255,
+    255
+  ],
+  "led_listening_enabled": true,
   "silent_wakeword": false,
   "location": "Nottingham, England",
   "ha_exclude_entities": [
