@@ -93,3 +93,18 @@ def test_handles_list_value_in_personal(tmp_path):
     response = handler.handle("what is your job", "PERSONAL", sub_key="job")
     assert response is not None
     assert response.method == "pre_gen_tts"
+
+
+def test_handle_object_personal_entry(tmp_path):
+    """Supports dict {file, label} entries in personal sub-keys."""
+    resp_dir = tmp_path / "speech" / "responses"
+    resp_dir.mkdir(parents=True)
+    (resp_dir / "job_1.wav").write_bytes(b"RIFF")
+    index = {"personal": {"job": {"file": "speech/responses/job_1.wav", "label": "I bend things"}}}
+    index_path = resp_dir / "index.json"
+    index_path.write_text(json.dumps(index))
+    handler = PreGenHandler(index_path=str(index_path), base_dir=str(tmp_path))
+    response = handler.handle("what is your job", "PERSONAL", sub_key="job")
+    assert response is not None
+    assert response.method == "pre_gen_tts"
+    assert response.wav_path.endswith("job_1.wav")

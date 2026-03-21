@@ -59,7 +59,8 @@ def load_clips_from_index(key: str, index_path: str, base_dir: str) -> list[str]
 
     clips = []
     for entry in entries:
-        full = os.path.join(base_dir, entry)
+        rel_path = entry["file"] if isinstance(entry, dict) else entry
+        full = os.path.join(base_dir, rel_path)
         if os.path.exists(full):
             clips.append(full)
     log.info("Loaded %d %s clip(s) (%d missing)", len(clips), key, len(entries) - len(clips))

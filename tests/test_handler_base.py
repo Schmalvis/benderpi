@@ -75,3 +75,29 @@ class TestLoadClipsFromIndex:
         (tmp_path / "exists.wav").write_bytes(b"RIFF" + b"\x00" * 40)
         clips = load_clips_from_index("thinking", str(index_path), str(tmp_path))
         assert len(clips) == 1
+
+
+class TestLoadClipsFromIndexObjects:
+    def test_loads_object_entries(self, tmp_path):
+        import json
+        clips_dir = tmp_path / "clips"
+        clips_dir.mkdir()
+        (clips_dir / "think1.wav").write_bytes(b"RIFF" + b"\x00" * 40)
+        index = {"thinking": [{"file": "clips/think1.wav", "label": "Hmm..."}]}
+        index_path = tmp_path / "index.json"
+        index_path.write_text(json.dumps(index))
+        clips = load_clips_from_index("thinking", str(index_path), str(tmp_path))
+        assert len(clips) == 1
+        assert clips[0].endswith("think1.wav")
+
+    def test_loads_mixed_entries(self, tmp_path):
+        import json
+        clips_dir = tmp_path / "clips"
+        clips_dir.mkdir()
+        (clips_dir / "a.wav").write_bytes(b"RIFF" + b"\x00" * 40)
+        (clips_dir / "b.wav").write_bytes(b"RIFF" + b"\x00" * 40)
+        index = {"thinking": ["clips/a.wav", {"file": "clips/b.wav", "label": "Hmm"}]}
+        index_path = tmp_path / "index.json"
+        index_path.write_text(json.dumps(index))
+        clips = load_clips_from_index("thinking", str(index_path), str(tmp_path))
+        assert len(clips) == 2

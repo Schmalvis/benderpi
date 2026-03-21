@@ -29,7 +29,8 @@ class RealClipHandler(Handler):
         clips = self._index.get(key, [])
         if not clips:
             return None
-        rel_path = random.choice(clips)
+        entry = random.choice(clips)
+        rel_path = entry["file"] if isinstance(entry, dict) else entry
         wav_path = os.path.join(self._base_dir, rel_path)
         if not os.path.isfile(wav_path):
             log.warning("RealClipHandler: missing WAV %s", wav_path)
