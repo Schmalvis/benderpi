@@ -131,6 +131,8 @@ async def end_session():
         return {"status": "no_session"}
     with open(cfg.end_session_file, "w") as f:
         f.write("")
+    with open(cfg.abort_file, "w") as f:
+        f.write("")
     return {"status": "ok"}
 
 

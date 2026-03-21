@@ -65,3 +65,22 @@ def test_end_session_creates_flag():
         for p in [session_path, flag_path]:
             if os.path.exists(p):
                 os.unlink(p)
+
+
+def test_end_session_creates_abort_file():
+    session_path = os.path.join(_BASE_DIR, ".session_active.json")
+    end_session_path = os.path.join(_BASE_DIR, ".end_session")
+    abort_path = os.path.join(_BASE_DIR, ".abort_playback")
+    try:
+        with open(session_path, "w") as f:
+            json.dump({"active": True, "session_id": "test789", "turns": 1}, f)
+        client = get_client()
+        resp = client.post("/api/actions/end-session", headers=auth())
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert os.path.exists(end_session_path)
+        assert os.path.exists(abort_path)
+    finally:
+        for p in [session_path, end_session_path, abort_path]:
+            if os.path.exists(p):
+                os.unlink(p)
