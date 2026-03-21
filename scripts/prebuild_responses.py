@@ -156,48 +156,62 @@ def build_timer_alerts():
 
 
 def build_index():
+    clip_labels = {}
+    labels_path = os.path.join(BASE, "speech", "clip_labels.json")
+    if os.path.exists(labels_path):
+        with open(labels_path) as f:
+            clip_labels = json.load(f)
+
+    def clip_entry(wav_path_relative):
+        """Build an index entry for an original WAV clip, adding label if known."""
+        basename = os.path.basename(wav_path_relative)
+        entry = {"file": wav_path_relative}
+        if basename in clip_labels:
+            entry["label"] = clip_labels[basename]
+        return entry
+
     index = {
         "greeting": [
-            "speech/wav/hello.wav",
-            "speech/wav/hellopeasants.wav",
-            "speech/wav/imbender.wav",
-            "speech/wav/yo.wav",
+            clip_entry("speech/wav/hello.wav"),
+            clip_entry("speech/wav/hellopeasants.wav"),
+            clip_entry("speech/wav/imbender.wav"),
+            clip_entry("speech/wav/yo.wav"),
         ],
         "affirmation": [
-            "speech/wav/gotit.wav",
-            "speech/wav/yougotitgenius.wav",
-            "speech/wav/yessir.wav",
-            "speech/wav/yup.wav",
-            "speech/wav/thankyou.wav",
+            clip_entry("speech/wav/gotit.wav"),
+            clip_entry("speech/wav/yougotitgenius.wav"),
+            clip_entry("speech/wav/yessir.wav"),
+            clip_entry("speech/wav/yup.wav"),
+            clip_entry("speech/wav/thankyou.wav"),
         ],
         "dismissal": [
-            "speech/wav/itwasapleasuremeetingyou.wav",
-            "speech/wav/solongcoffinstuffers.wav",
-            "speech/wav/yesss.wav",
+            clip_entry("speech/wav/itwasapleasuremeetingyou.wav"),
+            clip_entry("speech/wav/solongcoffinstuffers.wav"),
+            clip_entry("speech/wav/yesss.wav"),
         ],
         "joke": [
-            "speech/wav/hahohwaityoureseriousletmelaughevenharder.wav",
-            "speech/wav/compareyourlivestomineandthenkillyourselves.wav",
-            "speech/wav/imgonnagobuildmyownthemepark.wav",
+            clip_entry("speech/wav/hahohwaityoureseriousletmelaughevenharder.wav"),
+            clip_entry("speech/wav/compareyourlivestomineandthenkillyourselves.wav"),
+            clip_entry("speech/wav/imgonnagobuildmyownthemepark.wav"),
         ] + [
-            f"speech/responses/joke/joke_{i:03d}.wav"
+            {"file": f"speech/responses/joke/joke_{i:03d}.wav", "label": JOKE_RESPONSES[i - 1]}
             for i in range(1, len(JOKE_RESPONSES) + 1)
         ],
         "personal": {
-            "job":         "speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav",
-            "age":         "speech/responses/personal/age.wav",
-            "where_live":  "speech/responses/personal/where_live.wav",
-            "where_work":  "speech/responses/personal/where_work.wav",
-            "can_talk":    "speech/responses/personal/can_talk.wav",
-            "are_you_real":"speech/responses/personal/are_you_real.wav",
-            "feelings":    "speech/responses/personal/feelings.wav",
-            "what_can_do": "speech/responses/personal/what_can_do.wav",
-            "friend":      "speech/responses/personal/friend.wav",
-            "like_me":     "speech/responses/personal/like_me.wav",
-            "eat":         "speech/responses/personal/eat.wav",
+            "job":         clip_entry("speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav"),
+            "age":         {"file": "speech/responses/personal/age.wav",          "label": PERSONAL_RESPONSES["age"]},
+            "where_live":  {"file": "speech/responses/personal/where_live.wav",   "label": PERSONAL_RESPONSES["where_live"]},
+            "where_work":  {"file": "speech/responses/personal/where_work.wav",   "label": PERSONAL_RESPONSES["where_work"]},
+            "can_talk":    {"file": "speech/responses/personal/can_talk.wav",     "label": PERSONAL_RESPONSES["can_talk"]},
+            "are_you_real":{"file": "speech/responses/personal/are_you_real.wav", "label": PERSONAL_RESPONSES["are_you_real"]},
+            "feelings":    {"file": "speech/responses/personal/feelings.wav",     "label": PERSONAL_RESPONSES["feelings"]},
+            "what_can_do": {"file": "speech/responses/personal/what_can_do.wav",  "label": PERSONAL_RESPONSES["what_can_do"]},
+            "friend":      {"file": "speech/responses/personal/friend.wav",       "label": PERSONAL_RESPONSES["friend"]},
+            "like_me":     {"file": "speech/responses/personal/like_me.wav",      "label": PERSONAL_RESPONSES["like_me"]},
+            "eat":         {"file": "speech/responses/personal/eat.wav",          "label": PERSONAL_RESPONSES["eat"]},
         },
         "ha_confirm": [
-            f"speech/responses/ha_confirm/confirm_{i:03d}.wav"
+            {"file": f"speech/responses/ha_confirm/confirm_{i:03d}.wav", "label": HA_CONFIRM_RESPONSES[i - 1]}
             for i in range(1, len(HA_CONFIRM_RESPONSES) + 1)
         ],
         # Promoted responses — auto-populated from PROMOTED_RESPONSES above
@@ -205,15 +219,16 @@ def build_index():
             {
                 "pattern": entry["pattern"],
                 "file":    f"speech/responses/promoted/{entry['slug']}.wav",
+                "label":   entry["text"],
             }
             for entry in PROMOTED_RESPONSES
         ],
         "thinking": [
-            f"speech/responses/thinking/thinking_{i:03d}.wav"
+            {"file": f"speech/responses/thinking/thinking_{i:03d}.wav", "label": THINKING_SOUNDS[i - 1]}
             for i in range(1, len(THINKING_SOUNDS) + 1)
         ],
         "timer_alerts": [
-            f"speech/responses/timer_alerts/timer_alert_{i:03d}.wav"
+            {"file": f"speech/responses/timer_alerts/timer_alert_{i:03d}.wav", "label": TIMER_ALERT_RESPONSES[i - 1]}
             for i in range(1, len(TIMER_ALERT_RESPONSES) + 1)
         ],
     }
