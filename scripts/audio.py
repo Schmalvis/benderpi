@@ -19,7 +19,6 @@ import wave
 import numpy as np
 import pyaudio
 
-import leds
 from config import cfg
 from logger import get_logger
 from metrics import metrics
@@ -115,10 +114,17 @@ def rms_to_ratio(value: float) -> float:
 # Playback
 # ---------------------------------------------------------------------------
 
-def play(wav_path: str):
+def play(wav_path: str, on_chunk: callable = None, on_done: callable = None):
     """
-    Play a WAV file, driving LEDs in sync.
+    Play a WAV file.
     open_session() must be called first.
+
+    Args:
+        wav_path:  Path to the WAV file to play.
+        on_chunk:  Optional callback called for each audio chunk with a
+                   normalised amplitude value in [0.0, 1.0].
+        on_done:   Optional callback called once after playback finishes
+                   (always invoked outside _lock).
     """
     with metrics.timer("audio_play"):
         with _lock:
@@ -133,17 +139,26 @@ def play(wav_path: str):
                 data = wf.readframes(CHUNK)
                 while data:
                     _stream.write(data)
-                    leds.set_level(rms_to_ratio(rms(data, sw)))
+                    if on_chunk:
+                        on_chunk(rms_to_ratio(rms(data, sw)))
                     data = wf.readframes(CHUNK)
 
             _stream.write(_silence(SILENCE_POST))
 
-    leds.all_off()
+    if on_done:
+        on_done()
 
 
-def play_oneshot(wav_path: str):
+def play_oneshot(wav_path: str, on_chunk: callable = None, on_done: callable = None):
     """Open stream, play clip, close stream. For use outside a session.
     Thread-safe — blocks behind _lock if a session is active.
+
+    Args:
+        wav_path:  Path to the WAV file to play.
+        on_chunk:  Optional callback called for each audio chunk with a
+                   normalised amplitude value in [0.0, 1.0].
+        on_done:   Optional callback called once after playback finishes
+                   (always invoked outside _lock).
     """
     with _lock:
         was_open = _stream is not None
@@ -169,11 +184,13 @@ def play_oneshot(wav_path: str):
                 data = wf.readframes(CHUNK)
                 while data:
                     stream.write(data)
-                    leds.set_level(rms_to_ratio(rms(data, sw)))
+                    if on_chunk:
+                        on_chunk(rms_to_ratio(rms(data, sw)))
                     data = wf.readframes(CHUNK)
             stream.write(_silence(SILENCE_POST))
         finally:
             if not was_open:
                 stream.stop_stream()
                 stream.close()
-    leds.all_off()
+    if on_done:
+        on_done()
