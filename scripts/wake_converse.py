@@ -77,6 +77,15 @@ def _remove_session_file():
         except OSError:
             pass
 
+
+def _cleanup_abort_files():
+    """Remove abort and end-session IPC files."""
+    for f in [cfg.end_session_file, cfg.abort_file]:
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+
 # ---------------------------------------------------------------------------
 # Thinking clips
 # ---------------------------------------------------------------------------
@@ -102,6 +111,19 @@ _alert_runner = TimerAlertRunner()
 # ---------------------------------------------------------------------------
 
 _greeting_handler = RealClipHandler()
+
+_last_abort_check = 0.0
+
+
+def _check_abort_on_chunk(level):
+    """LED visualisation callback + throttled abort file check (~10 Hz)."""
+    global _last_abort_check
+    leds.set_level(level)
+    now = time.monotonic()
+    if now - _last_abort_check > 0.1:
+        _last_abort_check = now
+        if os.path.exists(cfg.abort_file):
+            audio.abort()
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +177,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         greeting_resp = _greeting_handler.handle("(wake word)", "GREETING")
         if greeting_resp:
             leds.set_talking()
-            audio.play(greeting_resp.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
+            audio.play(greeting_resp.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
             session_log.log_turn("(wake word)", "GREETING", None, greeting_resp.method,
                          response_text=os.path.basename(greeting_resp.wav_path))
         else:
@@ -163,7 +185,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             wav = tts_generate.speak(text)
             try:
                 leds.set_talking()
-                audio.play(wav, on_chunk=leds.set_level, on_done=leds.all_off)
+                audio.play(wav, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
             finally:
                 os.unlink(wav)
             session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
@@ -174,19 +196,11 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     while True:
         # Check for remote end-session request
         if os.path.exists(cfg.end_session_file):
-            try:
-                os.unlink(cfg.end_session_file)
-            except OSError:
-                pass
-            log.info("Session ended by remote request")
-            if not (cfg.silent_wakeword and cfg.led_listening_enabled):
-                dismiss_resp = _greeting_handler.handle("(remote end)", "DISMISSAL")
-                if dismiss_resp:
-                    leds.set_talking()
-                    audio.play(dismiss_resp.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
+            _cleanup_abort_files()
+            log.info("Remote end-session: abrupt exit")
             leds.all_off()
-            session_log.session_end("remote_end")
-            metrics.count("session", event="end", turns=session_log.turn, reason="remote_end")
+            session_log.session_end("remote_abrupt")
+            metrics.count("session", event="end", turns=session_log.turn, reason="remote_abrupt")
             _remove_session_file()
             audio.close_session()
             return
@@ -213,15 +227,49 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         response = responder.get_response(text, ai)
 
+        # DISMISSAL fast-path — skip farewell clip if configured
+        if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
+            log.info("DISMISSAL: abrupt session end")
+            if response.is_temp:
+                try:
+                    os.unlink(response.wav_path)
+                except OSError:
+                    pass
+            leds.all_off()
+            session_log.log_turn(text, "DISMISSAL", response.sub_key,
+                            "abrupt_stop", response.text)
+            session_log.session_end("dismissal_abrupt")
+            metrics.count("session", event="end", turns=session_log.turn, reason="dismissal_abrupt")
+            _remove_session_file()
+            audio.close_session()
+            return
+
         # Switch to talking LEDs
         leds.set_talking()
 
         # Play thinking sound while slow response is being generated
         if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
-            audio.play(random.choice(_thinking_clips), on_chunk=leds.set_level, on_done=leds.all_off)
+            audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
 
         # Play response
-        audio.play(response.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
+        audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+
+        # Check if playback was aborted (UI stop button pressed during response)
+        if audio.was_aborted() or os.path.exists(cfg.end_session_file):
+            _cleanup_abort_files()
+            log.info("Session aborted during playback")
+            if response.is_temp:
+                try:
+                    os.unlink(response.wav_path)
+                except OSError:
+                    pass
+            leds.all_off()
+            session_log.session_end("aborted")
+            metrics.count("session", event="end", turns=session_log.turn, reason="aborted")
+            _remove_session_file()
+            audio.close_session()
+            return
+
         if response.is_temp:
             try:
                 os.unlink(response.wav_path)
@@ -233,12 +281,21 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         _write_session_file(session_log.session_id, session_log.turn)
 
         if response.intent == "DISMISSAL":
-            leds.all_off()
-            session_log.session_end("dismissal")
-            metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
-            _remove_session_file()
-            audio.close_session()
-            return
+            if cfg.dismissal_ends_session:
+                # Should have been caught by fast-path above, but handle as fallback
+                leds.all_off()
+                session_log.session_end("dismissal")
+                metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
+                _remove_session_file()
+                audio.close_session()
+                return
+            else:
+                # Soft stop — session continues
+                log.info("DISMISSAL: soft stop, session continues")
+                session_log.log_turn(text, "DISMISSAL", response.sub_key,
+                                "soft_stop", response.text)
+                last_heard = time.time()
+                continue
 
         # Reset timer after Bender finishes -- gives user full window to respond
         last_heard = time.time()
@@ -257,6 +314,9 @@ def main():
     tts_generate.warm_up()
     # Load thinking clips from index
     _load_thinking_clips()
+    # Clean up stale IPC files from previous crashes
+    _cleanup_abort_files()
+    _remove_session_file()
     log.info("Listening for 'Hey Bender'...")
     while True:
         try:
@@ -264,7 +324,7 @@ def main():
             import timers as timers_mod
             fired = timers_mod.check_fired()
             if fired:
-                _alert_runner.run(fired, on_chunk=leds.set_level,
+                _alert_runner.run(fired, on_chunk=_check_abort_on_chunk,
                                   on_done=leds.all_off,
                                   on_flash=leds.set_alert_flash)
                 continue
