@@ -46,5 +46,6 @@
     "switch.shelly_bedroom_wall_switch_switch_1",
     "climate.0xc09b9efffe848bb4",
     "climate.martins_office_radiator_trv"
-  ]
+  ],
+  "dismissal_ends_session": true
 }
