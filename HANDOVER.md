@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-03-17
+Last updated: 2026-03-21
 
 ---
 
@@ -61,6 +61,12 @@ Edit `scripts/tts_generate.py` — add `"--length-scale", str(cfg.speech_rate)` 
 - Monitor STT hallucination rate
 
 ## Recent Decisions
+- Architecture refactor (2026-03-21): handler registry replaces if/elif dispatch in responder.py
+  - New handlers: `handlers/clip_handler.py`, `pregen_handler.py`, `promoted_handler.py`, `weather_handler.py`, `news_handler.py`, `ha_handler.py`, `timer_alert.py`
+  - To add a new handler: create class extending `Handler` from `handler_base.py`, declare `intents`, implement `handle()`, add to handler list in `Responder.__init__`
+  - `audio.py` decoupled from `leds` — uses `on_chunk`/`on_done` callbacks
+  - Config unified: stt.py, tts_generate.py, ha_control.py, briefings.py all use `cfg` singleton
+  - IPC paths (`session_file`, `end_session_file`) centralised in config.py
 - Added voice-controlled timers and alarms with named labels and concurrent support
 - Timer alerts use play-pause cycle (play clip → listen for dismissal → repeat) respecting WM8960 constraint
 - Timer persistence via timers.json (best-effort, survives restarts)
