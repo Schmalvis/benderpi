@@ -53,13 +53,10 @@ log = get_logger("converse")
 KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
 SILENCE_TIMEOUT = 8.0   # seconds of silence before session ends
 
-_SESSION_FILE = os.path.join(BASE_DIR, ".session_active.json")
-_END_SESSION_FILE = os.path.join(BASE_DIR, ".end_session")
-
 
 def _write_session_file(session_id: str, turns: int):
     try:
-        with open(_SESSION_FILE, "w") as f:
+        with open(cfg.session_file, "w") as f:
             json.dump({
                 "active": True,
                 "session_id": session_id,
@@ -71,7 +68,7 @@ def _write_session_file(session_id: str, turns: int):
 
 
 def _remove_session_file():
-    for p in [_SESSION_FILE, _END_SESSION_FILE]:
+    for p in [cfg.session_file, cfg.end_session_file]:
         try:
             if os.path.exists(p):
                 os.unlink(p)
@@ -290,9 +287,9 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
     while True:
         # Check for remote end-session request
-        if os.path.exists(_END_SESSION_FILE):
+        if os.path.exists(cfg.end_session_file):
             try:
-                os.unlink(_END_SESSION_FILE)
+                os.unlink(cfg.end_session_file)
             except OSError:
                 pass
             log.info("Session ended by remote request")
