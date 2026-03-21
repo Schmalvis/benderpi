@@ -732,7 +732,7 @@ details > :not(summary) {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 1;
+  flex: 0 0 auto;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
