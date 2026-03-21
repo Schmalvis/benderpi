@@ -1,7 +1,7 @@
 # AI HAT+ 2 Integration Strategy — Design Spec
 
-**Date:** 2026-03-21
-**Status:** Draft
+**Date:** 2026-03-21 (Phase 1 reconciled: 2026-03-21)
+**Status:** Phase 1 Implemented · Phases 2–3 Draft
 **Scope:** Phased integration of the Raspberry Pi AI HAT+ 2 (Hailo-10H NPU) for local STT, local LLM inference, and local TTS.
 
 ---
@@ -39,80 +39,83 @@ The NPU is never needed for two tasks simultaneously. Each phase simply replaces
 | Phase | STT | Intent | Response | TTS |
 |---|---|---|---|---|
 | Current | CPU (Whisper) | CPU (regex) | Cloud (Claude) | CPU (Piper) |
-| Phase 1 | **NPU (Whisper)** | CPU (regex) | Cloud (Claude) | CPU (Piper) |
+| Phase 1 ✅ | **NPU (Whisper-Base)** | CPU (regex) | Cloud (Claude) | CPU (Piper) |
 | Phase 2 | NPU (Whisper) | CPU (regex) | **NPU (Local LLM) / Cloud** | CPU (Piper) |
 | Phase 3 | NPU (Whisper) | CPU (regex) | NPU (Local LLM) / Cloud | **NPU or CPU (TBD)** |
 
 ---
 
-## Phase 1: NPU-Accelerated STT
+## Phase 1: NPU-Accelerated STT — IMPLEMENTED
 
 ### Goal
 Move Whisper inference from CPU to Hailo-10H NPU. Faster transcription, lower CPU load, enables larger Whisper models for better accuracy.
 
-### Design
+### What Shipped (differs from original design)
 
-**New module: `scripts/stt_hailo.py`**
+The original design proposed a separate `stt_hailo.py` module with a config switch. The actual implementation took a simpler approach: **dual-backend auto-detection within `stt.py`**.
 
-Same public interface as `stt.py`:
-```python
-def listen_and_transcribe() -> str:
-    """Record audio and transcribe using Hailo-accelerated Whisper."""
-    ...
-```
+**Key design decision:** No config switch — the backend is selected automatically based on whether the Whisper HEF file exists at the known path. This eliminates configuration errors and means the same codebase runs on both NPU-equipped and CPU-only devices with zero config changes.
 
-Internally:
-- Uses Hailo's Python SDK to load a Whisper model onto the NPU
-- Records audio the same way (PyAudio + VAD) — recording is CPU/audio-card bound, not NPU
-- Sends recorded audio buffer to NPU for inference
-- Returns transcribed text
-
-**STT backend selection via config:**
+**Implementation in `scripts/stt.py`:**
 
 ```python
-# config.py
-self.stt_backend: str = "cpu"  # "cpu" | "hailo"
+# Module-level state
+_backend   = None   # "hailo" | "cpu"
+_vdevice   = None   # Hailo VDevice (held open for lifetime of process)
+_s2t       = None   # Hailo Speech2Text instance
+_cpu_model = None   # faster-whisper fallback
+
+WHISPER_HEF = "/usr/local/hailo/resources/models/hailo10h/Whisper-Base.hef"
+
+def _load_model():
+    """Initialise Hailo backend, falling back to faster-whisper on failure."""
+    # 1. Check if HEF file exists → try Hailo
+    # 2. If Hailo init fails → fall back to CPU with warning
+    # 3. CPU uses cfg.whisper_model (default: "tiny.en")
 ```
 
-**Orchestrator change in `wake_converse.py`:**
+**Transcription is backend-transparent:**
 ```python
-if cfg.stt_backend == "hailo":
-    from stt_hailo import listen_and_transcribe
-else:
-    from stt import listen_and_transcribe
+def _transcribe_array(audio_array: np.ndarray) -> str:
+    if _backend == "hailo":
+        return _s2t.generate_all_text(audio_data=audio_array, ...)
+    else:
+        segments, _ = _cpu_model.transcribe(audio_array, ...)
+        return " ".join(s.text for s in segments).strip()
 ```
 
-The rest of the pipeline is unchanged — `listen_and_transcribe()` returns a string regardless of backend.
+**Public API unchanged** — `listen_and_transcribe()` works identically regardless of backend. No orchestrator changes needed.
 
-**Model selection:**
-```python
-# config.py
-self.stt_model: str = "whisper-small"  # replaces whisper_model
-```
+**Additional features implemented:**
+- Whisper hallucination filter (`WHISPER_HALLUCINATIONS` set) — filters known phantom outputs like "thank you", "subscribe"
+- `_active_model_name()` returns `"whisper-base-hailo"` or `cfg.whisper_model` for metrics labelling
+- `transcribe_file()` — transcribe pre-recorded WAV files (used by web UI)
+- `VDevice` uses `group_id="SHARED"` for future multi-model sharing
 
-With NPU acceleration, `whisper-small` (460MB) becomes viable where CPU was limited to `whisper-base` or `whisper-tiny`. Better accuracy, especially for Bender-related queries where context matters.
-
-**NPU lifecycle:**
-- Model loaded once at startup (warm-up)
-- Stays loaded across conversation sessions
-- Released on service shutdown
-- If NPU unavailable, fall back to CPU with a log warning
-
-### Files Changed
+### Files Changed (Actual)
 
 | File | Changes |
 |---|---|
-| `scripts/stt_hailo.py` | New — Hailo-accelerated STT with same interface as `stt.py` |
-| `scripts/config.py` | Add `stt_backend` attribute, rename `whisper_model` → `stt_model` |
-| `bender_config.json` | Add `stt_backend: "cpu"`, `stt_model: "whisper-small"` |
-| `scripts/wake_converse.py` | Conditional STT import based on `cfg.stt_backend` |
-| `scripts/stt.py` | Use `cfg.stt_model` instead of hardcoded `WHISPER_MODEL` (from architecture refactor) |
+| `scripts/stt.py` | Dual-backend init, Hailo `VDevice`/`Speech2Text` lifecycle, `_transcribe_array()` dispatch, hallucination filter, config via `cfg` singleton |
+| `scripts/config.py` | `whisper_model`, `vad_aggressiveness`, `silence_frames`, `max_record_seconds` (from architecture refactor config unification) |
 
-### Validation
-- Compare transcription accuracy: CPU Whisper-base vs NPU Whisper-small on 20 test utterances
-- Measure latency: end-to-end STT time for a 5-second utterance
-- Verify CPU load drops during transcription
-- Verify fallback to CPU works when NPU is unavailable
+**Not created (diverged from original design):**
+- `stt_hailo.py` — not needed; backends unified in `stt.py`
+- `stt_backend` config key — not needed; auto-detected from HEF file
+- `stt_model` config key — `whisper_model` kept for CPU fallback; Hailo model path is hardcoded
+
+### Implications for Phase 2
+
+The `VDevice` is currently held as a module-global in `stt.py` with `group_id="SHARED"`. For Phase 2 (local LLM), the NPU Manager concept needs to account for this:
+- **Option A:** Extract `_vdevice` from `stt.py` into `npu_manager.py`, have both STT and LLM use the shared VDevice
+- **Option B:** Keep STT's VDevice as-is, create a second VDevice for LLM (if Hailo supports multiple concurrent VDevices with `SHARED` group)
+- The `SHARED` group ID suggests Option B may work, but needs benchmarking
+
+### Validation Status
+- Transcription accuracy: collecting data (HANDOVER priority)
+- Hallucination rate monitoring: active via metrics
+- CPU fallback: confirmed working (tested by removing HEF path)
+- Latency benchmarks: pending (HANDOVER priority)
 
 ---
 
@@ -197,33 +200,42 @@ def _is_simple_query(self, text: str) -> bool:
 
 **NPU context switching:**
 
-Between STT and LLM, the NPU must switch models. This is managed by a device manager:
+Between STT and LLM, the NPU must switch models. The current `stt.py` already holds a `VDevice` with `group_id="SHARED"`. The NPU Manager must either take ownership of this VDevice or coordinate with it.
+
+**Recommended approach:** Extract the VDevice from `stt.py` into `npu_manager.py`. Both STT and LLM use the shared VDevice via the manager. This avoids dual-VDevice complexity and matches Hailo's single-inference-context constraint.
 
 ```python
 # scripts/npu_manager.py
 class NPUManager:
     """Manages Hailo-10H model loading and context switching."""
 
-    def load_stt(self) -> None:
-        """Load Whisper model onto NPU."""
+    def __init__(self):
+        self._vdevice = None   # Shared VDevice (currently in stt.py)
+        self._models = {}      # name → model handle
+        self._active = None    # currently active model name
+
+    def init(self, models: list[str]) -> None:
+        """Initialise VDevice and pre-load models."""
         ...
 
-    def load_llm(self) -> None:
-        """Load LLM onto NPU."""
+    def activate(self, model_name: str) -> object:
+        """Switch active model. No-op if already active."""
         ...
 
-    def release(self) -> None:
-        """Release NPU resources."""
+    def shutdown(self) -> None:
+        """Release all NPU resources."""
         ...
 ```
 
 The conversation loop becomes:
 ```
-npu.load_stt()  →  listen_and_transcribe()
-npu.load_llm()  →  local_ai.respond(text)
-                →  tts_generate.speak(response)  # CPU, no NPU needed
-npu.load_stt()  →  listen again...
+npu.activate("stt")  →  listen_and_transcribe()
+npu.activate("llm")  →  local_ai.respond(text)
+                     →  tts_generate.speak(response)  # CPU, no NPU needed
+npu.activate("stt")  →  listen again...
 ```
+
+**Migration note:** `stt.py` currently manages its own `_vdevice` and `_s2t` globals. Phase 2 must refactor these to use `NPUManager.activate("stt")` instead, returning the `Speech2Text` handle. The public `listen_and_transcribe()` API stays unchanged.
 
 Pre-loading strategy: Both models are loaded at startup into the device manager's model cache. Context switching swaps which one is active on the VDevice. The 8GB NPU RAM can hold both models in memory (Whisper-small ~460MB + Qwen-1.5B ~3GB = ~3.5GB of 8GB).
 
@@ -259,7 +271,7 @@ Never break character. Reference drinking, bending, and being great.
 | `bender_config.json` | Add `ai_backend: "cloud"`, `local_llm_model: "qwen-1.5b"` |
 | `scripts/responder.py` | Accept optional `ai_local` parameter, add hybrid routing logic |
 | `scripts/wake_converse.py` | Initialise `NPUManager` and `LocalAIResponder`, pass to responder |
-| `scripts/stt_hailo.py` | Use `NPUManager` instead of direct Hailo SDK calls |
+| `scripts/stt.py` | Refactor to use `NPUManager` for VDevice/Speech2Text instead of module globals |
 
 ### Validation
 - Compare response quality: local LLM vs Claude on 30 test prompts rated for in-character, accuracy, and coherence
@@ -348,6 +360,8 @@ If neither is achievable, Phase 3 simply doesn't happen — Piper on CPU remains
 
 The `NPUManager` is the central piece that enables all three phases to coexist. It must handle:
 
+**Migration from Phase 1:** The VDevice is currently managed as a module-global in `stt.py` (created during `_load_model()`). Phase 2 must extract this into `NPUManager`, which becomes the single owner of the Hailo VDevice. `stt.py` changes from managing its own VDevice to requesting the STT model handle from the manager.
+
 ### Model Lifecycle
 
 ```python
@@ -355,7 +369,7 @@ class NPUManager:
     """Centralised Hailo-10H NPU resource manager."""
 
     def __init__(self):
-        self._device = None      # Hailo VDevice
+        self._device = None      # Hailo VDevice (extracted from stt.py)
         self._models = {}        # name → loaded model handle
         self._active = None      # currently active model name
 
@@ -390,15 +404,14 @@ class NPUManager:
 
 ```json
 {
-    "stt_backend": "cpu",
-    "stt_model": "whisper-small",
+    "whisper_model": "tiny.en",
     "ai_backend": "cloud",
     "local_llm_model": "qwen-1.5b",
     "tts_backend": "cpu"
 }
 ```
 
-Phase 1 deployment: set `stt_backend: "hailo"`
+Phase 1 deployment: automatic — HEF file presence enables Hailo STT (no config change needed). `whisper_model` is CPU fallback only.
 Phase 2 deployment: set `ai_backend: "hybrid"`
 Phase 3 deployment: set `tts_backend: "hailo"` (if viable)
 
@@ -408,11 +421,12 @@ Each phase is independently toggleable via config. Rolling back any phase is a s
 
 ## Testing Strategy (All Phases)
 
-### Phase 1
-- Transcription accuracy: CPU vs NPU on 20 test utterances
-- Latency benchmarks: STT inference time
-- CPU load comparison: `htop` during conversation with CPU vs NPU STT
-- Fallback: disable NPU, verify CPU backend activates with warning
+### Phase 1 (implemented — validation pending)
+- Transcription accuracy: CPU Whisper-tiny.en vs NPU Whisper-Base on 20 test utterances — **pending**
+- Latency benchmarks: STT inference time — **pending** (tracked via `metrics.timer("stt_transcribe")`)
+- CPU load comparison: `htop` during conversation with CPU vs NPU STT — **pending**
+- Fallback: disable NPU, verify CPU backend activates with warning — **confirmed working**
+- Hallucination rate: monitoring active via `metrics.count("stt_hallucination")`
 
 ### Phase 2
 - Response quality: 30 test prompts rated by user for character, accuracy, humour
