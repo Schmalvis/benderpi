@@ -184,3 +184,64 @@ class TestPlayOneshotCallbacks:
             audio_mod.play_oneshot(wav)
         finally:
             os.unlink(wav)
+
+
+class TestAbort:
+    def test_abort_stops_playback_early(self, audio_mod):
+        """Calling abort() during play() should stop playback before all chunks."""
+        wav = _make_wav(num_frames=44100 * 2)  # 2 seconds
+        try:
+            chunks_played = []
+            def _on_chunk(v):
+                chunks_played.append(v)
+                if len(chunks_played) == 3:
+                    audio_mod.abort()
+            audio_mod.play(wav, on_chunk=_on_chunk)
+            assert len(chunks_played) < 20
+            assert audio_mod.was_aborted() is True
+        finally:
+            os.unlink(wav)
+
+    def test_was_aborted_false_on_normal_play(self, audio_mod):
+        wav = _make_wav()
+        try:
+            audio_mod.play(wav)
+            assert audio_mod.was_aborted() is False
+        finally:
+            os.unlink(wav)
+
+    def test_on_done_called_even_on_abort(self, audio_mod):
+        wav = _make_wav(num_frames=44100 * 2)
+        try:
+            done_calls = []
+            audio_mod.play(wav, on_chunk=lambda v: audio_mod.abort(),
+                          on_done=lambda: done_calls.append(1))
+            assert done_calls == [1]
+        finally:
+            os.unlink(wav)
+
+    def test_abort_clears_on_next_play(self, audio_mod):
+        wav = _make_wav(num_frames=44100 * 2)
+        try:
+            audio_mod.play(wav, on_chunk=lambda v: audio_mod.abort())
+            assert audio_mod.was_aborted() is True
+            chunks = []
+            audio_mod.play(wav, on_chunk=chunks.append)
+            assert audio_mod.was_aborted() is False
+            assert len(chunks) > 10
+        finally:
+            os.unlink(wav)
+
+    def test_abort_on_play_oneshot(self, audio_mod):
+        wav = _make_wav(num_frames=44100 * 2)
+        try:
+            chunks = []
+            def _on_chunk(v):
+                chunks.append(v)
+                if len(chunks) == 3:
+                    audio_mod.abort()
+            audio_mod.play_oneshot(wav, on_chunk=_on_chunk)
+            assert len(chunks) < 20
+            assert audio_mod.was_aborted() is True
+        finally:
+            os.unlink(wav)

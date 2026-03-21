@@ -43,11 +43,22 @@ log.debug("Audio config: silence_pre=%.3fs, silence_post=%.3fs", SILENCE_PRE, SI
 _pa    = pyaudio.PyAudio()
 _stream = None
 _lock  = threading.Lock()
+_abort = threading.Event()
 
 
 def get_pa() -> pyaudio.PyAudio:
     """Return the shared PyAudio instance (used by wake_converse for mic stream)."""
     return _pa
+
+
+def abort():
+    """Signal all in-progress playback to stop immediately."""
+    _abort.set()
+
+
+def was_aborted() -> bool:
+    """Return True if the last play() call was aborted."""
+    return _abort.is_set()
 
 
 def _silence(duration_s: float) -> bytes:
@@ -128,6 +139,7 @@ def play(wav_path: str, on_chunk=None, on_done=None):
     """
     with metrics.timer("audio_play"):
         with _lock:
+            _abort.clear()
             if _stream is None or not _stream.is_active():
                 # Fallback: reopen if session stream was lost
                 open_session()
@@ -138,12 +150,16 @@ def play(wav_path: str, on_chunk=None, on_done=None):
                 sw = wf.getsampwidth()
                 data = wf.readframes(CHUNK)
                 while data:
+                    if _abort.is_set():
+                        log.info("Playback aborted: %s", wav_path)
+                        break
                     _stream.write(data)
                     if on_chunk:
                         on_chunk(rms_to_ratio(rms(data, sw)))
                     data = wf.readframes(CHUNK)
 
-            _stream.write(_silence(SILENCE_POST))
+            if not _abort.is_set():
+                _stream.write(_silence(SILENCE_POST))
 
     if on_done:
         on_done()
@@ -161,6 +177,7 @@ def play_oneshot(wav_path: str, on_chunk=None, on_done=None):
                    (always invoked outside _lock).
     """
     with _lock:
+        _abort.clear()
         was_open = _stream is not None
         if was_open:
             try:
@@ -183,11 +200,15 @@ def play_oneshot(wav_path: str, on_chunk=None, on_done=None):
                 sw = wf.getsampwidth()
                 data = wf.readframes(CHUNK)
                 while data:
+                    if _abort.is_set():
+                        log.info("Playback aborted: %s", wav_path)
+                        break
                     stream.write(data)
                     if on_chunk:
                         on_chunk(rms_to_ratio(rms(data, sw)))
                     data = wf.readframes(CHUNK)
-            stream.write(_silence(SILENCE_POST))
+            if not _abort.is_set():
+                stream.write(_silence(SILENCE_POST))
         finally:
             if not was_open:
                 stream.stop_stream()
