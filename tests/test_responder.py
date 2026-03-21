@@ -84,20 +84,23 @@ def test_personal_returns_pre_gen_tts(tmp_path):
     assert resp.is_temp is False
 
 
-def test_pick_clip_returns_none_for_empty(tmp_path):
-    from responder import Responder
-    idx_data = {"greeting": [], "personal": {}}
-    idx_path = tmp_path / "index.json"
-    idx_path.write_text(json.dumps(idx_data))
-    r = Responder(index_path=str(idx_path), base_dir=str(tmp_path))
-    assert r.pick_clip("GREETING") is None
-    assert r.pick_clip("PERSONAL", "age") is None
-    assert r.pick_clip("NONEXISTENT") is None
+# ------------------------------------------------------------------
+# Dispatch table tests
+# ------------------------------------------------------------------
 
+class TestDispatchTable:
+    def test_all_intents_registered(self, tmp_path):
+        from responder import Responder
+        idx = _make_index(tmp_path)
+        r = Responder(index_path=idx, base_dir=str(tmp_path))
+        expected = ["GREETING", "AFFIRMATION", "DISMISSAL", "JOKE",
+                    "PERSONAL", "PROMOTED", "WEATHER", "NEWS",
+                    "HA_CONTROL", "TIMER", "TIMER_CANCEL", "TIMER_STATUS"]
+        for intent in expected:
+            assert intent in r._dispatch, f"Missing handler for {intent}"
 
-def test_is_pre_gen(tmp_path):
-    from responder import Responder
-    idx = _make_index(tmp_path)
-    r = Responder(index_path=idx, base_dir=str(tmp_path))
-    assert r._is_pre_gen(str(tmp_path / "speech" / "responses" / "joke" / "joke_001.wav"))
-    assert not r._is_pre_gen(str(tmp_path / "speech" / "wav" / "hello.wav"))
+    def test_unknown_intent_not_in_dispatch(self, tmp_path):
+        from responder import Responder
+        idx = _make_index(tmp_path)
+        r = Responder(index_path=idx, base_dir=str(tmp_path))
+        assert "UNKNOWN" not in r._dispatch
