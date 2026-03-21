@@ -37,6 +37,7 @@ import stt
 import briefings
 import leds
 from ai_response import AIResponder
+from ai_local import LocalAIResponder
 from conversation_log import SessionLogger
 from responder import Responder
 from handlers.clip_handler import RealClipHandler
@@ -162,7 +163,7 @@ def wait_for_wakeword():
 # Conversation session
 # ---------------------------------------------------------------------------
 
-def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responder):
+def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responder, ai_local=None):
     metrics.count("session", event="start")
     session_log.session_start()
     _write_session_file(session_log.session_id, 0)
@@ -203,6 +204,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             metrics.count("session", event="end", turns=session_log.turn, reason="remote_abrupt")
             _remove_session_file()
             audio.close_session()
+            if ai_local:
+                ai_local.clear_history()
             return
 
         # Show listening LEDs
@@ -219,13 +222,15 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 metrics.count("session", event="end", turns=session_log.turn, reason="timeout")
                 _remove_session_file()
                 audio.close_session()
+                if ai_local:
+                    ai_local.clear_history()
                 return
             continue
 
         last_heard = time.time()
         log.info("Heard: %r", text)
 
-        response = responder.get_response(text, ai)
+        response = responder.get_response(text, ai, ai_local=ai_local)
 
         # DISMISSAL fast-path — skip farewell clip if configured
         if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
@@ -242,6 +247,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             metrics.count("session", event="end", turns=session_log.turn, reason="dismissal_abrupt")
             _remove_session_file()
             audio.close_session()
+            if ai_local:
+                ai_local.clear_history()
             return
 
         # Switch to talking LEDs
@@ -268,6 +275,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             metrics.count("session", event="end", turns=session_log.turn, reason="aborted")
             _remove_session_file()
             audio.close_session()
+            if ai_local:
+                ai_local.clear_history()
             return
 
         if response.is_temp:
@@ -277,7 +286,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 pass
 
         session_log.log_turn(text, response.intent, response.sub_key,
-                        response.method, response.text, response.model)
+                        response.method, response.text, response.model,
+                        ai_routing=response.routing_log)
         _write_session_file(session_log.session_id, session_log.turn)
 
         if response.intent == "DISMISSAL":
@@ -288,6 +298,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
                 _remove_session_file()
                 audio.close_session()
+                if ai_local:
+                    ai_local.clear_history()
                 return
             else:
                 # Soft stop — session continues
@@ -307,6 +319,14 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
 def main():
     ai = AIResponder()
+    ai_local = None
+    if cfg.ai_backend != "cloud_only":
+        try:
+            ai_local = LocalAIResponder()
+            log.info("Local AI responder initialised (model: %s at %s)",
+                     cfg.local_llm_model, cfg.local_llm_url)
+        except Exception as e:
+            log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
     import threading
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
@@ -331,7 +351,7 @@ def main():
 
             wait_for_wakeword()
             session_log = SessionLogger()
-            run_session(ai, session_log, responder)
+            run_session(ai, session_log, responder, ai_local)
         except KeyboardInterrupt:
             log.info("Stopped.")
             break
