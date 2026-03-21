@@ -64,6 +64,8 @@ class Handler:
 
 The `Response` dataclass moves from `responder.py` to `handler_base.py`. `responder.py` re-exports it for backward compatibility: `from handler_base import Response`.
 
+**Note on defaults:** The original `Response` in `responder.py` has `sub_key`, `is_temp`, `needs_thinking`, and `model` as required (no-default) fields. The new version adds defaults (`None`, `False`, `False`, `None`). This is safe because all existing call sites use keyword arguments — verified by grep. The defaults simplify handler code (handlers only set the fields they care about).
+
 #### Handler implementations
 
 Each existing response path becomes a handler class. These live in the modules that already own the logic:
@@ -133,7 +135,7 @@ def get_response(self, text: str, ai=None) -> Response:
     return self._respond_ai(text, intent, sub_key, ai)
 ```
 
-All existing `_handle_*`, `_respond_*`, `_is_real_clip`, `_is_pre_gen` methods are removed from `responder.py`. The file shrinks to: dispatch table setup, the `get_response` loop, and `_respond_ai`.
+All existing `_handle_*`, `_is_real_clip`, `_is_pre_gen`, and `_respond_handler`/`_respond_real_clip`/`_respond_pre_gen`/`_respond_promoted` methods are removed from `responder.py`. The methods `_respond_ai` and `_error_response` **stay** in `responder.py` — they are the fallback path, not domain handlers. The file shrinks to: dispatch table setup, the `get_response` loop, `_respond_ai`, and `_error_response`.
 
 #### Handler priority within the same intent
 
@@ -164,12 +166,19 @@ class TimerAlertRunner:
 
     DISMISS_PATTERNS: list[re.Pattern]  # moved from wake_converse.py
 
-    def run(self, timer_label: str, alert_clips: list[str],
+    def run(self, fired_timers: list[dict],
             on_chunk: Callable | None = None,
             on_done: Callable | None = None) -> None:
         """
         Play alert in a loop, listen for voice/UI dismissal.
         Manages its own audio session lifecycle.
+
+        Args:
+            fired_timers: list of timer dicts from timers.get_firing().
+                Multiple timers can fire simultaneously — labels are
+                joined for the announcement.
+            on_chunk: optional callback(float) for LED visualisation
+            on_done: optional callback() when playback ends
         """
         ...
 
@@ -188,14 +197,17 @@ Moves from `wake_converse.py`:
 - `run_timer_alert()` → `TimerAlertRunner.run()`
 - `_load_timer_alert_clips()` → `TimerAlertRunner._load_alert_clips()`
 
-Also extract `_load_thinking_clips()` into a shared helper (since it's near-identical to `_load_timer_alert_clips()`):
+Also extract `_load_thinking_clips()` (wake_converse.py line 88) into a shared helper in `handler_base.py` — it's near-identical to `_load_timer_alert_clips()` (same `index.json` load, same path building, same error handling):
 
 ```python
-# In handler_base.py or a utils module
+# In handler_base.py
 def load_clips_from_index(key: str) -> list[str]:
-    """Load clip paths from index.json by key."""
+    """Load clip paths from index.json by key.
+    Used by both thinking clips and timer alert clips."""
     ...
 ```
+
+Both `wake_converse.py` (for thinking clips) and `TimerAlertRunner` (for alert clips) call `load_clips_from_index()` with their respective keys.
 
 #### Orchestrator change
 
@@ -207,8 +219,9 @@ from handlers.timer_alert import TimerAlertRunner
 _alert_runner = TimerAlertRunner()
 
 # In main loop, where timer firing is detected:
-if timers.get_firing():
-    _alert_runner.run(label, on_chunk=leds.set_level, on_done=leds.all_off)
+fired = timers.get_firing()
+if fired:
+    _alert_runner.run(fired, on_chunk=leds.set_level, on_done=leds.all_off)
     continue
 ```
 
@@ -333,12 +346,14 @@ def play(wav_path: str,
          on_chunk: Callable[[float], None] | None = None,
          on_done: Callable[[], None] | None = None) -> None:
     """Play a WAV file. Optional callbacks for chunk-level visualization."""
-    ...
-    # During playback loop, where leds.set_level was called:
-    if on_chunk:
-        on_chunk(rms_to_ratio(rms(data, sw)))
-    ...
-    # After playback, where leds.all_off was called:
+    with _lock:
+        ...
+        # During playback loop, where leds.set_level was called:
+        if on_chunk:
+            on_chunk(rms_to_ratio(rms(data, sw)))
+        ...
+    # IMPORTANT: on_done is called OUTSIDE the lock, matching the current
+    # leds.all_off() placement in play_oneshot() (line 179 of audio.py).
     if on_done:
         on_done()
 
@@ -346,7 +361,8 @@ def play(wav_path: str,
 def play_oneshot(wav_path: str,
                  on_chunk: Callable[[float], None] | None = None,
                  on_done: Callable[[], None] | None = None) -> None:
-    """Open session, play, close session. Optional LED callbacks."""
+    """Open session, play, close session. Optional LED callbacks.
+    on_done is called after the lock is released, same as play()."""
     ...
 ```
 
