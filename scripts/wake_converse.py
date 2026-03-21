@@ -15,7 +15,6 @@ Response priority chain lives in responder.py.
 import json
 import os
 import random
-import re
 import time
 import sys
 import struct
@@ -40,6 +39,9 @@ import leds
 from ai_response import AIResponder
 from conversation_log import SessionLogger
 from responder import Responder
+from handlers.clip_handler import RealClipHandler
+from handlers.timer_alert import TimerAlertRunner
+from handler_base import load_clips_from_index
 from logger import get_logger
 from config import cfg
 from metrics import metrics
@@ -53,13 +55,10 @@ log = get_logger("converse")
 KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
 SILENCE_TIMEOUT = 8.0   # seconds of silence before session ends
 
-_SESSION_FILE = os.path.join(BASE_DIR, ".session_active.json")
-_END_SESSION_FILE = os.path.join(BASE_DIR, ".end_session")
-
 
 def _write_session_file(session_id: str, turns: int):
     try:
-        with open(_SESSION_FILE, "w") as f:
+        with open(cfg.session_file, "w") as f:
             json.dump({
                 "active": True,
                 "session_id": session_id,
@@ -71,7 +70,7 @@ def _write_session_file(session_id: str, turns: int):
 
 
 def _remove_session_file():
-    for p in [_SESSION_FILE, _END_SESSION_FILE]:
+    for p in [cfg.session_file, cfg.end_session_file]:
         try:
             if os.path.exists(p):
                 os.unlink(p)
@@ -87,137 +86,22 @@ _thinking_clips = []
 
 def _load_thinking_clips():
     global _thinking_clips
-    index_path = os.path.join(BASE_DIR, "speech", "responses", "index.json")
-    try:
-        with open(index_path) as f:
-            index = json.load(f)
-        _thinking_clips = [
-            os.path.join(BASE_DIR, p)
-            for p in index.get("thinking", [])
-            if os.path.exists(os.path.join(BASE_DIR, p))
-        ]
-        log.info("Loaded %d thinking clip(s)", len(_thinking_clips))
-    except Exception as e:
-        log.warning("Could not load thinking clips: %s", e)
-        _thinking_clips = []
+    _idx = os.path.join(BASE_DIR, "speech", "responses", "index.json")
+    _thinking_clips = load_clips_from_index("thinking", _idx, BASE_DIR)
 
 
 # ---------------------------------------------------------------------------
-# Timer alert clips
+# Timer alert runner
 # ---------------------------------------------------------------------------
 
-_timer_alert_clips = []
-
-
-def _load_timer_alert_clips():
-    global _timer_alert_clips
-    index_path = os.path.join(BASE_DIR, "speech", "responses", "index.json")
-    try:
-        with open(index_path) as f:
-            index = json.load(f)
-        _timer_alert_clips = [
-            os.path.join(BASE_DIR, p)
-            for p in index.get("timer_alerts", [])
-            if os.path.exists(os.path.join(BASE_DIR, p))
-        ]
-        log.info("Loaded %d timer alert clip(s)", len(_timer_alert_clips))
-    except Exception as e:
-        log.warning("Could not load timer alert clips: %s", e)
-        _timer_alert_clips = []
+_alert_runner = TimerAlertRunner()
 
 
 # ---------------------------------------------------------------------------
-# Timer dismiss detection
+# Greeting handler (used outside the responder chain)
 # ---------------------------------------------------------------------------
 
-TIMER_DISMISS_PATTERNS = [
-    r"\b(stop|enough|ok|okay|shut up|quiet|silence|dismiss)\b",
-    r"\bthat'?s?\s*(enough|ok|fine)\b",
-    r"\bplease stop\b",
-    r"\byes\b",
-    r"\bgot it\b",
-    r"\bthank(s| you)\b",
-]
-
-
-def _is_timer_dismiss(text: str) -> bool:
-    t = text.strip().lower()
-    return any(re.search(p, t, re.IGNORECASE) for p in TIMER_DISMISS_PATTERNS)
-
-
-# ---------------------------------------------------------------------------
-# Timer alert mode
-# ---------------------------------------------------------------------------
-
-def run_timer_alert(fired_timers: list):
-    """Play-pause alert cycle for fired timers until dismissed."""
-    import timers as timers_mod
-
-    labels = [t["label"] for t in fired_timers]
-    label_str = ", ".join(labels) if labels else "timer"
-    log.info("Timer alert: %s", label_str)
-    metrics.count("timer_alert", labels=label_str)
-
-    max_seconds = cfg.timer_alert_max_seconds
-    start_time = time.time()
-    dismissed_by_voice = False
-
-    # Start LED alert flash
-    leds.set_alert_flash(True)
-
-    while time.time() - start_time < max_seconds:
-        # 1. Play an alert clip
-        audio.open_session()
-        if _timer_alert_clips:
-            clip = random.choice(_timer_alert_clips)
-            audio.play(clip)
-        else:
-            # Fallback: generate TTS
-            wav = tts_generate.speak(f"Timer for {label_str} is done!")
-            audio.play(wav)
-            try:
-                os.unlink(wav)
-            except OSError:
-                pass
-        audio.close_session()
-
-        # 2. Listen for dismissal (~3 seconds)
-        text = stt.listen_and_transcribe()
-        if text and _is_timer_dismiss(text):
-            log.info("Timer dismissed by voice: %r", text)
-            dismissed_by_voice = True
-            break
-
-        # Also check web UI dismissal (file-based)
-        remaining_fired = timers_mod.check_fired()
-        if not remaining_fired:
-            log.info("Timer dismissed via UI")
-            break
-
-    # Stop LED flash
-    leds.set_alert_flash(False)
-    leds.all_off()
-
-    # Dismiss all fired timers
-    count = timers_mod.dismiss_all_fired()
-    log.info("Dismissed %d timer(s)", count)
-    metrics.count("timer_dismissed", count=count,
-                  method="voice" if dismissed_by_voice else "timeout")
-
-    # Play dismissal confirmation
-    audio.open_session()
-    responses = [
-        f"Finally. {label_str} timer dismissed.",
-        f"About time. {label_str} done and dismissed.",
-        "Dismissed. You're welcome. Again.",
-    ]
-    wav = tts_generate.speak(random.choice(responses))
-    audio.play(wav)
-    try:
-        os.unlink(wav)
-    except OSError:
-        pass
-    audio.close_session()
+_greeting_handler = RealClipHandler()
 
 
 # ---------------------------------------------------------------------------
@@ -268,19 +152,18 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         session_log.log_turn("(wake word)", "GREETING", None, "silent",
                      response_text="(silent — LED only)")
     else:
-        greeting_path = responder.pick_clip("GREETING")
-        if greeting_path and os.path.exists(greeting_path):
+        greeting_resp = _greeting_handler.handle("(wake word)", "GREETING")
+        if greeting_resp:
             leds.set_talking()
-            audio.play(greeting_path)
-            method = "pre_gen_tts" if responder._is_pre_gen(greeting_path) else "real_clip"
-            session_log.log_turn("(wake word)", "GREETING", None, method,
-                         response_text=os.path.basename(greeting_path))
+            audio.play(greeting_resp.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
+            session_log.log_turn("(wake word)", "GREETING", None, greeting_resp.method,
+                         response_text=os.path.basename(greeting_resp.wav_path))
         else:
             text = "Yo. What do you want?"
             wav = tts_generate.speak(text)
             try:
                 leds.set_talking()
-                audio.play(wav)
+                audio.play(wav, on_chunk=leds.set_level, on_done=leds.all_off)
             finally:
                 os.unlink(wav)
             session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
@@ -290,17 +173,17 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
     while True:
         # Check for remote end-session request
-        if os.path.exists(_END_SESSION_FILE):
+        if os.path.exists(cfg.end_session_file):
             try:
-                os.unlink(_END_SESSION_FILE)
+                os.unlink(cfg.end_session_file)
             except OSError:
                 pass
             log.info("Session ended by remote request")
             if not (cfg.silent_wakeword and cfg.led_listening_enabled):
-                clip = responder.pick_clip("DISMISSAL")
-                if clip and os.path.exists(clip):
+                dismiss_resp = _greeting_handler.handle("(remote end)", "DISMISSAL")
+                if dismiss_resp:
                     leds.set_talking()
-                    audio.play(clip)
+                    audio.play(dismiss_resp.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
             leds.all_off()
             session_log.session_end("remote_end")
             metrics.count("session", event="end", turns=session_log.turn, reason="remote_end")
@@ -335,10 +218,10 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         # Play thinking sound while slow response is being generated
         if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
-            audio.play(random.choice(_thinking_clips))
+            audio.play(random.choice(_thinking_clips), on_chunk=leds.set_level, on_done=leds.all_off)
 
         # Play response
-        audio.play(response.wav_path)
+        audio.play(response.wav_path, on_chunk=leds.set_level, on_done=leds.all_off)
         if response.is_temp:
             try:
                 os.unlink(response.wav_path)
@@ -374,8 +257,6 @@ def main():
     tts_generate.warm_up()
     # Load thinking clips from index
     _load_thinking_clips()
-    # Load timer alert clips from index
-    _load_timer_alert_clips()
     log.info("Listening for 'Hey Bender'...")
     while True:
         try:
@@ -383,7 +264,9 @@ def main():
             import timers as timers_mod
             fired = timers_mod.check_fired()
             if fired:
-                run_timer_alert(fired)
+                _alert_runner.run(fired, on_chunk=leds.set_level,
+                                  on_done=leds.all_off,
+                                  on_flash=leds.set_alert_flash)
                 continue
 
             wait_for_wakeword()

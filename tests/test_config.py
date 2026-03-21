@@ -52,3 +52,18 @@ def test_config_secrets_from_env(monkeypatch):
     cfg = Config()
     assert cfg.ha_token == "test-token-123"
     assert cfg.anthropic_api_key == "sk-test"
+
+def test_session_file_default():
+    """cfg.session_file should point to .session_active.json in base dir."""
+    from config import cfg
+    assert cfg.session_file.endswith(".session_active.json")
+
+def test_end_session_file_default():
+    """cfg.end_session_file should point to .end_session in base dir."""
+    from config import cfg
+    assert cfg.end_session_file.endswith(".end_session")
+
+def test_ha_exclude_entities_default():
+    """cfg.ha_exclude_entities should be a list."""
+    from config import cfg
+    assert isinstance(cfg.ha_exclude_entities, list)

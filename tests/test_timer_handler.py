@@ -130,3 +130,64 @@ def test_format_remaining_done():
     from handlers.timer_handler import _format_remaining
     assert _format_remaining(0) == "done"
     assert _format_remaining(-5) == "done"
+
+
+class TestTimerHandlerInterface:
+    def test_intents(self):
+        from handlers.timer_handler import TimerHandler
+        h = TimerHandler()
+        assert "TIMER" in h.intents
+        assert "TIMER_CANCEL" in h.intents
+        assert "TIMER_STATUS" in h.intents
+
+    def test_handle_timer_dispatches_to_handle_set(self):
+        from handlers.timer_handler import TimerHandler
+        with patch("tts_generate.speak", return_value="/tmp/t.wav"):
+            with patch("handlers.timer_handler.handle_set", return_value="/tmp/t.wav") as mock_set:
+                h = TimerHandler()
+                resp = h.handle("set a timer for 5 minutes", "TIMER")
+                mock_set.assert_called_once_with("set a timer for 5 minutes")
+                assert resp is not None
+                assert resp.wav_path == "/tmp/t.wav"
+                assert resp.method == "handler_timer"
+                assert resp.intent == "TIMER"
+                assert resp.is_temp is True
+                assert resp.needs_thinking is True
+
+    def test_handle_timer_cancel_dispatches_to_handle_cancel(self):
+        from handlers.timer_handler import TimerHandler
+        with patch("handlers.timer_handler.handle_cancel", return_value="/tmp/t.wav") as mock_cancel:
+            h = TimerHandler()
+            resp = h.handle("cancel the pasta timer", "TIMER_CANCEL")
+            mock_cancel.assert_called_once_with("cancel the pasta timer")
+            assert resp is not None
+            assert resp.intent == "TIMER_CANCEL"
+
+    def test_handle_timer_status_dispatches_to_handle_status(self):
+        from handlers.timer_handler import TimerHandler
+        with patch("handlers.timer_handler.handle_status", return_value="/tmp/t.wav") as mock_status:
+            h = TimerHandler()
+            resp = h.handle("what timers do I have", "TIMER_STATUS")
+            mock_status.assert_called_once_with("what timers do I have")
+            assert resp is not None
+            assert resp.intent == "TIMER_STATUS"
+
+    def test_handle_unknown_intent_returns_none(self):
+        from handlers.timer_handler import TimerHandler
+        h = TimerHandler()
+        resp = h.handle("hello", "GREETING")
+        assert resp is None
+
+    def test_handle_returns_none_when_wav_is_falsy(self):
+        from handlers.timer_handler import TimerHandler
+        with patch("handlers.timer_handler.handle_set", return_value=None):
+            h = TimerHandler()
+            resp = h.handle("set a timer", "TIMER")
+            assert resp is None
+
+    def test_handle_passes_sub_key(self):
+        from handlers.timer_handler import TimerHandler
+        with patch("handlers.timer_handler.handle_set", return_value="/tmp/t.wav"):
+            h = TimerHandler()
+            resp = h.handle("set a timer for 5 minutes", "TIMER", sub_key="custom")
+            assert resp.sub_key == "custom"

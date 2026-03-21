@@ -22,6 +22,7 @@ import numpy as np
 import webrtcvad
 
 import audio as audio_mod
+from config import cfg
 from logger import get_logger
 from metrics import metrics
 
@@ -31,17 +32,14 @@ log = get_logger("stt")
 # Config
 # ---------------------------------------------------------------------------
 
-SAMPLE_RATE        = 16000
-CHANNELS           = 1
-FRAME_MS           = 30
-FRAME_BYTES        = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit
-VAD_AGGRESSIVENESS = 2
-SILENCE_FRAMES     = 50   # ~1.5s silence at 30ms/frame
-MAX_RECORD_S       = 15
+SAMPLE_RATE    = 16000    # Hz — required by webrtcvad and whisper
+CHANNELS       = 1
+FRAME_MS       = 30       # VAD frame size in ms (10/20/30 supported)
+FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
+AUDIO_DEVICE   = None     # None = system default
 
+# Hailo NPU backend (Whisper-Base HEF)
 WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Base.hef"
-WHISPER_CPU_MODEL  = "tiny.en"
-AUDIO_DEVICE       = None
 
 WHISPER_HALLUCINATIONS = {
     "thank you", "thanks for watching", "subscribe",
@@ -92,13 +90,13 @@ def _load_model():
 
     # CPU fallback
     from faster_whisper import WhisperModel
-    _cpu_model = WhisperModel(WHISPER_CPU_MODEL, device="cpu", compute_type="int8")
+    _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
     _backend = "cpu"
-    log.info("STT backend: faster-whisper CPU (%s)", WHISPER_CPU_MODEL)
+    log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
 
 
 def _active_model_name() -> str:
-    return "whisper-base-hailo" if _backend == "hailo" else WHISPER_CPU_MODEL
+    return "whisper-base-hailo" if _backend == "hailo" else cfg.whisper_model
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +143,8 @@ def _record_utterance() -> bytes:
     """Record from mic until ~1.5s silence or hard cap. Returns raw PCM bytes."""
     import pyaudio
 
-    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-    pa  = audio_mod.get_pa()
+    vad = webrtcvad.Vad(cfg.vad_aggressiveness)
+    pa  = audio_mod.get_pa()  # shared instance — DO NOT terminate
 
     stream = pa.open(
         format=pyaudio.paInt16,
@@ -164,7 +162,7 @@ def _record_utterance() -> bytes:
 
     try:
         while True:
-            if time.time() - start_time > MAX_RECORD_S:
+            if time.time() - start_time > cfg.max_record_seconds:
                 break
             data     = stream.read(int(SAMPLE_RATE * FRAME_MS / 1000),
                                    exception_on_overflow=False)
@@ -175,7 +173,7 @@ def _record_utterance() -> bytes:
                 silent_count = 0
             elif started:
                 silent_count += 1
-                if silent_count >= SILENCE_FRAMES:
+                if silent_count >= cfg.silence_frames:
                     break
     finally:
         stream.stop_stream()

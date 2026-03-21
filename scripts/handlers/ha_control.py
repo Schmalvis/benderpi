@@ -19,13 +19,11 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tts_generate
+from config import cfg
 from logger import get_logger
 from metrics import metrics
 
 log = get_logger("ha_control")
-
-HA_URL   = os.environ.get("HA_URL",   "http://homeassistant.local:8123")
-HA_TOKEN = os.environ.get("HA_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # Entity noise filter — sub-components and non-lighting switches to exclude
@@ -51,13 +49,7 @@ EXCLUDE_KEYWORDS = {
 # "ha_exclude_entities". Add any sub-component or duplicate entities specific
 # to your HA setup that should never be controlled by voice.
 def _load_exclude_entities() -> set:
-    try:
-        import json as _json
-        _cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'bender_config.json')
-        with open(_cfg_path) as _f:
-            return set(_json.load(_f).get('ha_exclude_entities', []))
-    except Exception:
-        return set()
+    return set(cfg.ha_exclude_entities)
 
 EXCLUDE_ENTITIES = _load_exclude_entities()
 
@@ -73,8 +65,8 @@ CACHE_TTL = 60.0   # seconds
 def _fetch_entities() -> list[dict]:
     """Fetch and filter controllable entities from HA."""
     req = urllib.request.Request(
-        f"{HA_URL}/api/states",
-        headers={"Authorization": f"Bearer {HA_TOKEN}"},
+        f"{cfg.ha_url}/api/states",
+        headers={"Authorization": f"Bearer {cfg.ha_token}"},
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
         all_states = json.loads(resp.read())
@@ -215,7 +207,7 @@ def _parse_room_term(text: str) -> str | None:
 def _ha_call(domain: str, service: str, entity_id: str,
              extra: dict | None = None) -> bool:
     with metrics.timer("ha_call", entity=entity_id):
-        url  = f"{HA_URL}/api/services/{domain}/{service}"
+        url  = f"{cfg.ha_url}/api/services/{domain}/{service}"
         body = {"entity_id": entity_id}
         if extra:
             body.update(extra)
@@ -223,7 +215,7 @@ def _ha_call(domain: str, service: str, entity_id: str,
         req  = urllib.request.Request(
             url, data=data,
             headers={
-                "Authorization": f"Bearer {HA_TOKEN}",
+                "Authorization": f"Bearer {cfg.ha_token}",
                 "Content-Type":  "application/json",
             },
             method="POST",

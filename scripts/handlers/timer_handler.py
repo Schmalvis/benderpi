@@ -11,6 +11,7 @@ import time_parser
 import tts_generate
 from logger import get_logger
 from metrics import metrics
+from handler_base import Handler, Response
 
 log = get_logger("timer_handler")
 
@@ -163,3 +164,25 @@ def handle_status(user_text: str) -> str:
         text = random.choice(STATUS_MULTI_RESPONSES).format(count=len(active), details=details)
 
     return tts_generate.speak(text)
+
+
+class TimerHandler(Handler):
+    """Handler for timer and alarm intents."""
+
+    intents = ["TIMER", "TIMER_CANCEL", "TIMER_STATUS"]
+
+    def handle(self, text: str, intent: str, sub_key: str | None = None) -> Response | None:
+        if intent == "TIMER":
+            wav = handle_set(text)
+        elif intent == "TIMER_CANCEL":
+            wav = handle_cancel(text)
+        elif intent == "TIMER_STATUS":
+            wav = handle_status(text)
+        else:
+            return None
+        if not wav:
+            return None
+        return Response(
+            text=text, wav_path=wav, method="handler_timer",
+            intent=intent, sub_key=sub_key, is_temp=True, needs_thinking=True,
+        )

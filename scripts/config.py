@@ -86,6 +86,7 @@ class Config:
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
         path = config_path or _DEFAULT_CONFIG_PATH
+        overrides = {}
         if os.path.exists(path):
             with open(path) as f:
                 overrides = json.load(f)
@@ -94,6 +95,13 @@ class Config:
                     if key in ("led_colour", "led_listening_colour", "led_talking_colour") and isinstance(value, list):
                         value = tuple(value)
                     setattr(self, key, value)
+
+        # IPC paths
+        self.session_file: str = os.path.join(_BASE_DIR, ".session_active.json")
+        self.end_session_file: str = os.path.join(_BASE_DIR, ".end_session")
+
+        # HA exclude entities (loaded from bender_config.json)
+        self.ha_exclude_entities: list = overrides.get("ha_exclude_entities", [])
 
         # 2. Load .env for secrets
         ep = env_path or _DEFAULT_ENV_PATH
