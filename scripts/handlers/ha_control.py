@@ -16,6 +16,7 @@ import json
 import random
 import time
 import urllib.request
+from difflib import SequenceMatcher
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tts_generate
@@ -128,22 +129,78 @@ def _normalise(text: str) -> str:
     return text.strip()
 
 
-def _find_entities(user_term: str) -> list[dict]:
-    """
-    Match user_term against all controllable entities.
-    Returns list of matching entity dicts (may be multiple for a room).
-    """
-    entities = _get_entities()
-    term     = _normalise(user_term)
+def _token_score(user_tokens: set, entity_tokens: set) -> float:
+    """Fraction of user tokens found in entity name. 1.0 = all matched."""
+    if not user_tokens:
+        return 0.0
+    return len(user_tokens & entity_tokens) / len(user_tokens)
 
-    matches = []
-    for e in entities:
-        name_norm = _normalise(e["friendly_name"])
-        id_norm   = _normalise(e["entity_id"].replace(".", " "))
-        if term in name_norm or term in id_norm:
-            matches.append(e)
 
-    return matches
+def _fuzzy_token_score(user_tokens: set, entity_tokens: set) -> float:
+    """Best fuzzy match for each user token against entity tokens."""
+    if not user_tokens or not entity_tokens:
+        return 0.0
+    total = 0.0
+    for ut in user_tokens:
+        best = max(
+            SequenceMatcher(None, ut, et).ratio()
+            for et in entity_tokens
+        )
+        total += best
+    return total / len(user_tokens)
+
+
+def _find_entities(room_term: str, entities: list = None) -> list:
+    """Find entities matching room_term using token scoring with fuzzy fallback."""
+    if entities is None:
+        entities = _get_entities()
+
+    term = room_term.lower().strip()
+    # Synonym expansion
+    term = cfg.ha_room_synonyms.get(term, term)
+
+    term_norm = _normalise(term)
+    user_tokens = set(term_norm.split())
+
+    scored = []
+    for entity in entities:
+        name = entity.get("attributes", {}).get("friendly_name",
+               entity.get("friendly_name", ""))
+        eid = entity.get("entity_id", "")
+        name_norm = _normalise(name)
+        id_norm = _normalise(eid.replace(".", " "))
+        entity_tokens = set(name_norm.split()) | set(id_norm.split())
+        score = _token_score(user_tokens, entity_tokens)
+        scored.append((entity, score))
+
+    best_exact = max((s for _, s in scored), default=0.0)
+    if best_exact < 0.5:
+        # Phase 2: fuzzy fallback
+        scored = []
+        for entity in entities:
+            name = entity.get("attributes", {}).get("friendly_name",
+                   entity.get("friendly_name", ""))
+            eid = entity.get("entity_id", "")
+            name_norm = _normalise(name)
+            id_norm = _normalise(eid.replace(".", " "))
+            entity_tokens = set(name_norm.split()) | set(id_norm.split())
+            score = _fuzzy_token_score(user_tokens, entity_tokens)
+            scored.append((entity, score))
+
+    threshold = 0.5
+    matches = [(e, s) for e, s in scored if s >= threshold]
+    matches.sort(key=lambda x: x[1], reverse=True)
+
+    if not matches:
+        closest = sorted(scored, key=lambda x: x[1], reverse=True)[:3]
+        log.debug("No match for %r. Closest: %s",
+                  room_term,
+                  [(e.get("attributes", {}).get("friendly_name",
+                    e.get("friendly_name", "?")), round(s, 2))
+                   for e, s in closest])
+        return []
+
+    return [e for e, s in matches]
 
 
 # ---------------------------------------------------------------------------
@@ -256,9 +313,9 @@ UNKNOWN_ROOM_RESPONSES = [
     "I heard you, but I have no idea which room you mean. Try again.",
 ]
 FAILED_RESPONSES = [
-    "Something went wrong. HA isn't responding. Probably not my fault.",
+    "Something went wrong. Home Assistant isn't responding. Probably not my fault.",
     "The smart home isn't feeling very smart right now.",
-    "HA call failed. I blame the humans who built this infrastructure.",
+    "Home Assistant call failed. I blame the humans who built this infrastructure.",
 ]
 
 
@@ -334,7 +391,7 @@ def _result_to_speech(result: dict) -> str:
     if error == "no_room":
         return random.choice(UNKNOWN_ROOM_RESPONSES)
     if error == "no_match":
-        return f"No idea what {result['room_display']!r} is. Check I have access to it in HA."
+        return f"I can't find anything called {result['room_display']} in Home Assistant. Try saying the room name differently."
     if error == "no_action":
         return "On or off? Even I need a bit more to go on."
     if error == "ha_failed":
