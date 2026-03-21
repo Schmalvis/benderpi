@@ -33,7 +33,7 @@ Three UX issues on the BenderPi web admin panel:
 - `input` event on the range slider triggers `handleVolumeChange()`
 - `handleVolumeChange()` debounces at 300ms, then calls `POST /api/config/volume`
 - The API endpoint runs `subprocess.run(["amixer", "-c", "2", "sset", "Speaker", f"{level}%"])`
-- No request deduplication — if the user drags quickly, multiple overlapping `amixer` calls race
+- The 300ms debounce prevents overlapping calls during a single drag (it resets on each input). However, the debounce is too slow — the user has to stop dragging for 300ms before any `amixer` call fires, making the volume feel disconnected from the slider position. A race is only possible if the user makes two separate gestures within 300ms.
 
 ### Design
 
@@ -140,7 +140,9 @@ No obvious fixed-height or absolute-positioning culprit in the CSS. The issue is
 }
 ```
 
-**Schema change:** Entries that were bare strings (`"speech/wav/file.wav"`) become objects (`{"file": "...", "label": "..."}`). Entries that were already objects (promoted) gain a `label` field.
+**Schema change:** Only the list categories (`joke`, `ha_confirm`, `thinking`, `timer_alerts`) change from bare strings to `{"file": "...", "label": "..."}` objects. The `promoted` category already uses objects (`{"pattern": "...", "file": "..."}`); it only gains a `label` field. The `greeting`, `affirmation`, `dismissal` categories (original WAV clips) also change from bare strings to objects. The `personal` category changes from `sub_key: "path"` to `sub_key: {"file": "path", "label": "text"}`.
+
+**Pre-existing latent bug:** `_get_clips()` in `app.py` iterates index entries with `for path in entries` and uses `path` as both a string key and file path. This already silently breaks for `promoted` entries (which are dicts), but is currently hidden because the promoted list is typically empty. The refactor in Step 2 must fix this for all entry types.
 
 **Original WAV clips** (in `speech/wav/`) don't have source text. For these:
 - Add a `clip_labels.json` file in `speech/` that maps filenames to manual descriptions
@@ -149,7 +151,19 @@ No obvious fixed-height or absolute-positioning culprit in the CSS. The issue is
 
 **Step 2: Update `_get_clips()` in `app.py`**
 
-Read the `label` field from index entries and include it in the API response:
+`_get_clips()` must be refactored to normalise index entries before processing. Every entry — whether a bare string, a `{"file": "..."}` object, or a `{"pattern": "...", "file": "..."}` object — must be normalised to extract the file path and optional label:
+
+```python
+def _normalise_entry(entry):
+    """Normalise an index.json entry to (file_path, label_or_None)."""
+    if isinstance(entry, str):
+        return entry, None
+    if isinstance(entry, dict):
+        return entry.get("file", ""), entry.get("label")
+    return str(entry), None
+```
+
+The normalised `file_path` replaces `path` in the existing dict-keying and basename logic. The `label` is included in the API response:
 
 ```python
 {
@@ -165,16 +179,27 @@ For clips without a label, `label` defaults to `name`.
 
 **Step 3: Update `puppet.js` to display labels**
 
-- Use `clip.label` as the button text instead of `clip.name`
+- Use `clip.label` as the button text instead of `clip.name` in both `renderClips()` and `renderFavourites()`
 - Truncate to ~40 characters with `...` for long labels
-- Show full label on hover via `title` attribute (native tooltip)
+- Replace the existing `title: "Play " + clip.name` on play buttons with the full `clip.label` text (so hover shows the complete speech text)
 - Favourites section uses the same label display
 
 **Step 4: Update handler classes to handle new index format**
 
-The new `index.json` format changes bare strings to objects. The handler classes (`RealClipHandler`, `PreGenHandler`, etc.) that read `index.json` must be updated to handle both formats:
-- If entry is a string → treat as file path (backward compatible)
-- If entry is an object → read `entry["file"]` for the path
+The new `index.json` format changes bare strings to objects. The following handlers read `index.json` list entries and must normalise them:
+
+**`RealClipHandler` (clip_handler.py)** — Most critical consumer. Handles GREETING, AFFIRMATION, DISMISSAL, JOKE intents. Currently does `rel_path = random.choice(clips)` assuming strings. Must extract `entry["file"]` from object entries. This is the highest-risk change — a bug here silences all primary voice responses.
+
+**`PreGenHandler` (pregen_handler.py)** — Handles PERSONAL intents. Currently reads `personal[sub_key]` as a string. Must handle `{"file": "...", "label": "..."}` objects.
+
+**`PromotedHandler` (promoted_handler.py)** — Already reads objects with `pattern` + `file` keys. The `label` field is simply ignored (not needed for playback).
+
+**`load_clips_from_index()` in `handler_base.py`** — Shared utility for thinking clips and timer alert clips. Currently does `os.path.join(base_dir, entry)` assuming strings. Must extract `entry["file"]` from object entries.
+
+All handlers use the same normalisation pattern:
+```python
+rel_path = entry["file"] if isinstance(entry, dict) else entry
+```
 
 ### Files Changed
 
@@ -182,12 +207,12 @@ The new `index.json` format changes bare strings to objects. The handler classes
 |---|---|
 | `scripts/prebuild_responses.py` | Write `label` field for all TTS clips; read `clip_labels.json` for manual labels |
 | `speech/clip_labels.json` | New file — manual labels for original WAV clips (can start empty, populated over time) |
-| `scripts/web/app.py` | `_get_clips()` reads and returns `label` field |
-| `scripts/web/static/puppet.js` | Display `label` instead of `name`, with truncation + tooltip |
-| `scripts/handlers/clip_handler.py` | Handle both string and object entries in index.json |
-| `scripts/handlers/pregen_handler.py` | Handle both string and object entries in index.json |
-| `scripts/handlers/promoted_handler.py` | Handle object entries with `label` field (already objects, just ignore `label`) |
-| `handler_base.py` | `load_clips_from_index()` handles both string and object entries |
+| `scripts/web/app.py` | Refactor `_get_clips()` with `_normalise_entry()` — handles string and object entries, returns `label` |
+| `scripts/web/static/puppet.js` | Display `clip.label` in both `renderClips()` and `renderFavourites()`, replace play button `title` |
+| `scripts/handlers/clip_handler.py` | Extract `entry["file"]` from object entries in `handle()` |
+| `scripts/handlers/pregen_handler.py` | Extract `entry["file"]` from object entries in `handle()` |
+| `scripts/handlers/promoted_handler.py` | No changes needed — already reads objects, ignores unknown fields |
+| `scripts/handler_base.py` | `load_clips_from_index()` extracts `entry["file"]` from object entries |
 
 ---
 
