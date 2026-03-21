@@ -58,8 +58,9 @@ def abort():
 **Modified `play()` chunk loop:**
 ```python
 def play(wav_path, on_chunk=None, on_done=None):
-    _abort.clear()  # Reset at start of each play call
     with _lock:
+        _abort.clear()  # Reset INSIDE lock — prevents race where abort()
+                        # is called between clear() and lock acquisition
         ...
         while data:
             if _abort.is_set():
@@ -115,18 +116,26 @@ async def end_session():
 
 **Orchestrator polling:**
 
-`wake_converse.py` adds an abort file check in two places:
+`wake_converse.py` changes in three places:
 
-1. **In the `on_chunk` callback passed to `audio.play()`** — checked every ~12ms during playback:
+1. **In the `on_chunk` callback passed to `audio.play()`** — checked every ~100ms during playback (throttled to avoid excessive filesystem I/O on the Pi):
 ```python
+_last_abort_check = 0.0
+
 def _check_abort_on_chunk(level):
+    global _last_abort_check
     leds.set_level(level)
-    if os.path.exists(cfg.abort_file):
-        audio.abort()
+    now = time.monotonic()
+    if now - _last_abort_check > 0.1:  # Check at most every 100ms
+        _last_abort_check = now
+        if os.path.exists(cfg.abort_file):
+            audio.abort()
 
 # In run_session():
 audio.play(wav, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
 ```
+
+This reduces filesystem polling from ~80 stat() calls/second to ~10, with no perceptible latency difference (100ms vs 12ms abort reaction time).
 
 2. **After each `audio.play()` returns** — check end-session file for session termination:
 ```python
@@ -134,6 +143,26 @@ audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_o
 if os.path.exists(cfg.end_session_file):
     # Clean up and end session immediately — no farewell clip
     _cleanup_abort_files()
+    audio.close_session()
+    return
+```
+
+3. **Remove the existing farewell-clip path in the remote-end handler** — The current code at the top of the `while True` loop in `run_session()` checks `cfg.end_session_file` and plays a DISMISSAL farewell clip before ending. This must be replaced with an immediate exit:
+```python
+# BEFORE (current — plays farewell):
+if os.path.exists(cfg.end_session_file):
+    os.unlink(cfg.end_session_file)
+    dismiss_resp = _greeting_handler.handle("(remote end)", "DISMISSAL")
+    if dismiss_resp:
+        audio.play(dismiss_resp.wav_path, ...)
+    audio.close_session()
+    return
+
+# AFTER (new — immediate exit, no farewell):
+if os.path.exists(cfg.end_session_file):
+    _cleanup_abort_files()
+    log.info("Remote end-session: abrupt exit")
+    session_log.session_end("remote_abrupt")
     audio.close_session()
     return
 ```
@@ -170,9 +199,9 @@ DISMISSAL intent is already detected during the listening phase. The change is i
 response = responder.get_response(text, ai)
 
 if response.intent == "DISMISSAL":
-    if cfg.stop_ends_session:
+    if cfg.dismissal_ends_session:
         # Abrupt end — no farewell, immediate silence
-        log.info("DISMISSAL: abrupt session end (stop_ends_session=True)")
+        log.info("DISMISSAL: abrupt session end (dismissal_ends_session=True)")
         session_log.log_turn(text, "DISMISSAL", None, "abrupt_stop")
         session_log.session_end("dismissal_abrupt")
         audio.close_session()
@@ -184,20 +213,20 @@ if response.intent == "DISMISSAL":
         continue  # Back to listening
 ```
 
-**Key difference:** When `stop_ends_session` is `True` (default), the farewell clip is **never played**. The session ends immediately after DISMISSAL is classified, before any audio plays.
+**Key difference:** When `dismissal_ends_session` is `True` (default), the farewell clip is **never played**. The session ends immediately after DISMISSAL is classified, before any audio plays.
 
-When `stop_ends_session` is `False`, the DISMISSAL doesn't end the session — it just skips the response and goes back to listening. The user stays in conversation.
+When `dismissal_ends_session` is `False`, the DISMISSAL doesn't end the session — it just skips the response and goes back to listening. The user stays in conversation.
 
 ### 4. Configuration
 
 Add to `config.py` Config class:
 ```python
-self.stop_ends_session: bool = True
+self.dismissal_ends_session: bool = True
 ```
 
 Add to `bender_config.json`:
 ```json
-"stop_ends_session": true
+"dismissal_ends_session": true
 ```
 
 **`True` (default):** DISMISSAL intent ends the session immediately with no farewell clip. UI stop button ends session immediately.
@@ -211,11 +240,13 @@ Add to `bender_config.json`:
 | File | Changes |
 |---|---|
 | `scripts/audio.py` | Add `_abort` Event, `abort()`, `was_aborted()`. Check abort in `play()` and `play_oneshot()` chunk loops. |
-| `scripts/config.py` | Add `abort_file` and `stop_ends_session` attributes |
-| `bender_config.json` | Add `stop_ends_session: true` |
-| `scripts/wake_converse.py` | Add `_check_abort_on_chunk()` callback, abort file polling after playback, DISMISSAL fast-path |
+| `scripts/config.py` | Add `abort_file` and `dismissal_ends_session` attributes |
+| `bender_config.json` | Add `dismissal_ends_session: true` |
+| `scripts/wake_converse.py` | Add `_check_abort_on_chunk()` callback (throttled), abort file polling after playback, remove farewell-clip path in remote-end handler, DISMISSAL fast-path, cleanup stale abort files at startup in `main()` |
 | `scripts/web/app.py` | End-session endpoint writes both end-session and abort files |
 | `tests/test_audio_callbacks.py` | Add tests for abort mechanism |
+
+**Note:** `responder.py` line 15 contains `audio.play(resp.wav_path)` but this is in a **docstring example**, not an actual call. No change needed there.
 
 ---
 
@@ -223,7 +254,7 @@ Add to `bender_config.json`:
 
 - **Audio abort:** Unit test — start `play()` in a thread, call `abort()` from main thread, verify play returns early and `was_aborted()` is True
 - **UI stop:** Integration test — write abort file, verify `on_chunk` callback triggers `audio.abort()`
-- **Voice DISMISSAL:** Unit test — mock responder returning DISMISSAL intent, verify session ends without playing farewell clip when `stop_ends_session=True`
+- **Voice DISMISSAL:** Unit test — mock responder returning DISMISSAL intent, verify session ends without playing farewell clip when `dismissal_ends_session=True`
 - **Config toggle:** Test both `True` and `False` paths for DISMISSAL handling
 - **Timer alert:** Verify timer alert dismissal flow still works (it uses its own `_is_dismiss()` pattern, separate from session DISMISSAL)
 
