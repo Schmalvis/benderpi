@@ -56,6 +56,15 @@ def _save_favourites(favs: list[str]) -> None:
         json.dump(favs, f, indent=2)
 
 
+def _normalise_entry(entry):
+    """Normalise an index.json entry to (file_path, label_or_None)."""
+    if isinstance(entry, str):
+        return entry, None
+    if isinstance(entry, dict):
+        return entry.get("file", ""), entry.get("label")
+    return str(entry), None
+
+
 def _get_clips() -> list[dict]:
     """Discover clips from WAV dir + index.json, merge with favourites."""
     favs = set(_load_favourites())
@@ -70,6 +79,7 @@ def _get_clips() -> list[dict]:
                 clips[rel] = {
                     "path": rel,
                     "name": name,
+                    "label": name,
                     "category": "clips",
                     "favourite": rel in favs,
                 }
@@ -82,25 +92,43 @@ def _get_clips() -> list[dict]:
         index = {}
 
     for category, entries in index.items():
-        if isinstance(entries, list):
-            for path in entries:
-                if path not in clips:
-                    name = os.path.splitext(os.path.basename(path))[0]
-                    clips[path] = {
-                        "path": path,
+        if category == "promoted":
+            # Promoted entries are objects with pattern+file fields
+            if isinstance(entries, list):
+                for entry in entries:
+                    file_path, label = _normalise_entry(entry)
+                    if file_path and file_path not in clips:
+                        name = os.path.splitext(os.path.basename(file_path))[0]
+                        clips[file_path] = {
+                            "path": file_path,
+                            "name": name,
+                            "label": label or name,
+                            "category": "promoted",
+                            "favourite": file_path in favs,
+                        }
+        elif isinstance(entries, list):
+            for entry in entries:
+                file_path, label = _normalise_entry(entry)
+                if file_path and file_path not in clips:
+                    name = os.path.splitext(os.path.basename(file_path))[0]
+                    clips[file_path] = {
+                        "path": file_path,
                         "name": name,
+                        "label": label or name,
                         "category": category,
-                        "favourite": path in favs,
+                        "favourite": file_path in favs,
                     }
         elif isinstance(entries, dict):
             # personal sub-keys
-            for sub_key, path in entries.items():
-                if path not in clips:
-                    clips[path] = {
-                        "path": path,
+            for sub_key, entry in entries.items():
+                file_path, label = _normalise_entry(entry)
+                if file_path and file_path not in clips:
+                    clips[file_path] = {
+                        "path": file_path,
                         "name": sub_key,
+                        "label": label or sub_key,
                         "category": category,
-                        "favourite": path in favs,
+                        "favourite": file_path in favs,
                     }
 
     return list(clips.values())

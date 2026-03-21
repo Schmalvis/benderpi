@@ -222,11 +222,14 @@
     var scrollRow = el("div", { className: "puppet-favs-scroll" });
 
     favClips.forEach(function (clip) {
+      var favLabel = clip.label || clip.name;
+      var favDisplayLabel = favLabel.length > 40 ? favLabel.substring(0, 37) + "..." : favLabel;
       var pill = el("button", {
         className: "btn btn-sm puppet-fav-pill",
+        title: favLabel,
         onClick: function () { playClip(clip.path, pill); }
       }, [
-        el("span", { textContent: clip.name }),
+        el("span", { textContent: favDisplayLabel }),
         el("span", { className: "puppet-play-icon", textContent: "\u25B6" })
       ]);
 
@@ -283,13 +286,15 @@
       catClips.forEach(function (clip) {
         var isFav = !!favouritesSet[clip.path];
 
+        var clipLabel = clip.label || clip.name;
+        var displayLabel = clipLabel.length > 40 ? clipLabel.substring(0, 37) + "..." : clipLabel;
         var playBtn = el("button", {
           className: "btn btn-sm puppet-clip-play",
-          title: "Play " + clip.name,
+          title: clipLabel,
           onClick: function () { playClip(clip.path, playBtn); }
         }, [
           el("span", { className: "puppet-play-icon", textContent: "\u25B6" }),
-          el("span", { textContent: clip.name })
+          el("span", { textContent: displayLabel })
         ]);
 
         var starBtn = el("button", {
