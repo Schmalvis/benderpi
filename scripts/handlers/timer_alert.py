@@ -10,7 +10,7 @@ from typing import Callable
 from config import cfg
 from handler_base import load_clips_from_index
 from logger import get_logger
-import metrics
+from metrics import metrics
 
 log = get_logger("timer_alert")
 

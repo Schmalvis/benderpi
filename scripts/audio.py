@@ -114,7 +114,7 @@ def rms_to_ratio(value: float) -> float:
 # Playback
 # ---------------------------------------------------------------------------
 
-def play(wav_path: str, on_chunk: callable = None, on_done: callable = None):
+def play(wav_path: str, on_chunk=None, on_done=None):
     """
     Play a WAV file.
     open_session() must be called first.
@@ -149,7 +149,7 @@ def play(wav_path: str, on_chunk: callable = None, on_done: callable = None):
         on_done()
 
 
-def play_oneshot(wav_path: str, on_chunk: callable = None, on_done: callable = None):
+def play_oneshot(wav_path: str, on_chunk=None, on_done=None):
     """Open stream, play clip, close stream. For use outside a session.
     Thread-safe — blocks behind _lock if a session is active.
 
