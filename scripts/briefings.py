@@ -41,10 +41,6 @@ META_PATH    = os.path.join(DAILY_DIR, "briefings_meta.json")
 WEATHER_TTL  = 30 * 60    # 30 minutes
 NEWS_TTL     = 2 * 60 * 60  # 2 hours
 
-HA_URL_DEFAULT    = "http://homeassistant.local:8123"
-HA_TOKEN_DEFAULT  = ""
-HA_ENTITY_DEFAULT = "weather.forecast_home"
-
 NEWS_FEEDS = [
     ("UK",      "https://feeds.bbci.co.uk/news/uk/rss.xml",      2),
     ("England", "https://feeds.bbci.co.uk/news/england/rss.xml", 2),
@@ -137,9 +133,9 @@ def _get_forecast(ha_url: str, token: str, entity: str) -> list:
         return []
 
 def get_weather_text() -> str:
-    ha_url  = os.environ.get("HA_URL", HA_URL_DEFAULT)
-    token   = os.environ.get("HA_TOKEN", HA_TOKEN_DEFAULT)
-    entity  = os.environ.get("HA_WEATHER_ENTITY", HA_ENTITY_DEFAULT)
+    ha_url  = _cfg.ha_url
+    token   = _cfg.ha_token
+    entity  = _cfg.ha_weather_entity
 
     req = urllib.request.Request(
         f"{ha_url}/api/states/{entity}",
