@@ -56,9 +56,10 @@ class SessionLogger:
                 "turns": self.turn, "reason": reason})
 
     def log_turn(self, user_text: str, intent: str, sub_key: str | None,
-                 method: str, response_text: str = "", model: str | None = None):
+                 method: str, response_text: str = "", model: str | None = None,
+                 ai_routing: dict | None = None):
         self.turn += 1
-        _write({
+        entry = {
             "type":          "turn",
             "session_id":    self.session_id,
             "turn":          self.turn,
@@ -68,4 +69,7 @@ class SessionLogger:
             "method":        method,
             "response_text": response_text,
             "model":         model,
-        })
+        }
+        if ai_routing:
+            entry["ai_routing"] = ai_routing
+        _write(entry)
