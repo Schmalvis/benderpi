@@ -20,6 +20,7 @@ import webrtcvad
 from faster_whisper import WhisperModel
 
 import audio as audio_mod
+from config import cfg
 from logger import get_logger
 from metrics import metrics
 
@@ -33,11 +34,6 @@ SAMPLE_RATE    = 16000    # Hz — required by webrtcvad and whisper
 CHANNELS       = 1
 FRAME_MS       = 30       # VAD frame size in ms (10/20/30 supported)
 FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
-VAD_AGGRESSIVENESS = 2    # 0 (least aggressive) to 3 (most)
-SILENCE_FRAMES = 50       # ~1.5s silence at 30ms/frame to end utterance
-MAX_RECORD_S   = 15       # hard cap per utterance
-
-WHISPER_MODEL  = "tiny.en"
 AUDIO_DEVICE   = None     # None = system default
 
 _model = None  # lazy-loaded
@@ -53,7 +49,7 @@ WHISPER_HALLUCINATIONS = {
 def _load_model():
     global _model
     if _model is None:
-        _model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+        _model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
     return _model
 
 
@@ -65,7 +61,7 @@ def _record_utterance() -> bytes:
     """Record from mic until ~1.5s silence or hard cap. Returns raw PCM bytes."""
     import pyaudio  # for pyaudio.paInt16 constant
 
-    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+    vad = webrtcvad.Vad(cfg.vad_aggressiveness)
     pa = audio_mod.get_pa()  # shared instance — DO NOT terminate
 
     stream = pa.open(
@@ -78,14 +74,14 @@ def _record_utterance() -> bytes:
     )
 
     frames = []
-    ring = collections.deque(maxlen=SILENCE_FRAMES)
+    ring = collections.deque(maxlen=cfg.silence_frames)
     started = False
     start_time = time.time()
     silent_count = 0
 
     try:
         while True:
-            if time.time() - start_time > MAX_RECORD_S:
+            if time.time() - start_time > cfg.max_record_seconds:
                 break
 
             data = stream.read(int(SAMPLE_RATE * FRAME_MS / 1000),
@@ -99,7 +95,7 @@ def _record_utterance() -> bytes:
             else:
                 if started:
                     silent_count += 1
-                    if silent_count >= SILENCE_FRAMES:
+                    if silent_count >= cfg.silence_frames:
                         break
     finally:
         stream.stop_stream()
@@ -149,7 +145,7 @@ def listen_and_transcribe() -> str:
     # Direct PCM → numpy → Whisper (no temp file)
     audio_array = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     model = _load_model()
-    with metrics.timer("stt_transcribe", model=WHISPER_MODEL):
+    with metrics.timer("stt_transcribe", model=cfg.whisper_model):
         segments, _ = model.transcribe(audio_array, language="en", beam_size=1)
         text = " ".join(s.text for s in segments).strip()
     # Hallucination filter
@@ -168,7 +164,7 @@ def transcribe_file(wav_path: str) -> str:
     Returns empty string if silent or hallucination detected.
     """
     model = _load_model()
-    with metrics.timer("stt_transcribe", model=WHISPER_MODEL, source="file"):
+    with metrics.timer("stt_transcribe", model=cfg.whisper_model, source="file"):
         segments, _ = model.transcribe(wav_path, language="en", beam_size=1)
         text = " ".join(s.text for s in segments).strip()
     cleaned = text.lower().strip().rstrip(".!?,")
