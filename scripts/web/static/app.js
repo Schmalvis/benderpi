@@ -109,6 +109,8 @@
   };
 
   var volumeDebounce = null;
+  var _volumeInFlight = false;
+  var _volumePending = null;
   var sessionPollInterval = null;
   var servicePollInterval = null;
 
@@ -406,15 +408,37 @@
   // ── Volume Handlers ────────────────────────────────
 
   function handleVolumeChange(level) {
+    // Instant visual feedback — update label immediately
     sidebarState.volume = level;
     syncVolumeUI(level);
+
     clearTimeout(volumeDebounce);
     volumeDebounce = setTimeout(function () {
-      apiJson("/api/config/volume", {
-        method: "POST",
-        body: JSON.stringify({ level: level })
-      }).catch(function () {});
-    }, 300);
+      _sendVolume(level);
+    }, 100);  // 100ms instead of 300ms
+  }
+
+  function _sendVolume(level) {
+    if (_volumeInFlight) {
+      _volumePending = level;
+      return;
+    }
+    _volumeInFlight = true;
+    _volumePending = null;
+    apiJson("/api/config/volume", {
+      method: "POST",
+      body: JSON.stringify({ level: level })
+    }).then(function () {
+      _volumeInFlight = false;
+      if (_volumePending !== null) {
+        _sendVolume(_volumePending);
+      }
+    }).catch(function () {
+      _volumeInFlight = false;
+      if (_volumePending !== null) {
+        _sendVolume(_volumePending);
+      }
+    });
   }
 
   if (sidebarVolume) {

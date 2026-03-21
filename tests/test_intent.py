@@ -90,3 +90,54 @@ def test_what_timers():
 
 def test_any_alarms():
     assert classify("any alarms set")[0] == "TIMER_STATUS"
+
+
+class TestContextualIntent:
+    def test_what_time(self):
+        intent, sub = classify("what time is it")
+        assert intent == "CONTEXTUAL"
+        assert sub == "time"
+
+    def test_whats_the_time(self):
+        intent, sub = classify("what's the time")
+        assert intent == "CONTEXTUAL"
+        assert sub == "time"
+
+    def test_what_date(self):
+        intent, sub = classify("what's the date today")
+        assert intent == "CONTEXTUAL"
+        assert sub == "date"
+
+    def test_what_day(self):
+        intent, sub = classify("what day is it")
+        assert intent == "CONTEXTUAL"
+        assert sub == "date"
+
+    def test_temperature(self):
+        intent, sub = classify("how hot is it")
+        assert intent == "CONTEXTUAL"
+        assert sub == "weather_detail"
+
+    def test_is_it_raining(self):
+        intent, sub = classify("is it raining outside")
+        assert intent == "CONTEXTUAL"
+        assert sub == "weather_detail"
+
+    def test_status_how_are_you_doing(self):
+        intent, sub = classify("how are you doing")
+        assert intent == "CONTEXTUAL"
+        assert sub == "status"
+
+    def test_system_status(self):
+        intent, sub = classify("system status")
+        assert intent == "CONTEXTUAL"
+        assert sub == "status"
+
+    def test_feelings_stays_personal(self):
+        intent, sub = classify("how are you feeling")
+        assert intent == "PERSONAL"
+        assert sub == "feelings"
+
+    def test_how_are_you_bare_stays_personal(self):
+        intent, sub = classify("how are you")
+        assert intent == "PERSONAL"

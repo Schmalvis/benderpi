@@ -105,3 +105,24 @@ def test_sub_key_passed_through(clip_fixture):
     response = clip_fixture.handle("hello", "GREETING", sub_key="morning")
     assert response is not None
     assert response.sub_key == "morning"
+
+
+def test_handle_object_entries(tmp_path):
+    """RealClipHandler works when index.json entries are {file, label} dicts."""
+    wav_dir = tmp_path / "speech" / "wav"
+    wav_dir.mkdir(parents=True)
+    (wav_dir / "hello.wav").write_bytes(b"RIFF")
+
+    resp_dir = tmp_path / "speech" / "responses"
+    resp_dir.mkdir(parents=True)
+    index = {
+        "greeting": [{"file": "speech/wav/hello.wav", "label": "Hey there meatbag"}],
+    }
+    index_path = resp_dir / "index.json"
+    index_path.write_text(json.dumps(index))
+
+    handler = RealClipHandler(index_path=str(index_path), base_dir=str(tmp_path))
+    response = handler.handle("hello", "GREETING")
+    assert response is not None
+    assert response.method == "real_clip"
+    assert response.wav_path.endswith("hello.wav")

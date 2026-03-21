@@ -67,3 +67,17 @@ def test_ha_exclude_entities_default():
     """cfg.ha_exclude_entities should be a list."""
     from config import cfg
     assert isinstance(cfg.ha_exclude_entities, list)
+
+def test_abort_file_default():
+    """cfg.abort_file should point to .abort_playback in base dir."""
+    from config import cfg
+    assert cfg.abort_file.endswith(".abort_playback")
+
+def test_dismissal_ends_session_default():
+    """cfg.dismissal_ends_session should default to True."""
+    from config import cfg
+    assert cfg.dismissal_ends_session is True
+
+def test_ha_room_synonyms_default():
+    from config import cfg
+    assert isinstance(cfg.ha_room_synonyms, dict)

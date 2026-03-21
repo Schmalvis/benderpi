@@ -45,11 +45,13 @@ class Responder:
         from handlers.news_handler import NewsHandler
         from handlers.ha_handler import HAHandler
         from handlers.timer_handler import TimerHandler
+        from handlers.contextual_handler import ContextualHandler
 
         handlers = [
             RealClipHandler(index_path=idx_path, base_dir=self._base_dir),
             PreGenHandler(index_path=idx_path, base_dir=self._base_dir),
             PromotedHandler(index_path=idx_path, base_dir=self._base_dir),
+            ContextualHandler(),
             WeatherHandler(),
             NewsHandler(),
             HAHandler(),

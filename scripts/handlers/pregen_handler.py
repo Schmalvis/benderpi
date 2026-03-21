@@ -31,8 +31,13 @@ class PreGenHandler(Handler):
         entry = personal[sub_key]
         if not entry:
             return None
-        # index.json stores personal values as strings (single path), not lists
-        rel_path = entry if isinstance(entry, str) else random.choice(entry)
+        # index.json stores personal values as strings, lists, or dicts with file+label
+        if isinstance(entry, dict):
+            rel_path = entry.get("file", "")
+        elif isinstance(entry, list):
+            rel_path = random.choice(entry)
+        else:
+            rel_path = entry
         wav_path = os.path.join(self._base_dir, rel_path)
         if not os.path.isfile(wav_path):
             log.warning("PreGenHandler: missing WAV %s", wav_path)
