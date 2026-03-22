@@ -49,6 +49,8 @@
         <Config />
       {:else if currentPage === 'remote'}
         <Remote />
+      {:else if currentPage === 'logs'}
+        <Logs />
       {:else}
         <p class="text-text-muted">Page content coming next...</p>
       {/if}
