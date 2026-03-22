@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
-  import { getClips, speak } from '../lib/api.js';
+  import { getClips, speak, getCameraStatus, cameraStreamUrl } from '../lib/api.js';
   import { session } from '../lib/stores/session.js';
   import { toast } from '../lib/stores/toast.js';
   import ClipButton from '../lib/components/ClipButton.svelte';
@@ -17,11 +17,27 @@
   let audioCtx = null;
   let nextPlayTime = 0;
 
+  // Camera streaming state
+  let cameraAvailable = false;
+  let cameraActive = false;
+  let cameraError = false;
+  let cameraSrc = '';
+
   $: grouped = groupByCategory(clips);
   $: favourites = clips.filter(c => c.favourite);
 
-  onMount(loadClips);
-  onDestroy(stopMic);
+  onMount(async () => {
+    await loadClips();
+    try {
+      const s = await getCameraStatus();
+      cameraAvailable = s.available;
+    } catch { /* ignore — camera status is non-critical */ }
+  });
+
+  onDestroy(() => {
+    stopMic();
+    stopCamera();
+  });
 
   async function loadClips() {
     try {
@@ -99,9 +115,7 @@
     };
 
     ws.onmessage = (e) => {
-      if (e.data instanceof ArrayBuffer) {
-        scheduleChunk(e.data);
-      }
+      if (e.data instanceof ArrayBuffer) scheduleChunk(e.data);
     };
 
     ws.onerror = () => {
@@ -109,9 +123,7 @@
       cleanupMic();
     };
 
-    ws.onclose = () => {
-      cleanupMic();
-    };
+    ws.onclose = () => { cleanupMic(); };
 
     micWs = ws;
   }
@@ -135,16 +147,43 @@
   }
 
   function toggleMic() {
-    if (micActive) {
-      stopMic();
-    } else {
-      startMic();
-    }
+    if (micActive) stopMic(); else startMic();
+  }
+
+  // ── Camera streaming ────────────────────────────────────────────
+
+  function startCamera() {
+    const { pin } = get(session);
+    cameraError = false;
+    cameraSrc = cameraStreamUrl(pin);
+    cameraActive = true;
+    toast.push('Seeing room…', 'success');
+  }
+
+  function stopCamera() {
+    cameraSrc = '';
+    cleanupCamera();
+  }
+
+  function cleanupCamera() {
+    cameraActive = false;
+    cameraError = false;
+    cameraSrc = '';
+  }
+
+  function toggleCamera() {
+    if (cameraActive) stopCamera(); else startCamera();
+  }
+
+  function handleCameraError() {
+    cameraError = true;
+    cleanupCamera();
+    toast.push('Camera not available', 'error');
   }
 </script>
 
 <div class="space-y-6">
-  <!-- TTS input + Hear Room -->
+  <!-- TTS input + presence controls -->
   <div class="bg-bg-card border border-border rounded-lg p-4 space-y-3">
     <div class="flex gap-3">
       <input
@@ -166,8 +205,9 @@
       </button>
     </div>
 
-    <!-- Ambient mic feed -->
-    <div class="flex items-center gap-3 pt-1 border-t border-border">
+    <!-- Ambient presence controls -->
+    <div class="flex flex-wrap items-center gap-3 pt-1 border-t border-border">
+      <!-- Mic -->
       <button
         on:click={toggleMic}
         class="flex items-center gap-2 px-4 py-1.5 rounded text-sm font-medium transition-all
@@ -178,11 +218,43 @@
         <span>{micActive ? '●' : '○'}</span>
         {micActive ? 'Stop Hearing Room' : 'Hear Room'}
       </button>
+
+      <!-- Camera -->
+      <button
+        on:click={toggleCamera}
+        disabled={!cameraAvailable}
+        title={cameraAvailable ? '' : 'No camera connected'}
+        class="flex items-center gap-2 px-4 py-1.5 rounded text-sm font-medium transition-all
+               disabled:opacity-40 disabled:cursor-not-allowed
+               {cameraActive
+                 ? 'bg-error text-white animate-pulse'
+                 : 'bg-bg-input border border-border text-text-muted hover:border-accent hover:text-text-default'}"
+      >
+        <span>{cameraActive ? '●' : '○'}</span>
+        {cameraActive ? 'Stop Seeing Room' : 'See Room'}
+      </button>
+
       {#if micActive}
-        <span class="text-xs text-text-muted">Streaming ambient audio from Bender's mic</span>
+        <span class="text-xs text-text-muted">Streaming mic</span>
+      {/if}
+      {#if cameraActive}
+        <span class="text-xs text-text-muted">Streaming camera</span>
       {/if}
     </div>
   </div>
+
+  <!-- Camera feed -->
+  {#if cameraActive && cameraSrc}
+    <div class="bg-bg-card border border-border rounded-lg overflow-hidden">
+      <div class="text-[11px] text-text-muted uppercase tracking-wider px-4 pt-3 pb-2">Room View</div>
+      <img
+        src={cameraSrc}
+        alt="Room view"
+        on:error={handleCameraError}
+        class="w-full object-contain max-h-96"
+      />
+    </div>
+  {/if}
 
   {#if favourites.length > 0}
     <div>

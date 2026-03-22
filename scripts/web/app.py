@@ -782,6 +782,66 @@ async def remote_ask(audio: UploadFile = File(...)):
 
 
 
+
+# ── Camera Stream ─────────────────────────────────────────────────────────────
+
+def _check_camera() -> bool:
+    """Returns True if picamera2 and camera hardware are both available."""
+    try:
+        from picamera2 import Picamera2
+        cam = Picamera2()
+        cam.close()
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/api/puppet/camera/status", dependencies=[Depends(require_pin)])
+async def puppet_camera_status():
+    available = await asyncio.to_thread(_check_camera)
+    return {"available": available}
+
+
+@app.get("/api/puppet/camera/stream")
+async def puppet_camera_stream(pin: str = ""):
+    """MJPEG stream from the Pi Camera. PIN via query param (img src limitation)."""
+    if not verify_pin(pin):
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+
+    available = await asyncio.to_thread(_check_camera)
+    if not available:
+        raise HTTPException(status_code=503, detail="Camera not available")
+
+    async def generate():
+        from picamera2 import Picamera2
+        import io
+        cam = Picamera2()
+        config = cam.create_video_configuration(
+            main={"size": (640, 480), "format": "RGB888"}
+        )
+        cam.configure(config)
+        cam.start()
+        try:
+            from PIL import Image
+            while True:
+                frame = await asyncio.to_thread(cam.capture_array)
+                buf = io.BytesIO()
+                Image.fromarray(frame).save(buf, format="JPEG", quality=70)
+                yield (
+                    b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                    + buf.getvalue()
+                    + b"\r\n"
+                )
+                await asyncio.sleep(0.1)  # ~10 fps
+        except asyncio.CancelledError:
+            pass
+        finally:
+            cam.stop()
+            cam.close()
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
+
 # ── Puppet Mic Stream ──────────────────────────────────────────────────────────
 
 @app.websocket("/ws/puppet/mic")

@@ -45,6 +45,8 @@ export const speak = (text) => request('/api/puppet/speak', { method: 'POST', bo
 export const playClip = (path) => request('/api/puppet/clip', { method: 'POST', body: JSON.stringify({ path }) });
 export const getClips = () => request('/api/puppet/clips');
 export const setFavourite = (path, favourite) => request('/api/puppet/favourite', { method: 'POST', body: JSON.stringify({ path, favourite }) });
+export const getCameraStatus = () => request('/api/puppet/camera/status');
+export const cameraStreamUrl = (pin) => `/api/puppet/camera/stream?pin=${encodeURIComponent(pin)}`;
 
 // Status
 export const getStatus = () => request('/api/status');
