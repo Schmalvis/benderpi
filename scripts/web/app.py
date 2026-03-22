@@ -16,10 +16,9 @@ _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import cfg
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
-_STATIC_DIR = os.path.join(_WEB_DIR, "static")
-_ASSETS_DIR = os.path.join(_WEB_DIR, "assets")
 
 _BASE_DIR = os.path.dirname(os.path.dirname(_WEB_DIR))
+_DIST_DIR = os.path.join(_BASE_DIR, "web", "dist")
 _FAVOURITES_PATH = os.path.join(_BASE_DIR, "favourites.json")
 _INDEX_PATH = os.path.join(_BASE_DIR, "speech", "responses", "index.json")
 _WAV_DIR = os.path.join(_BASE_DIR, "speech", "wav")
@@ -784,7 +783,5 @@ async def remote_ask(audio: UploadFile = File(...)):
 
 # ── Static files (must be last — catches all unmatched routes) ──
 
-if os.path.isdir(_ASSETS_DIR):
-    app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
-if os.path.isdir(_STATIC_DIR):
-    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
+if os.path.isdir(_DIST_DIR):
+    app.mount("/", StaticFiles(directory=_DIST_DIR, html=True), name="static")
