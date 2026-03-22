@@ -7,6 +7,8 @@
   import Puppet from './pages/Puppet.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Config from './pages/Config.svelte';
+  import Remote from './pages/Remote.svelte';
+  import Logs from './pages/Logs.svelte';
 
   let checking = true;
   let currentPage = 'dashboard';
@@ -45,6 +47,8 @@
         <Puppet />
       {:else if currentPage === 'config'}
         <Config />
+      {:else if currentPage === 'remote'}
+        <Remote />
       {:else}
         <p class="text-text-muted">Page content coming next...</p>
       {/if}
