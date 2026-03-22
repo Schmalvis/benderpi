@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Futurama Theme Tokens (Dark — default) ── */
+:root {
+  --bg: #0a0e1a;
+  --bg-card: #12162a;
+  --bg-sidebar: #0d1020;
+  --bg-input: #1a1e30;
+  --accent: #4a9eff;
+  --accent-red: #e94560;
+  --text: #e0e0e0;
+  --text-muted: #6a6a9a;
+  --success: #4ecca3;
+  --warning: #f0a500;
+  --error: #e94560;
+  --border: #2a2a4a;
+  --glow: rgba(74,158,255,0.15);
+  --scanline: rgba(0,200,255,0.015);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --transition: 0.2s ease;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── Light Theme ── */
+[data-theme="light"] {
+  --bg: #f0f2f5;
+  --bg-card: #fff;
+  --bg-sidebar: #e8eaf0;
+  --bg-input: #f5f5f5;
+  --accent: #2a7cdb;
+  --accent-red: #d63447;
+  --text: #1a1a2e;
+  --text-muted: #666680;
+  --success: #2d8f6f;
+  --warning: #c48200;
+  --error: #d63447;
+  --border: #d0d0e0;
+  --glow: rgba(42,124,219,0.08);
+  --scanline: none;
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+/* ── Global Reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; -webkit-text-size-adjust: 100%; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+  transition: background var(--transition), color var(--transition);
+}
+
+/* ── Scan Line Overlay ── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    var(--scanline) 0px,
+    var(--scanline) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}

@@ -44,3 +44,6 @@ favourites.json
 timers.json
 .end_session
 .session_active.json
+
+# Svelte web app
+web/node_modules/
