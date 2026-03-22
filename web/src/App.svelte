@@ -4,6 +4,7 @@
   import { getServiceStatus } from './lib/api.js';
   import Login from './pages/Login.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
+  import Puppet from './pages/Puppet.svelte';
 
   let checking = true;
   let currentPage = 'dashboard';
@@ -36,7 +37,11 @@
       <div class="text-[11px] text-text-muted uppercase tracking-wider mb-4">
         {currentPage}
       </div>
-      <p class="text-text-muted">Page content coming next...</p>
+      {#if currentPage === 'puppet'}
+        <Puppet />
+      {:else}
+        <p class="text-text-muted">Page content coming next...</p>
+      {/if}
     </main>
   </div>
 {/if}
