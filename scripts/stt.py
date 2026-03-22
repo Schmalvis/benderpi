@@ -3,8 +3,8 @@
 Speech-to-text for Bender.
 
 Backends (in priority order):
-  1. Hailo Speech2Text (Whisper-Base on Hailo-10H NPU)
-  2. faster-whisper CPU fallback (tiny.en)
+  1. faster-whisper CPU (base.en) — primary
+  2. Hailo Speech2Text (Whisper-Base on Hailo-10H NPU) — fallback if CPU unavailable
 
 Usage (standalone test):
     python3 scripts/stt.py
@@ -59,12 +59,23 @@ _cpu_model = None   # faster-whisper fallback
 
 
 def _load_model():
-    """Initialise Hailo backend, falling back to faster-whisper on failure."""
+    """Initialise faster-whisper CPU backend (primary), falling back to Hailo on failure."""
     global _backend, _vdevice, _s2t, _cpu_model
 
     if _backend is not None:
         return
 
+    # CPU primary
+    try:
+        from faster_whisper import WhisperModel
+        _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
+        _backend = "cpu"
+        log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
+        return
+    except Exception as e:
+        log.warning("faster-whisper init failed (%s) — falling back to Hailo", e)
+
+    # Hailo fallback
     if os.path.exists(WHISPER_HEF):
         try:
             from hailo_platform import VDevice
@@ -79,7 +90,7 @@ def _load_model():
             log.info("STT backend: Hailo Speech2Text (Whisper-Base on Hailo-10H)")
             return
         except Exception as e:
-            log.warning("Hailo STT init failed (%s) — falling back to CPU", e)
+            log.warning("Hailo STT init failed (%s)", e)
             if _vdevice is not None:
                 try:
                     _vdevice.__exit__(None, None, None)
@@ -88,11 +99,7 @@ def _load_model():
                 _vdevice = None
             _s2t = None
 
-    # CPU fallback
-    from faster_whisper import WhisperModel
-    _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
-    _backend = "cpu"
-    log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
+    raise RuntimeError("No STT backend available")
 
 
 def _active_model_name() -> str:
