@@ -1,68 +1,70 @@
 {
-  "whisper_model": "tiny.en",
-  "vad_aggressiveness": 2,
-  "silence_timeout": 8.0,
-  "silence_pre": 0.02,
-  "silence_post": 0.08,
-  "thinking_sound": true,
-  "ai_model": "claude-haiku-4-5-20251001",
-  "ai_max_tokens": 150,
-  "weather_ttl": 1800,
-  "news_ttl": 7200,
-  "log_level": "INFO",
-  "led_brightness": 1.0,
-  "led_colour": [
-    255,
-    120,
-    0
-  ],
-  "simple_intent_max_words": 6,
-  "timer_alert_max_seconds": 60,
-  "speech_rate": 1.1,
-  "led_listening_colour": [
-    0,
-    80,
-    255
-  ],
-  "led_talking_colour": [
-    255,
-    255,
-    255
-  ],
-  "led_listening_enabled": true,
-  "silent_wakeword": false,
-  "location": "Nottingham, England",
-  "ha_exclude_entities": [
-    "switch.clock_weather_card_pre_release",
-    "switch.entrance_keypad_chirps",
-    "switch.keypad_07069_chirps",
-    "switch.403100527506007695_bsh_common_setting_powerstate",
-    "switch.ensuite_radiator_plug_hive",
-    "switch.assist_microphone_mute",
-    "switch.lightswitches",
-    "switch.conservatory_lights_led",
-    "switch.conservatory_lamp_led",
-    "switch.led_tree_lights_conservatory",
-    "switch.shelly_bedroom_wall_switch_switch_1",
-    "climate.0xc09b9efffe848bb4",
-    "climate.martins_office_radiator_trv"
-  ],
-  "dismissal_ends_session": true,
-  "ha_room_synonyms": {
-    "lounge": "living room",
-    "front room": "living room",
-    "sitting room": "living room",
-    "loo": "bathroom",
-    "toilet": "bathroom",
-    "study": "office"
-  },
-  "ai_backend": "hybrid",
-  "local_llm_model": "qwen2.5:1.5b",
-  "local_llm_url": "http://localhost:11434",
-  "local_llm_timeout": 6,
-  "ai_routing": {
-    "conversation": "local_first",
-    "knowledge": "local_first",
-    "creative": "local_first"
-  }
+    "whisper_model": "tiny.en",
+    "vad_aggressiveness": 2,
+    "silence_timeout": 8.0,
+    "silence_pre": 0.02,
+    "silence_post": 0.08,
+    "thinking_sound": true,
+    "ai_model": "claude-haiku-4-5-20251001",
+    "ai_max_tokens": 150,
+    "weather_ttl": 1800,
+    "news_ttl": 7200,
+    "log_level": "INFO",
+    "led_brightness": 1.0,
+    "led_colour": [
+        255,
+        120,
+        0
+    ],
+    "simple_intent_max_words": 6,
+    "timer_alert_max_seconds": 60,
+    "speech_rate": 1.1,
+    "led_listening_colour": [
+        0,
+        80,
+        255
+    ],
+    "led_talking_colour": [
+        255,
+        255,
+        255
+    ],
+    "led_listening_enabled": true,
+    "silent_wakeword": false,
+    "location": "Nottingham, England",
+    "ha_exclude_entities": [
+        "switch.clock_weather_card_pre_release",
+        "switch.entrance_keypad_chirps",
+        "switch.keypad_07069_chirps",
+        "switch.403100527506007695_bsh_common_setting_powerstate",
+        "switch.ensuite_radiator_plug_hive",
+        "switch.assist_microphone_mute",
+        "switch.lightswitches",
+        "switch.conservatory_lights_led",
+        "switch.conservatory_lamp_led",
+        "switch.led_tree_lights_conservatory",
+        "switch.shelly_bedroom_wall_switch_switch_1",
+        "climate.0xc09b9efffe848bb4",
+        "climate.martins_office_radiator_trv"
+    ],
+    "dismissal_ends_session": true,
+    "ha_room_synonyms": {
+        "lounge": "living room",
+        "front room": "living room",
+        "sitting room": "living room",
+        "loo": "bathroom",
+        "toilet": "bathroom",
+        "study": "office"
+    },
+    "ai_backend": "hybrid",
+    "local_llm_model": "qwen2.5:1.5b",
+    "local_llm_url": "http://localhost:11434",
+    "local_llm_timeout": 3,
+    "ai_routing": {
+        "conversation": "local_first",
+        "knowledge": "local_first",
+        "creative": "local_first"
+    },
+    "tts_noise_scale": 0.9,
+    "tts_noise_scale_w": 1.2
 }

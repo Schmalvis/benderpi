@@ -55,6 +55,8 @@ class Config:
     local_llm_model: str = "qwen2.5:1.5b"
     local_llm_url: str = "http://localhost:11434"
     local_llm_timeout: int = 3
+    tts_noise_scale: float = 0.9      # Piper expressiveness (default 0.667)
+    tts_noise_scale_w: float = 1.2    # Piper phoneme duration variance (default 0.8)
     ai_routing: dict = None  # set in __init__ to avoid mutable default
 
     # Conversation

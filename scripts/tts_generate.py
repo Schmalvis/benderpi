@@ -13,6 +13,7 @@ Usage:
 """
 
 import os
+import re
 import subprocess
 import tempfile
 import wave
@@ -75,9 +76,9 @@ def _resample_and_pad(in_path: str, out_path: str):
         wf.writeframes(samples.tobytes())
 
 
-def speak(text: str) -> str:
+def _speak_single(text: str) -> str:
     """
-    Generate TTS audio for text. Returns path to a temp WAV file at 44100Hz.
+    Generate TTS audio for a single sentence. Returns path to a temp WAV file at 44100Hz.
     Caller is responsible for playing and cleanup.
     """
     with metrics.timer("tts_generate"):
@@ -100,6 +101,8 @@ def speak(text: str) -> str:
             "--model", MODEL_PATH,
             "--output_file", raw_tmp.name,
             "--length_scale", str(cfg.speech_rate),
+            "--noise_scale", str(cfg.tts_noise_scale),
+            "--noise_scale_w", str(cfg.tts_noise_scale_w),
         ],
             input=text.encode(),
             capture_output=True,
@@ -119,6 +122,63 @@ def speak(text: str) -> str:
             os.unlink(raw_tmp.name)
 
         return out_tmp.name
+
+
+
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+
+def _preprocess_text(text: str) -> str:
+    """Normalise text for natural TTS delivery."""
+    # Strip markdown bold/italic
+    text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
+    # Em-dash and en-dash → comma pause
+    text = re.sub(r'\s*[–—]\s*', ', ', text)
+    # Ellipsis → pause
+    text = text.replace('...', ', ')
+    # Multiple spaces
+    text = re.sub(r'  +', ' ', text)
+    return text.strip()
+
+
+def speak(text: str) -> str:
+    """
+    Generate TTS audio for text, splitting on sentence boundaries for
+    more natural prosody. Returns path to a concatenated temp WAV at 44100Hz.
+    Caller is responsible for playing and cleanup.
+    """
+    text = _preprocess_text(text)
+    sentences = [s.strip() for s in _SENTENCE_RE.split(text) if s.strip()]
+    if len(sentences) <= 1:
+        return _speak_single(text)
+
+    # Generate each sentence separately and concatenate
+    import wave, struct
+    parts = []
+    try:
+        for sentence in sentences:
+            parts.append(_speak_single(sentence))
+
+        # Read all WAVs and concatenate frames
+        out_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        out_tmp.close()
+        frames = b""
+        params = None
+        for p in parts:
+            with wave.open(p, 'rb') as wf:
+                if params is None:
+                    params = wf.getparams()
+                frames += wf.readframes(wf.getnframes())
+
+        with wave.open(out_tmp.name, 'wb') as wf:
+            wf.setparams(params)
+            wf.writeframes(frames)
+        return out_tmp.name
+    finally:
+        for p in parts:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def warm_up():
