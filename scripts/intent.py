@@ -51,7 +51,9 @@ DISMISSAL_PATTERNS = [
     r"^bye\b",
     r"\bgoodbye\b",
     r"\bsee you\b",
-    r"^stop(\s+(it|bender))?$",
+    r"\bstop(\s+(it|bender))?\b",
+    r"\bshut up\b",
+    r"\bbe quiet\b",
     r"\bthat'?s?\s*all\b",
     r"\bno more\b",
 ]

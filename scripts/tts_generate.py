@@ -58,6 +58,13 @@ def _resample_and_pad(in_path: str, out_path: str):
     post_pad = np.zeros(int(TARGET_RATE * SILENCE_POST), dtype=np.float32)
     samples  = np.concatenate([pre_pad, samples, post_pad])
 
+    # De-ess: gently attenuate harsh high-frequency content above 7kHz
+    from scipy.signal import butter, sosfilt
+    nyq = TARGET_RATE / 2
+    sos = butter(2, 7000 / nyq, btype='high', output='sos')
+    highs = sosfilt(sos, samples.astype(np.float64)).astype(np.float32)
+    samples = samples - highs * 0.4  # reduce >7kHz by ~4dB
+
     # Clip and convert back to int16
     samples = np.clip(samples, -32768, 32767).astype(np.int16)
 

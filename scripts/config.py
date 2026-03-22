@@ -54,7 +54,7 @@ class Config:
     ai_backend: str = "hybrid"  # "hybrid" | "local_only" | "cloud_only"
     local_llm_model: str = "qwen2.5:1.5b"
     local_llm_url: str = "http://localhost:11434"
-    local_llm_timeout: int = 6
+    local_llm_timeout: int = 3
     ai_routing: dict = None  # set in __init__ to avoid mutable default
 
     # Conversation

@@ -54,6 +54,11 @@ def _load_exclude_entities() -> set:
 
 EXCLUDE_ENTITIES = _load_exclude_entities()
 
+# Last successfully controlled entities — used to resolve pronouns like 'them'/'it'
+_last_entities: list = []
+_PRONOUNS = {"them", "it", "those", "that", "these"}
+
+
 # ---------------------------------------------------------------------------
 # Entity cache (refreshed every 60 seconds)
 # ---------------------------------------------------------------------------
@@ -340,7 +345,14 @@ def execute(user_text: str) -> dict:
         return {"action": action, "entities": [], "room_display": "",
                 "temperature": None, "error": "no_room"}
 
-    matches = _find_entities(room_term)
+    # Resolve pronouns using last controlled entities
+    if room_term.strip().lower() in _PRONOUNS and _last_entities:
+        matches = [{"entity_id": e["entity_id"], "friendly_name": e["friendly_name"],
+                    "domain": e["entity_id"].split(".")[0]} for e in _last_entities]
+        log.info("Pronoun %r resolved to last entities: %s", room_term,
+                 [e["entity_id"] for e in matches])
+    else:
+        matches = _find_entities(room_term)
     if not matches:
         return {"action": action, "entities": [], "room_display": room_term,
                 "temperature": None, "error": "no_match"}
@@ -381,8 +393,11 @@ def execute(user_text: str) -> dict:
 
     names = list({e["friendly_name"] for e in matches})
     display = _normalise(names[0]).title() if names else room_term.title()
-    return {"action": action, "entities": results, "room_display": display,
-            "temperature": None, "error": None if any(r["success"] for r in results) else "ha_failed"}
+    result = {"action": action, "entities": results, "room_display": display,
+              "temperature": None, "error": None if any(r["success"] for r in results) else "ha_failed"}
+    if not result["error"]:
+        _last_entities[:] = results
+    return result
 
 
 def _result_to_speech(result: dict) -> str:
