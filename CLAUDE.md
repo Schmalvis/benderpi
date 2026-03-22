@@ -296,12 +296,23 @@ The timer polls every 5 minutes. If the pull changes any Python files or `.env.e
 
 ## Web UI
 
-A browser-based admin panel and puppet mode served by FastAPI.
+A browser-based admin panel and puppet mode served by FastAPI. Frontend is **Svelte 4 + Tailwind CSS**, built with Vite.
 
 ### Running locally (development)
 ```bash
+# Development (with hot reload)
+cd web && npm run dev
+
+# Production build
+cd web && npm run build
+
+# Serve (same as before)
 BENDER_WEB_PIN=<your-pin> python -m uvicorn scripts.web.app:app --reload --port 8080
 ```
+
+### Build and deploy
+The Svelte app is built locally and `web/dist/` is committed to git.
+No Node.js needed on the Pi — auto-deploy via git pull serves the pre-built files.
 
 ### Service setup (on Pi)
 ```bash
@@ -329,9 +340,13 @@ pi ALL=(ALL) NOPASSWD: /bin/systemctl status bender-converse
 - **Actions** — restart service, refresh briefings, rebuild responses, puppet-only mode toggle
 
 ### Key files
-- `scripts/web/app.py` — FastAPI application with all API routes
+- `web/src/App.svelte` — root component with auth gate, sidebar, page router
+- `web/src/lib/api.js` — centralised API client
+- `web/src/lib/stores/` — Svelte stores (session, health, config, timers)
+- `web/src/pages/` — page components (Dashboard, Puppet, Config, Logs, Remote)
+- `web/src/lib/components/` — shared components (Sidebar, VolumeSlider, etc.)
+- `scripts/web/app.py` — FastAPI application (serves `web/dist/`)
 - `scripts/web/auth.py` — PIN authentication middleware
-- `scripts/web/static/` — HTML, CSS, JS frontend (vanilla, no build step)
 - `systemd/bender-web.service` — systemd service file
 
 ---

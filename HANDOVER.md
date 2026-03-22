@@ -116,6 +116,14 @@ sudo systemctl restart bender-converse
   - Rich logging captures routing decisions in `ai_routing` field of conversation log for future ML classifier training
   - Config keys: `ai_backend`, `local_llm_model`, `local_llm_url`, `local_llm_timeout`, `ai_routing`
   - New file: `scripts/ai_local.py` — `LocalAIResponder` with `QualityCheckFailed` exception
+- **Svelte + Tailwind UI migration (2026-03-22):** Vanilla JS frontend replaced with Svelte 4 + Tailwind CSS
+  - Built locally with Vite, output committed to `web/dist/` — no Node.js on Pi
+  - FastAPI serves `web/dist/` instead of `scripts/web/static/`
+  - Futurama theme preserved via CSS custom properties wrapped as Tailwind utilities
+  - 5 pages: Dashboard, Puppet, Config, Logs, Remote
+  - Centralised API client (`web/src/lib/api.js`), Svelte stores for shared state
+  - Mobile responsive: bottom tab bar on narrow screens
+  - Bundle: ~75 KB JS + ~18 KB CSS (gzipped: ~27 KB total)
 
 ## Known Issues
 - Piper --json-input mode needs verification on Pi (using warm-up fallback)
@@ -137,5 +145,4 @@ sudo systemctl restart bender-converse
 - Hailo Whisper-Small HEF when it stabilises on Hailo-10H (currently broken upstream)
 - Camera/AI vision via Hailo NPU (future hardware addition)
 - Motorised elements for physical Bender model
-- **UI framework migration** — move from vanilla JS to Svelte + Tailwind. Introduces build step (Vite) but gives component model, reactivity, and tiny bundle size (~3-5 KB runtime). Current 191 KB vanilla JS becoming unwieldy. Separate design spec needed.
 - **Clip categorisation** — raw WAVs in speech/wav/ all land in one "clips" bucket. Categorise under headings (greetings, insults, sound effects, etc.). Data task: label clips in index.json, frontend already groups by category.
