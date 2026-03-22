@@ -59,7 +59,8 @@ bender/
 │   │   │       ├── ClipButton.svelte
 │   │   │       ├── TimerCard.svelte
 │   │   │       └── MetricChart.svelte
-│   │   └── pages/               ← one per tab
+│   │   └── pages/               ← one per tab + login
+│   │       ├── Login.svelte
 │   │       ├── Dashboard.svelte
 │   │       ├── Puppet.svelte
 │   │       ├── Config.svelte
@@ -287,7 +288,11 @@ export const timers = writable([]);
 
 export function startTimerPolling() {
   const interval = setInterval(async () => {
-    timers.set(await getTimers());
+    try {
+      timers.set(await getTimers());
+    } catch {
+      // Leave existing timer state intact on failure
+    }
   }, 2000);
   return () => clearInterval(interval);
 }
@@ -325,7 +330,7 @@ export const getHealth = () => request('/api/health');
 // Actions
 export const restartService = () => request('/api/actions/restart', { method: 'POST' });
 export const refreshBriefings = () => request('/api/actions/refresh-briefings', { method: 'POST' });
-export const rebuildResponses = () => request('/api/actions/rebuild-responses', { method: 'POST' });
+export const rebuildResponses = () => request('/api/actions/prebuild', { method: 'POST' });
 
 // Config
 export const getConfig = () => request('/api/config');
@@ -335,7 +340,7 @@ export const updateConfig = (data) => request('/api/config', { method: 'PUT', bo
 export const getClips = () => request('/api/puppet/clips');
 export const playClip = (path) => request('/api/puppet/clip', { method: 'POST', body: JSON.stringify({ path }) });
 export const speak = (text) => request('/api/puppet/speak', { method: 'POST', body: JSON.stringify({ text }) });
-export const setVolume = (vol) => request('/api/puppet/volume', { method: 'POST', body: JSON.stringify({ volume: vol }) });
+export const setVolume = (vol) => request('/api/config/volume', { method: 'POST', body: JSON.stringify({ volume: vol }) });
 
 // Timers
 export const getTimers = () => request('/api/timers');
@@ -424,17 +429,20 @@ git push             # Pi auto-pulls, serves new UI
 
 ## 9. Backend Changes
 
-Minimal — only the static file serving path changes.
+Minimal — the static file serving path changes and the separate `/assets` mount is removed.
 
 ### `scripts/web/app.py`
 
 ```python
 # Before
+app.mount("/assets", StaticFiles(directory=os.path.join(_BASE_DIR, "scripts", "web", "assets")))
 app.mount("/", StaticFiles(directory=os.path.join(_BASE_DIR, "scripts", "web", "static"), html=True))
 
-# After
+# After — remove /assets mount (Vite outputs assets into dist/assets/, served by the root mount)
 app.mount("/", StaticFiles(directory=os.path.join(_BASE_DIR, "web", "dist"), html=True))
 ```
+
+The `/assets` FastAPI mount must be removed. Vite places bundled JS/CSS into `dist/assets/` by default — a separate `/assets` mount would shadow these files. The root `StaticFiles` mount with `html=True` serves everything in `dist/` including `dist/assets/`.
 
 All API routes unchanged. Auth middleware unchanged. No new endpoints needed.
 
