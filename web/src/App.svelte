@@ -6,6 +6,7 @@
   import Sidebar from './lib/components/Sidebar.svelte';
   import Puppet from './pages/Puppet.svelte';
   import Dashboard from './pages/Dashboard.svelte';
+  import Config from './pages/Config.svelte';
 
   let checking = true;
   let currentPage = 'dashboard';
@@ -42,6 +43,8 @@
         <Dashboard />
       {:else if currentPage === 'puppet'}
         <Puppet />
+      {:else if currentPage === 'config'}
+        <Config />
       {:else}
         <p class="text-text-muted">Page content coming next...</p>
       {/if}
