@@ -3,18 +3,21 @@
   import { health } from '../lib/stores/health.js';
   import { timers, startTimerPolling } from '../lib/stores/timers.js';
   import { getStatus, getConversationDates, getConversationLog } from '../lib/api.js';
+  import { config, loadConfig } from '../lib/stores/config.js';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import TimerCard from '../lib/components/TimerCard.svelte';
 
   let status = {};
+  $: usage = status.usage || {};
+  $: perf = status.performance || {};
+  $: alerts = status.alerts || [];
   let recentTurns = [];
   let stopPolling;
 
   onMount(async () => {
     stopPolling = startTimerPolling();
-    try {
-      status = await getStatus();
-    } catch { /* ignore */ }
+    try { await loadConfig(); } catch { /* ignore */ }
+    try { status = await getStatus(); } catch { /* ignore */ }
     await loadRecentConversations();
   });
 
@@ -52,18 +55,60 @@
       <div class="mt-1"><StatusBadge status={$health.status} label={$health.status === 'online' ? 'Online' : 'Offline'} /></div>
     </div>
     <div class="bg-bg-card border border-border rounded-lg p-4">
-      <div class="text-[11px] text-text-muted uppercase">STT Engine</div>
-      <div class="text-lg font-semibold text-accent mt-1">{status.stt_engine || '—'}</div>
-    </div>
-    <div class="bg-bg-card border border-border rounded-lg p-4">
       <div class="text-[11px] text-text-muted uppercase">AI Backend</div>
-      <div class="text-lg font-semibold text-accent mt-1">{status.ai_backend || '—'}</div>
+      <div class="text-lg font-semibold text-accent mt-1">{$config.ai_backend || '—'}</div>
     </div>
     <div class="bg-bg-card border border-border rounded-lg p-4">
-      <div class="text-[11px] text-text-muted uppercase">CPU Temp</div>
-      <div class="text-lg font-semibold text-accent mt-1">{status.cpu_temp || '—'}</div>
+      <div class="text-[11px] text-text-muted uppercase">Sessions (7d)</div>
+      <div class="text-lg font-semibold text-accent mt-1">{usage.sessions ?? '—'}</div>
+    </div>
+    <div class="bg-bg-card border border-border rounded-lg p-4">
+      <div class="text-[11px] text-text-muted uppercase">Errors (7d)</div>
+      <div class="text-lg font-semibold {(status.health?.errors_7d || 0) > 0 ? 'text-error' : 'text-success'} mt-1">{status.health?.errors_7d ?? '—'}</div>
     </div>
   </div>
+
+  <!-- Performance -->
+  {#if perf.response_total_ms}
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {#each [
+        ['Avg Response', perf.response_total_ms, 'ms'],
+        ['STT Record', perf.stt_record_ms, 'ms'],
+        ['STT Transcribe', perf.stt_transcribe_ms, 'ms'],
+        ['TTS Generate', perf.tts_generate_ms, 'ms'],
+        ['AI API Call', perf.ai_api_call_ms, 'ms'],
+        ['Audio Play', perf.audio_play_ms, 'ms'],
+      ] as [label, value, unit]}
+        {#if value != null}
+          <div class="bg-bg-card border border-border rounded-lg p-3">
+            <div class="text-[10px] text-text-muted uppercase">{label}</div>
+            <div class="text-sm font-mono text-accent mt-1">{Math.round(value)}{unit}</div>
+          </div>
+        {/if}
+      {/each}
+    </div>
+  {/if}
+
+  <!-- Alerts -->
+  {#if alerts.length > 0}
+    <div>
+      <h3 class="text-xs text-text-muted uppercase tracking-wider mb-2">Watchdog Alerts</h3>
+      <div class="space-y-2">
+        {#each alerts as alert}
+          <div class="bg-bg-card border rounded-lg p-3 flex items-start gap-3
+                      {alert.severity === 'error' ? 'border-error' : 'border-warning'}">
+            <span class="text-sm {alert.severity === 'error' ? 'text-error' : 'text-warning'}">
+              {alert.severity === 'error' ? '●' : '▲'}
+            </span>
+            <div>
+              <div class="text-sm text-text-default">{alert.message}</div>
+              <div class="text-xs text-text-muted mt-1">{alert.check}</div>
+            </div>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   {#if $timers.length > 0}
     <div>
