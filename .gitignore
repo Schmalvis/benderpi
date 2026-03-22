@@ -47,4 +47,3 @@ timers.json
 
 # Svelte web app
 web/node_modules/
-web/dist/
