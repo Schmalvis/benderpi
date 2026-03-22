@@ -3,8 +3,10 @@
   import { session } from './lib/stores/session.js';
   import { getServiceStatus } from './lib/api.js';
   import Login from './pages/Login.svelte';
+  import Sidebar from './lib/components/Sidebar.svelte';
 
   let checking = true;
+  let currentPage = 'dashboard';
 
   onMount(async () => {
     const { pin } = $session;
@@ -28,7 +30,13 @@
 {:else if !$session.authenticated}
   <Login />
 {:else}
-  <div class="min-h-screen bg-bg text-text-default font-sans">
-    <p class="p-4 text-accent">Authenticated! Shell coming next.</p>
+  <div class="min-h-screen flex bg-bg text-text-default font-sans">
+    <Sidebar bind:currentPage />
+    <main class="flex-1 p-6 overflow-y-auto">
+      <div class="text-[11px] text-text-muted uppercase tracking-wider mb-4">
+        {currentPage}
+      </div>
+      <p class="text-text-muted">Page content coming next...</p>
+    </main>
   </div>
 {/if}
