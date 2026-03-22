@@ -30,6 +30,8 @@ _CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
 _WATCHDOG_CONFIG_PATH = os.path.join(_BASE_DIR, "watchdog_config.json")
 _VENV_PYTHON = os.path.join(_BASE_DIR, "venv", "bin", "python")
 _PREBUILD_SCRIPT = os.path.join(_BASE_DIR, "scripts", "prebuild_responses.py")
+_CLIP_CATEGORIES_PATH = os.path.join(_BASE_DIR, "speech", "clip_categories.json")
+_CLIP_LABELS_PATH = os.path.join(_BASE_DIR, "speech", "clip_labels.json")
 _IS_LINUX = os.name != "nt"
 
 app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None)
@@ -65,9 +67,30 @@ def _normalise_entry(entry):
     return str(entry), None
 
 
+def _load_clip_categories() -> dict[str, str]:
+    """Load clip_categories.json → {filename: category} lookup."""
+    try:
+        with open(_CLIP_CATEGORIES_PATH, "r") as f:
+            data = json.load(f)
+        return {fname: cat for cat, fnames in data.items() for fname in fnames}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_clip_labels() -> dict[str, str]:
+    """Load clip_labels.json → {filename: label} lookup."""
+    try:
+        with open(_CLIP_LABELS_PATH, "r") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def _get_clips() -> list[dict]:
     """Discover clips from WAV dir + index.json, merge with favourites."""
     favs = set(_load_favourites())
+    clip_cats = _load_clip_categories()
+    clip_labels = _load_clip_labels()
     clips = {}
 
     # 1. Scan speech/wav/ for raw WAV files
@@ -79,8 +102,8 @@ def _get_clips() -> list[dict]:
                 clips[rel] = {
                     "path": rel,
                     "name": name,
-                    "label": name,
-                    "category": "clips",
+                    "label": clip_labels.get(fname, name),
+                    "category": clip_cats.get(fname, "clips"),
                     "favourite": rel in favs,
                 }
 

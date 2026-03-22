@@ -139,3 +139,5 @@ sudo systemctl start ollama
 - Hailo Whisper-Small HEF when it stabilises on Hailo-10H (currently broken upstream)
 - Camera/AI vision via Hailo NPU (future hardware addition)
 - Motorised elements for physical Bender model
+- **UI framework migration** — move from vanilla JS to Svelte + Tailwind. Introduces build step (Vite) but gives component model, reactivity, and tiny bundle size (~3-5 KB runtime). Current 191 KB vanilla JS becoming unwieldy. Separate design spec needed.
+- **Clip categorisation** — raw WAVs in speech/wav/ all land in one "clips" bucket. Categorise under headings (greetings, insults, sound effects, etc.). Data task: label clips in index.json, frontend already groups by category.
