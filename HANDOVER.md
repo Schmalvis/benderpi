@@ -1,22 +1,32 @@
 # BenderPi Handover Context
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 
 ---
 
 ## Post-Deploy Steps (run on Pi after git pull)
 
-### New dependencies
+### Install/update dependencies
 ```bash
 cd /home/pi/bender
-venv/bin/pip install fastapi==0.115.0 uvicorn==0.32.0
+venv/bin/pip install -r requirements.txt
 ```
 
-### Generate thinking sounds
+### Generate pre-built response clips
+Run this after any changes to response text or on a fresh deploy:
 ```bash
 venv/bin/python scripts/prebuild_responses.py
 ```
 
-### Set web UI PIN
+### Restart conversation service
+```bash
+sudo systemctl restart bender-converse
+```
+
+---
+
+## One-Time Setup (already done on this Pi — notes for re-provisioning)
+
+### Web UI PIN + port
 ```bash
 nano /home/pi/bender/.env
 # Add: BENDER_WEB_PIN=<your-pin>  BENDER_WEB_PORT=8080
@@ -30,7 +40,7 @@ sudo systemctl enable bender-web
 sudo systemctl start bender-web
 ```
 
-### Set up sudoers
+### Set up sudoers for web UI
 ```bash
 sudo tee /etc/sudoers.d/bender-web << 'EOF'
 pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bender-converse
@@ -42,15 +52,17 @@ EOF
 sudo chmod 440 /etc/sudoers.d/bender-web
 ```
 
-### Restart conversation service
+### Install Ollama (local LLM)
+Already installed. To restore on a fresh Pi:
 ```bash
-sudo systemctl restart bender-converse
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5:1.5b
+sudo systemctl enable ollama
+sudo systemctl start ollama
+# Verify: ollama list should show qwen2.5:1.5b
 ```
 
-### Wire speech_rate into TTS
-Edit `scripts/tts_generate.py` — add `"--length-scale", str(cfg.speech_rate)` to the Piper command. Restart service.
-
-### Hailo AI HAT+ 2 setup (already done — notes for re-provisioning)
+### Hailo AI HAT+ 2 setup
 The Hailo-10H is installed and `hailo-h10-all` v5.1.1 is present. The Whisper-Base HEF lives at
 `/usr/local/hailo/resources/models/hailo10h/Whisper-Base.hef`. To restore it on a fresh Pi:
 ```bash
@@ -68,21 +80,10 @@ cd ~/hailo-apps && /home/pi/bender/venv/bin/pip install -e . --quiet
 sudo systemctl restart bender-converse
 ```
 
-### Install Ollama (for local LLM)
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen2.5:1.5b
-sudo systemctl enable ollama
-sudo systemctl start ollama
-# Verify: curl http://localhost:11434/api/tags should list the model
-```
-
 ---
 
 ## Current Priorities
-- Install Ollama on Pi and pull qwen2.5:1.5b model (see Post-Deploy Steps below)
 - Test local LLM: verify hybrid routing, quality check escalation, UI config controls
-- Run `venv/bin/python scripts/prebuild_responses.py` on Pi to generate timer alert + thinking clips
 - Test timers: "Hey Bender, set a timer for pasta for 5 minutes"
 - Test UI redesign on phone (mobile FAB/bottom sheet)
 - Tune scan-line opacity and glow intensity on real device
@@ -106,9 +107,9 @@ sudo systemctl start ollama
 - End-session via file-based IPC (.end_session / .session_active.json)
 - LED listening/talking colours: blue when listening, white when talking (configurable)
 - Silent wake word mode: LED-only notification, no audio greeting
-- Speech rate via config (Piper --length-scale)
+- Speech rate via config (Piper --length-scale), wired into tts_generate.py
 - **Raspberry Pi AI HAT+ 2 (Hailo-10H, 40 TOPS) installed 2026-03-18** — STT now runs Whisper-Base on NPU via `hailo_platform.genai.Speech2Text`. CPU faster-whisper fallback retained in `stt.py` if HEF unavailable. Metric label changed from `tiny.en` to `whisper-base-hailo`.
-- **Local LLM via Ollama (2026-03-21):** Qwen2.5-1.5B on CPU, hybrid routing with quality-check escalation to Claude
+- **Local LLM via Ollama (2026-03-21, deployed 2026-03-22):** Qwen2.5-1.5B on CPU, hybrid routing with quality-check escalation to Claude
   - STT stays on Hailo NPU, LLM runs on CPU via Ollama (model switching penalty makes NPU impractical for both)
   - Scenario-based routing: conversation/knowledge/creative, each configurable via web UI
   - Local-first: try local LLM, escalate to Claude on quality failure (hedge phrases, too short, timeout)
@@ -120,10 +121,7 @@ sudo systemctl start ollama
 - Piper --json-input mode needs verification on Pi (using warm-up fallback)
 - Intent false positives reduced but not eliminated
 - Thinking sound timing: plays after get_response() returns, not during generation
-- speech_rate config exists but not yet wired into tts_generate.py
-- Timer alert clips need pre-generating on Pi via prebuild_responses.py
 - Local LLM quality depends on Qwen2.5-1.5B — expect escalation for factual/knowledge queries
-- Ollama must be running as a separate service — check with `systemctl status ollama`
 - Log retention: conversation logs on SD card accumulate routing data for future classifier training — back up periodically
 
 ## Future Considerations
