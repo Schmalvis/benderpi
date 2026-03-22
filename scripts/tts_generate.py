@@ -151,12 +151,14 @@ def speak(text: str) -> str:
     if len(sentences) <= 1:
         return _speak_single(text)
 
-    # Generate each sentence separately and concatenate
-    import wave, struct
+    # Generate sentences in parallel — each is an independent Piper subprocess
+    import wave
+    from concurrent.futures import ThreadPoolExecutor
     parts = []
     try:
-        for sentence in sentences:
-            parts.append(_speak_single(sentence))
+        with ThreadPoolExecutor(max_workers=min(len(sentences), 3)) as pool:
+            futures = [pool.submit(_speak_single, s) for s in sentences]
+            parts = [f.result() for f in futures]  # preserves order, total time = max(sentence times)
 
         # Read all WAVs and concatenate frames
         out_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
