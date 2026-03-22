@@ -12,16 +12,13 @@ cd "$REPO_DIR"
 # Fetch without merging first to check if there's anything new
 git fetch origin main --quiet
 
-LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/main)
-
-if [ "$LOCAL" = "$REMOTE" ]; then
-    echo "Already up to date ($LOCAL)"
+BEHIND=$(git rev-list HEAD..origin/main --count)
+if [ "$BEHIND" = "0" ]; then
+    echo "Nothing to pull (up to date or local is ahead of remote)"
     exit 0
 fi
 
-echo "New commits available: $LOCAL -> $REMOTE"
-echo "Changes:"
+echo "$BEHIND new commit(s) available on remote:"
 git log --oneline HEAD..origin/main
 
 # Pull
