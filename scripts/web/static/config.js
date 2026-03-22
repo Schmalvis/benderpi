@@ -62,6 +62,34 @@
       ]
     },
     {
+      title: "AI Backend",
+      fields: [
+        { key: "ai_backend", label: "AI Mode", type: "select",
+          options: ["hybrid", "local_only", "cloud_only"],
+          help: "hybrid = local LLM first, escalate to cloud. cloud_only = Claude API only." },
+        { key: "local_llm_model", label: "Local Model", type: "string",
+          help: "Ollama model name (e.g. qwen2.5:1.5b)" },
+        { key: "local_llm_url", label: "Local LLM URL", type: "string",
+          help: "Ollama API endpoint (e.g. http://localhost:11434)" },
+        { key: "local_llm_timeout", label: "Local Timeout (s)", type: "int", step: 1, min: 1, max: 15,
+          help: "Max seconds to wait for local LLM response before escalating" }
+      ]
+    },
+    {
+      title: "AI Routing (per scenario)",
+      fields: [
+        { key: "ai_routing.conversation", label: "Conversation", type: "select",
+          options: ["local_first", "local_only", "cloud_only"],
+          help: "Banter, opinions, casual chat" },
+        { key: "ai_routing.knowledge", label: "Knowledge", type: "select",
+          options: ["local_first", "local_only", "cloud_only"],
+          help: "Factual questions, who/what/when/where" },
+        { key: "ai_routing.creative", label: "Creative", type: "select",
+          options: ["local_first", "local_only", "cloud_only"],
+          help: "Jokes, stories, insults, songs" }
+      ]
+    },
+    {
       title: "Conversation",
       fields: [
         { key: "simple_intent_max_words", label: "Simple Intent Max Words", type: "int", step: 1, min: 1, max: 20 }
@@ -422,6 +450,28 @@
       }
     }
 
+    function getNestedValue(obj, dotKey) {
+      var parts = dotKey.split(".");
+      var val = obj;
+      for (var i = 0; i < parts.length; i++) {
+        if (val == null || typeof val !== "object") return undefined;
+        val = val[parts[i]];
+      }
+      return val;
+    }
+
+    function setNestedValue(obj, dotKey, value) {
+      var parts = dotKey.split(".");
+      var target = obj;
+      for (var i = 0; i < parts.length - 1; i++) {
+        if (target[parts[i]] == null || typeof target[parts[i]] !== "object") {
+          target[parts[i]] = {};
+        }
+        target = target[parts[i]];
+      }
+      target[parts[parts.length - 1]] = value;
+    }
+
     function renderForm(config) {
       formBody.textContent = "";
       dependentFields = {};
@@ -435,7 +485,10 @@
 
         var fieldsGrid = el("div", { className: "cfg-fields-grid" });
         group.fields.forEach(function (fieldDef) {
-          if (!(fieldDef.key in config)) return;
+          var fieldValue = fieldDef.key.indexOf(".") >= 0
+            ? getNestedValue(config, fieldDef.key)
+            : config[fieldDef.key];
+          if (fieldValue === undefined) return;
           var fieldWrap = el("div", { className: "cfg-field" });
           var lbl = el("label", { textContent: fieldDef.label });
           fieldWrap.appendChild(lbl);
@@ -451,8 +504,12 @@
             fieldWrap.appendChild(depNote);
           }
 
-          var input = buildFieldInput(fieldDef, config[fieldDef.key], function (val) {
-            currentConfig[fieldDef.key] = val;
+          var input = buildFieldInput(fieldDef, fieldValue, function (val) {
+            if (fieldDef.key.indexOf(".") >= 0) {
+              setNestedValue(currentConfig, fieldDef.key, val);
+            } else {
+              currentConfig[fieldDef.key] = val;
+            }
             updateChangesInfo();
             updateDependentFields();
           });

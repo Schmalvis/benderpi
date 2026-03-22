@@ -55,5 +55,14 @@
     "loo": "bathroom",
     "toilet": "bathroom",
     "study": "office"
+  },
+  "ai_backend": "hybrid",
+  "local_llm_model": "qwen2.5:1.5b",
+  "local_llm_url": "http://localhost:11434",
+  "local_llm_timeout": 6,
+  "ai_routing": {
+    "conversation": "local_first",
+    "knowledge": "local_first",
+    "creative": "local_first"
   }
 }

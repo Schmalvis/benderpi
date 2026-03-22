@@ -50,6 +50,13 @@ class Config:
     ai_max_tokens: int = 150
     ai_max_history: int = 6
 
+    # Local LLM
+    ai_backend: str = "hybrid"  # "hybrid" | "local_only" | "cloud_only"
+    local_llm_model: str = "qwen2.5:1.5b"
+    local_llm_url: str = "http://localhost:11434"
+    local_llm_timeout: int = 6
+    ai_routing: dict = None  # set in __init__ to avoid mutable default
+
     # Conversation
     silence_timeout: float = 8.0
     thinking_sound: bool = True
@@ -99,6 +106,14 @@ class Config:
                     if key in ("led_colour", "led_listening_colour", "led_talking_colour") and isinstance(value, list):
                         value = tuple(value)
                     setattr(self, key, value)
+
+        # Set mutable defaults after JSON overrides have been applied.
+        if self.ai_routing is None:
+            self.ai_routing = {
+                "conversation": "local_first",
+                "knowledge": "local_first",
+                "creative": "local_first",
+            }
 
         # IPC paths
         self.session_file: str = os.path.join(_BASE_DIR, ".session_active.json")

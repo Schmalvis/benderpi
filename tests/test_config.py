@@ -81,3 +81,35 @@ def test_dismissal_ends_session_default():
 def test_ha_room_synonyms_default():
     from config import cfg
     assert isinstance(cfg.ha_room_synonyms, dict)
+
+
+class TestLocalLLMConfig:
+    def test_defaults(self):
+        from config import Config
+        c = Config(config_path="/dev/null", env_path="/dev/null")
+        assert c.ai_backend == "hybrid"
+        assert c.local_llm_model == "qwen2.5:1.5b"
+        assert c.local_llm_url == "http://localhost:11434"
+        assert c.local_llm_timeout == 6
+        assert c.ai_routing == {
+            "conversation": "local_first",
+            "knowledge": "local_first",
+            "creative": "local_first",
+        }
+
+    def test_config_override(self, tmp_path):
+        import json
+        from config import Config
+        cfg_file = tmp_path / "cfg.json"
+        cfg_file.write_text(json.dumps({
+            "ai_backend": "cloud_only",
+            "local_llm_timeout": 10,
+            "ai_routing": {"conversation": "cloud_only",
+                           "knowledge": "cloud_only",
+                           "creative": "local_only"},
+        }))
+        c = Config(config_path=str(cfg_file), env_path="/dev/null")
+        assert c.ai_backend == "cloud_only"
+        assert c.local_llm_timeout == 10
+        assert c.ai_routing["conversation"] == "cloud_only"
+        assert c.ai_routing["creative"] == "local_only"

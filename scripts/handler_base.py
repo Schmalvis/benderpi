@@ -23,6 +23,7 @@ class Response:
     is_temp: bool = False           # caller must os.unlink() after playback
     needs_thinking: bool = False    # True if response generated on-the-fly
     model: str | None = None        # AI model name if ai_fallback
+    routing_log: dict | None = None     # AI routing decision log (for conversation_log)
 
 
 class Handler:

@@ -101,3 +101,16 @@ class TestLoadClipsFromIndexObjects:
         index_path.write_text(json.dumps(index))
         clips = load_clips_from_index("thinking", str(index_path), str(tmp_path))
         assert len(clips) == 2
+
+
+class TestResponseRoutingLog:
+    def test_routing_log_default_none(self):
+        r = Response(text="hi", wav_path="/tmp/a.wav", method="real_clip", intent="GREETING")
+        assert r.routing_log is None
+
+    def test_routing_log_set(self):
+        log = {"scenario": "conversation", "routing_rule": "local_first"}
+        r = Response(text="hi", wav_path="/tmp/a.wav", method="ai_local",
+                     intent="UNKNOWN", routing_log=log)
+        assert r.routing_log == log
+        assert r.routing_log["scenario"] == "conversation"
