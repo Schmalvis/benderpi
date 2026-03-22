@@ -35,9 +35,9 @@
 {:else if !$session.authenticated}
   <Login />
 {:else}
-  <div class="min-h-screen flex bg-bg text-text-default font-sans">
+  <div class="min-h-screen flex flex-col md:flex-row bg-bg text-text-default font-sans">
     <Sidebar bind:currentPage />
-    <main class="flex-1 p-6 overflow-y-auto">
+    <main class="flex-1 p-4 md:p-6 overflow-y-auto pb-20 md:pb-6">
       <div class="text-[11px] text-text-muted uppercase tracking-wider mb-4">
         {currentPage}
       </div>
