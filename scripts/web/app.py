@@ -6,11 +6,11 @@ import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from web.auth import require_pin
+from web.auth import require_pin, verify_pin
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import cfg
@@ -780,6 +780,48 @@ async def remote_ask(audio: UploadFile = File(...)):
             except OSError:
                 pass
 
+
+
+# ── Puppet Mic Stream ──────────────────────────────────────────────────────────
+
+@app.websocket("/ws/puppet/mic")
+async def puppet_mic_ws(websocket: WebSocket):
+    """Stream ambient mic audio to operator (PCM 16 kHz mono S16_LE).
+
+    PIN is passed as a query param because WebSocket handshakes cannot carry
+    custom headers from browser clients.
+    """
+    pin = websocket.query_params.get("pin", "")
+    if not verify_pin(pin):
+        await websocket.close(code=4001)
+        return
+
+    await websocket.accept()
+
+    CHUNK = 4096  # ~128 ms at 16 kHz S16_LE mono
+
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "arecord", "-D", "default", "-f", "S16_LE",
+            "-r", "16000", "-c", "1", "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        while True:
+            chunk = await asyncio.wait_for(proc.stdout.read(CHUNK), timeout=5.0)
+            if not chunk:
+                break
+            await websocket.send_bytes(chunk)
+    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
+        pass
+    finally:
+        if proc and proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                proc.kill()
 
 # ── Static files (must be last — catches all unmatched routes) ──
 

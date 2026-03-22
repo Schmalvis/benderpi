@@ -2,8 +2,10 @@
   import { onMount, onDestroy } from 'svelte';
   import { health } from '../lib/stores/health.js';
   import { timers, startTimerPolling } from '../lib/stores/timers.js';
-  import { getStatus, getConversationDates, getConversationLog } from '../lib/api.js';
+  import { getStatus, getConversationDates, getConversationLog,
+           endSession, restartService, refreshBriefings } from '../lib/api.js';
   import { config, loadConfig } from '../lib/stores/config.js';
+  import { toast } from '../lib/stores/toast.js';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import TimerCard from '../lib/components/TimerCard.svelte';
 
@@ -13,6 +15,9 @@
   $: alerts = status.alerts || [];
   let recentTurns = [];
   let stopPolling;
+
+  // Per-action busy state
+  let busy = { endSession: false, restart: false, briefings: false };
 
   onMount(async () => {
     stopPolling = startTimerPolling();
@@ -36,6 +41,43 @@
       }
     } catch { /* ignore */ }
   }
+
+  async function handleEndSession() {
+    busy.endSession = true;
+    try {
+      const r = await endSession();
+      toast.push(r.status === 'no_session' ? 'No active session' : 'Session ended', 'success');
+    } catch (e) {
+      toast.push('Failed to end session', 'error');
+    }
+    busy.endSession = false;
+  }
+
+  async function handleRestart() {
+    busy.restart = true;
+    try {
+      await restartService();
+      toast.push('Service restarting…', 'success');
+    } catch (e) {
+      toast.push('Restart failed', 'error');
+    }
+    busy.restart = false;
+  }
+
+  async function handleRefreshBriefings() {
+    busy.briefings = true;
+    try {
+      await refreshBriefings();
+      toast.push('Briefings refreshed', 'success');
+    } catch (e) {
+      toast.push('Refresh failed', 'error');
+    }
+    busy.briefings = false;
+  }
+
+  const btnBase = 'px-4 py-2 rounded text-sm font-medium transition-opacity disabled:opacity-40';
+  const btnPrimary = btnBase + ' bg-accent text-bg hover:opacity-90';
+  const btnSecondary = btnBase + ' bg-bg-input border border-border text-text-default hover:border-accent';
 </script>
 
 <div class="space-y-6">
@@ -65,6 +107,22 @@
     <div class="bg-bg-card border border-border rounded-lg p-4">
       <div class="text-[11px] text-text-muted uppercase">Errors (7d)</div>
       <div class="text-lg font-semibold {(status.health?.errors_7d || 0) > 0 ? 'text-error' : 'text-success'} mt-1">{status.health?.errors_7d ?? '—'}</div>
+    </div>
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="bg-bg-card border border-border rounded-lg p-4">
+    <h3 class="text-[11px] text-text-muted uppercase tracking-wider mb-3">Quick Actions</h3>
+    <div class="flex flex-wrap gap-2">
+      <button class={btnPrimary} disabled={busy.endSession} on:click={handleEndSession}>
+        {busy.endSession ? 'Ending…' : 'End Session'}
+      </button>
+      <button class={btnSecondary} disabled={busy.restart} on:click={handleRestart}>
+        {busy.restart ? 'Restarting…' : 'Restart Service'}
+      </button>
+      <button class={btnSecondary} disabled={busy.briefings} on:click={handleRefreshBriefings}>
+        {busy.briefings ? 'Refreshing…' : 'Refresh Briefings'}
+      </button>
     </div>
   </div>
 

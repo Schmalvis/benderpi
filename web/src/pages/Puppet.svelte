@@ -1,6 +1,9 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import { getClips, speak } from '../lib/api.js';
+  import { session } from '../lib/stores/session.js';
+  import { toast } from '../lib/stores/toast.js';
   import ClipButton from '../lib/components/ClipButton.svelte';
 
   let clips = [];
@@ -8,10 +11,17 @@
   let speaking = false;
   let refreshKey = 0;
 
+  // Mic streaming state
+  let micActive = false;
+  let micWs = null;
+  let audioCtx = null;
+  let nextPlayTime = 0;
+
   $: grouped = groupByCategory(clips);
   $: favourites = clips.filter(c => c.favourite);
 
   onMount(loadClips);
+  onDestroy(stopMic);
 
   async function loadClips() {
     try {
@@ -36,7 +46,10 @@
     try {
       await speak(ttsText);
       ttsText = '';
-    } catch { /* ignore */ }
+      toast.push('Speaking…', 'success');
+    } catch {
+      toast.push('Speak failed', 'error');
+    }
     speaking = false;
   }
 
@@ -51,10 +64,88 @@
     refreshKey++;
     clips = [...clips];
   }
+
+  // ── Mic streaming ──────────────────────────────────────────────
+
+  function scheduleChunk(arrayBuffer) {
+    if (!audioCtx) return;
+    const SAMPLE_RATE = 16000;
+    const view = new Int16Array(arrayBuffer);
+    const audioBuffer = audioCtx.createBuffer(1, view.length, SAMPLE_RATE);
+    const channel = audioBuffer.getChannelData(0);
+    for (let i = 0; i < view.length; i++) {
+      channel[i] = view[i] / 32768.0;
+    }
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+    const startAt = Math.max(audioCtx.currentTime + 0.1, nextPlayTime);
+    source.start(startAt);
+    nextPlayTime = startAt + audioBuffer.duration;
+  }
+
+  function startMic() {
+    const { pin } = get(session);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/puppet/mic?pin=${encodeURIComponent(pin)}`);
+    ws.binaryType = 'arraybuffer';
+
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+    nextPlayTime = 0;
+
+    ws.onopen = () => {
+      micActive = true;
+      toast.push('Hearing room…', 'success');
+    };
+
+    ws.onmessage = (e) => {
+      if (e.data instanceof ArrayBuffer) {
+        scheduleChunk(e.data);
+      }
+    };
+
+    ws.onerror = () => {
+      toast.push('Mic stream error', 'error');
+      cleanupMic();
+    };
+
+    ws.onclose = () => {
+      cleanupMic();
+    };
+
+    micWs = ws;
+  }
+
+  function stopMic() {
+    if (micWs) {
+      micWs.onclose = null;
+      micWs.close();
+      micWs = null;
+    }
+    cleanupMic();
+  }
+
+  function cleanupMic() {
+    micActive = false;
+    nextPlayTime = 0;
+    if (audioCtx) {
+      audioCtx.close().catch(() => {});
+      audioCtx = null;
+    }
+  }
+
+  function toggleMic() {
+    if (micActive) {
+      stopMic();
+    } else {
+      startMic();
+    }
+  }
 </script>
 
 <div class="space-y-6">
-  <div class="bg-bg-card border border-border rounded-lg p-4">
+  <!-- TTS input + Hear Room -->
+  <div class="bg-bg-card border border-border rounded-lg p-4 space-y-3">
     <div class="flex gap-3">
       <input
         type="text"
@@ -73,6 +164,23 @@
       >
         {speaking ? 'Speaking...' : 'Speak'}
       </button>
+    </div>
+
+    <!-- Ambient mic feed -->
+    <div class="flex items-center gap-3 pt-1 border-t border-border">
+      <button
+        on:click={toggleMic}
+        class="flex items-center gap-2 px-4 py-1.5 rounded text-sm font-medium transition-all
+               {micActive
+                 ? 'bg-error text-white animate-pulse'
+                 : 'bg-bg-input border border-border text-text-muted hover:border-accent hover:text-text-default'}"
+      >
+        <span>{micActive ? '●' : '○'}</span>
+        {micActive ? 'Stop Hearing Room' : 'Hear Room'}
+      </button>
+      {#if micActive}
+        <span class="text-xs text-text-muted">Streaming ambient audio from Bender's mic</span>
+      {/if}
     </div>
   </div>
 

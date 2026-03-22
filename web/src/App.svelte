@@ -9,6 +9,7 @@
   import Config from './pages/Config.svelte';
   import Remote from './pages/Remote.svelte';
   import Logs from './pages/Logs.svelte';
+  import Toast from './lib/components/Toast.svelte';
 
   let checking = true;
   let currentPage = 'dashboard';
@@ -56,4 +57,5 @@
       {/if}
     </main>
   </div>
+  <Toast />
 {/if}
