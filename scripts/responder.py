@@ -116,7 +116,14 @@ class Responder:
 
     def _respond_ai(self, text: str, ai_cloud, intent_name: str = "UNKNOWN",
                     sub_key: str | None = None, ai_local=None) -> Response:
-        """AI fallback with local-first routing."""
+        """AI fallback with configurable routing.
+
+        Routing modes:
+          cloud_first  — try cloud, fall back to Hailo on failure (default)
+          cloud_only   — cloud always, no local fallback
+          local_first  — try Hailo, escalate to cloud on quality fail
+          local_only   — Hailo always, use response regardless of quality
+        """
         # Determine effective routing — ai_backend overrides per-scenario rules
         scenario = self._classify_scenario(text)
         if cfg.ai_backend == "cloud_only" or ai_local is None:
@@ -124,16 +131,29 @@ class Responder:
         elif cfg.ai_backend == "local_only":
             effective_routing = "local_only"
         else:
-            effective_routing = cfg.ai_routing.get(scenario, "local_first")
+            effective_routing = cfg.ai_routing.get(scenario, "cloud_first")
 
         routing_log = {"scenario": scenario, "routing_rule": effective_routing}
 
+        # Cloud-first path — try cloud, fall back to Hailo on failure
+        if effective_routing == "cloud_first":
+            try:
+                return self._respond_cloud(text, ai_cloud, intent_name, sub_key,
+                                           routing_log)
+            except Exception as e:
+                log.warning("Cloud LLM failed (%s), falling back to Hailo", e)
+                routing_log.update({"cloud_failed": True, "cloud_error": str(e)})
+                if ai_local is None:
+                    return self._error_response(text, intent_name, sub_key,
+                                                "Cloud unavailable, no local fallback")
+                # Fall through to local path below
+
         # Cloud-only path
-        if effective_routing == "cloud_only":
+        elif effective_routing == "cloud_only":
             return self._respond_cloud(text, ai_cloud, intent_name, sub_key,
                                        routing_log)
 
-        # Local-first or local-only path
+        # Local-first or local-only path (also reached as cloud_first fallback)
         from ai_local import QualityCheckFailed
         local_response_text = None
         start = time.monotonic()

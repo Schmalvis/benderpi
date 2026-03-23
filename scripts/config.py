@@ -51,7 +51,7 @@ class Config:
     ai_max_history: int = 6
 
     # Local LLM
-    ai_backend: str = "hybrid"  # "hybrid" | "local_only" | "cloud_only"
+    ai_backend: str = "hybrid"  # "hybrid" | "local_only" | "cloud_only" (hybrid uses ai_routing per scenario)
     local_llm_model: str = "qwen2.5:1.5b"
     local_llm_url: str = "http://localhost:11434"
     local_llm_timeout: int = 3
@@ -112,9 +112,9 @@ class Config:
         # Set mutable defaults after JSON overrides have been applied.
         if self.ai_routing is None:
             self.ai_routing = {
-                "conversation": "local_first",
-                "knowledge": "local_first",
-                "creative": "local_first",
+                "conversation": "cloud_first",
+                "knowledge": "cloud_first",
+                "creative": "cloud_first",
             }
 
         # IPC paths
