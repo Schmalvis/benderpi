@@ -3,8 +3,8 @@
 Speech-to-text for Bender.
 
 Backends (in priority order):
-  1. faster-whisper CPU (base.en) — primary
-  2. Hailo Speech2Text (Whisper-Base on Hailo-10H NPU) — fallback if CPU unavailable
+  1. Hailo Speech2Text (Whisper-Small on Hailo-10H NPU) — primary
+  2. faster-whisper CPU (base.en) — fallback if Hailo unavailable
 
 Usage (standalone test):
     python3 scripts/stt.py
@@ -38,8 +38,8 @@ FRAME_MS       = 30       # VAD frame size in ms (10/20/30 supported)
 FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
 AUDIO_DEVICE   = None     # None = system default
 
-# Hailo NPU backend (Whisper-Base HEF)
-WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Base.hef"
+# Hailo NPU backend (Whisper-Small HEF — primary)
+WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Small.hef"
 
 WHISPER_HALLUCINATIONS = {
     "thank you", "thanks for watching", "subscribe",
@@ -59,23 +59,13 @@ _cpu_model = None   # faster-whisper fallback
 
 
 def _load_model():
-    """Initialise faster-whisper CPU backend (primary), falling back to Hailo on failure."""
+    """Initialise Hailo Whisper-Small as primary STT, falling back to CPU on failure."""
     global _backend, _vdevice, _s2t, _cpu_model
 
     if _backend is not None:
         return
 
-    # CPU primary
-    try:
-        from faster_whisper import WhisperModel
-        _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
-        _backend = "cpu"
-        log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
-        return
-    except Exception as e:
-        log.warning("faster-whisper init failed (%s) — falling back to Hailo", e)
-
-    # Hailo fallback
+    # Hailo primary
     if os.path.exists(WHISPER_HEF):
         try:
             from hailo_platform import VDevice
@@ -87,10 +77,10 @@ def _load_model():
             _s2t = Speech2Text(_vdevice, WHISPER_HEF)
             _s2t.__enter__()
             _backend = "hailo"
-            log.info("STT backend: Hailo Speech2Text (Whisper-Base on Hailo-10H)")
+            log.info("STT backend: Hailo Speech2Text (Whisper-Small on Hailo-10H)")
             return
         except Exception as e:
-            log.warning("Hailo STT init failed (%s)", e)
+            log.warning("Hailo STT init failed (%s) — falling back to CPU", e)
             if _vdevice is not None:
                 try:
                     _vdevice.__exit__(None, None, None)
@@ -99,11 +89,21 @@ def _load_model():
                 _vdevice = None
             _s2t = None
 
+    # CPU fallback
+    try:
+        from faster_whisper import WhisperModel
+        _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
+        _backend = "cpu"
+        log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
+        return
+    except Exception as e:
+        log.warning("faster-whisper init failed (%s)", e)
+
     raise RuntimeError("No STT backend available")
 
 
 def _active_model_name() -> str:
-    return "whisper-base-hailo" if _backend == "hailo" else cfg.whisper_model
+    return "whisper-small-hailo" if _backend == "hailo" else cfg.whisper_model
 
 
 # ---------------------------------------------------------------------------
