@@ -115,6 +115,12 @@ class _HailoLLMResponder:
 
     def clear_history(self):
         self.history = []
+        if self._llm is not None:
+            try:
+                self._llm.clear_context()
+                log.info("Hailo LLM context cache cleared")
+            except Exception as e:
+                log.warning("Failed to clear Hailo context cache: %s", e)
 
 
 class _OllamaResponder:
@@ -169,9 +175,15 @@ class LocalAIResponder:
         self._ollama = _OllamaResponder()
 
     def generate(self, user_text: str) -> str:
-        """Try Hailo first; fall back to Ollama on unavailability or error."""
+        """Try Hailo first; fall back to Ollama on hardware unavailability only.
+
+        QualityCheckFailed is NOT caught here — it propagates up so the
+        responder can escalate directly to cloud without a 3s Ollama timeout.
+        """
         try:
             return self._hailo.generate(user_text)
+        except QualityCheckFailed:
+            raise  # let responder handle cloud escalation
         except RuntimeError:
             log.info("Hailo LLM unavailable — falling back to Ollama")
             return self._ollama.generate(user_text)

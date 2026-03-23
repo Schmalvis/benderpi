@@ -229,6 +229,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         last_heard = time.time()
         log.info("Heard: %r", text)
+        _turn_start = time.monotonic()
 
         response = responder.get_response(text, ai, ai_local=ai_local)
 
@@ -260,6 +261,9 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         # Play response
         audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+        metrics._write({"type": "timer", "name": "turn_total",
+                        "duration_ms": round((time.monotonic() - _turn_start) * 1000, 1),
+                        "intent": response.intent, "method": response.method})
 
         # Check if playback was aborted (UI stop button pressed during response)
         if audio.was_aborted() or os.path.exists(cfg.end_session_file):
