@@ -12,10 +12,14 @@ Usage:
     # wav_path is a temp file — caller is responsible for playing and cleanup
 """
 
+import json
 import os
+import queue
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import wave
 import numpy as np
 
@@ -26,8 +30,23 @@ log = get_logger("tts")
 
 from config import cfg
 
-PIPER_BIN  = os.path.join(os.path.dirname(__file__), "..", "piper", "piper")
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "bender.onnx")
+def _find_repo_root() -> str:
+    """Return the main (common) git repo root, works from both worktrees and main checkout."""
+    try:
+        git_common = subprocess.check_output(
+            ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--git-common-dir"],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        # git-common-dir is relative to cwd or absolute; resolve against scripts dir
+        base = os.path.dirname(os.path.abspath(__file__))
+        common_abs = os.path.normpath(os.path.join(base, git_common))
+        return os.path.abspath(os.path.join(common_abs, ".."))
+    except Exception:
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+_REPO_ROOT = _find_repo_root()
+PIPER_BIN  = os.path.join(_REPO_ROOT, "piper", "piper")
+MODEL_PATH = os.path.join(_REPO_ROOT, "models", "bender.onnx")
 
 TARGET_RATE  = 44100   # match real Bender clips
 SILENCE_PRE  = 0.0    # audio.py adds pre-silence for all clips
@@ -76,50 +95,144 @@ def _resample_and_pad(in_path: str, out_path: str):
         wf.writeframes(samples.tobytes())
 
 
+# ---------------------------------------------------------------------------
+# Persistent Piper process pool
+# ---------------------------------------------------------------------------
+
+_PIPER_POOL_SIZE = 3  # matches ThreadPoolExecutor max_workers in speak_streaming / speak_from_iter
+
+
+class _PiperProcess:
+    """One persistent piper process. NOT thread-safe — use via PiperPool."""
+
+    def __init__(self):
+        self._proc = None
+        self._start()
+
+    def _start(self):
+        if not os.path.exists(PIPER_BIN):
+            raise FileNotFoundError(f"Piper binary not found: {PIPER_BIN}")
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(f"Bender model not found: {MODEL_PATH}")
+        piper_dir = os.path.dirname(PIPER_BIN)
+        env = os.environ.copy()
+        env["LD_LIBRARY_PATH"] = piper_dir + ":" + env.get("LD_LIBRARY_PATH", "")
+        self._proc = subprocess.Popen(
+            [
+                PIPER_BIN,
+                "--model", MODEL_PATH,
+                "--json-input",
+                "--length_scale", str(cfg.speech_rate),
+                "--noise_scale", str(cfg.tts_noise_scale),
+                "--noise_scale_w", str(cfg.tts_noise_scale_w),
+                "--quiet",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+
+    def synthesize(self, text: str) -> str:
+        """Write text to piper, return path to raw WAV (22050Hz). Caller unlinks."""
+        if self._proc.poll() is not None:
+            log.warning("Piper process died — restarting")
+            self._start()
+
+        fd, out_path = tempfile.mkstemp(suffix=".wav", dir="/tmp")
+        os.close(fd)
+        os.unlink(out_path)  # let Piper create it
+        payload = (json.dumps({"text": text, "output_file": out_path}) + "\n").encode()
+
+        try:
+            self._proc.stdin.write(payload)
+            self._proc.stdin.flush()
+        except BrokenPipeError:
+            log.warning("Piper stdin broken — restarting")
+            self._start()
+            self._proc.stdin.write(payload)
+            self._proc.stdin.flush()
+
+        # Piper writes the file completely before reading the next line.
+        # Poll until the file exists with a stable size (write complete).
+        deadline = time.monotonic() + 10.0
+        prev_size = -1
+        while time.monotonic() < deadline:
+            if os.path.exists(out_path):
+                size = os.path.getsize(out_path)
+                if size > 44 and size == prev_size:
+                    return out_path
+                prev_size = size
+            time.sleep(0.005)
+        raise TimeoutError(f"Piper synthesis timed out for: {text!r}")
+
+    def close(self):
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.stdin.close()
+                self._proc.wait(timeout=2.0)
+            except Exception:
+                self._proc.kill()
+        self._proc = None
+
+
+class PiperPool:
+    """Thread-safe pool of persistent Piper processes."""
+
+    def __init__(self, size: int = _PIPER_POOL_SIZE):
+        self._q: queue.Queue = queue.Queue()
+        for _ in range(size):
+            self._q.put(_PiperProcess())
+        log.info("PiperPool: %d persistent processes ready", size)
+
+    def synthesize(self, text: str) -> str:
+        """Borrow a process, synthesize, return process to pool."""
+        proc = self._q.get()
+        try:
+            return proc.synthesize(text)
+        finally:
+            self._q.put(proc)
+
+    def close(self):
+        while not self._q.empty():
+            try:
+                proc = self._q.get_nowait()
+                proc.close()
+            except Exception:
+                pass
+
+
+_piper_pool: "PiperPool | None" = None
+_piper_pool_lock = threading.Lock()
+
+
+def _get_piper_pool() -> "PiperPool":
+    global _piper_pool
+    if _piper_pool is None:
+        with _piper_pool_lock:
+            if _piper_pool is None:
+                _piper_pool = PiperPool()
+    return _piper_pool
+
+
+# ---------------------------------------------------------------------------
+
+
 def _speak_single(text: str) -> str:
     """
     Generate TTS audio for a single sentence. Returns path to a temp WAV file at 44100Hz.
     Caller is responsible for playing and cleanup.
     """
     with metrics.timer("tts_generate"):
-        if not os.path.exists(PIPER_BIN):
-            raise FileNotFoundError(f"Piper binary not found: {PIPER_BIN}")
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(f"Bender model not found: {MODEL_PATH}")
-
-        # Piper writes raw 22050Hz output
-        raw_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        raw_tmp.close()
-
-        piper_dir = os.path.dirname(PIPER_BIN)
-        env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = piper_dir + ":" + env.get("LD_LIBRARY_PATH", "")
-
-        result = subprocess.run(
-            [
-            PIPER_BIN,
-            "--model", MODEL_PATH,
-            "--output_file", raw_tmp.name,
-            "--length_scale", str(cfg.speech_rate),
-            "--noise_scale", str(cfg.tts_noise_scale),
-            "--noise_scale_w", str(cfg.tts_noise_scale_w),
-        ],
-            input=text.encode(),
-            capture_output=True,
-            env=env,
-        )
-
-        if result.returncode != 0:
-            os.unlink(raw_tmp.name)
-            raise RuntimeError(f"Piper failed: {result.stderr.decode()}")
+        raw_path = _get_piper_pool().synthesize(text)
 
         # Post-process: resample + pad → final temp file
         out_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         out_tmp.close()
         try:
-            _resample_and_pad(raw_tmp.name, out_tmp.name)
+            _resample_and_pad(raw_path, out_tmp.name)
         finally:
-            os.unlink(raw_tmp.name)
+            os.unlink(raw_path)
 
         return out_tmp.name
 
@@ -151,7 +264,7 @@ def speak(text: str) -> str:
     if len(sentences) <= 1:
         return _speak_single(text)
 
-    # Generate sentences in parallel — each is an independent Piper subprocess
+    # Generate sentences in parallel — each borrows from the shared PiperPool
     import wave
     from concurrent.futures import ThreadPoolExecutor
     parts = []
