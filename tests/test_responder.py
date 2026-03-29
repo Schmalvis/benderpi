@@ -45,18 +45,16 @@ def test_greeting_returns_real_clip(tmp_path):
 
 
 def test_unknown_falls_to_ai(tmp_path):
-    from responder import Responder
+    from responder import Responder, ResponseStream
     idx = _make_index(tmp_path)
     mock_ai = MagicMock()
-    mock_ai.respond.return_value = "/tmp/ai_response.wav"
-    mock_ai.history = [{"role": "assistant", "content": "test reply"}]
+    mock_ai.respond_streaming.return_value = iter(["test reply"])
     r = Responder(index_path=idx, base_dir=str(tmp_path))
     resp = r.get_response("what is quantum computing", ai=mock_ai)
+    assert isinstance(resp, ResponseStream)
     assert resp.intent == "UNKNOWN"
-    assert resp.method == "ai_fallback"
-    assert resp.is_temp is True
-    assert resp.needs_thinking is True
-    mock_ai.respond.assert_called_once()
+    assert resp.method == "ai_streaming"
+    mock_ai.respond_streaming.assert_called_once()
 
 
 def test_dismissal_intent(tmp_path):
