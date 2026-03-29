@@ -38,8 +38,8 @@ class Config:
 
     # STT
     whisper_model: str = "tiny.en"
-    vad_aggressiveness: int = 3  # max aggressiveness — reduces false non-speech
-    silence_frames: int = 15  # 15×30ms = 450ms — was 50 (1.5s)
+    vad_aggressiveness: int = 3  # 0–3 scale; 3 = most aggressive non-speech filtering → faster silence detection
+    silence_frames: int = 15  # 15×30ms = 450ms — was 50 (1.5s); tune via BENDER_VAD_SILENCE_FRAMES
     max_record_seconds: int = 15
 
     # TTS
