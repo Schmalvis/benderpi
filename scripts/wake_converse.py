@@ -236,7 +236,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         # DISMISSAL fast-path — skip farewell clip if configured
         if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
             log.info("DISMISSAL: abrupt session end")
-            if response.is_temp:
+            if response.is_temp and response.wav_path is not None:
                 try:
                     os.unlink(response.wav_path)
                 except OSError:
@@ -252,15 +252,21 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 ai_local.clear_history()
             return
 
-        # Switch to talking LEDs
-        leds.set_talking()
-
-        # Play thinking sound while slow response is being generated
-        if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
-            audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-
-        # Play response
-        audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+        # Play response — streaming for AI (wav_path=None), direct play for pre-generated clips
+        if response.wav_path is None:
+            # AI response: stream TTS sentence-by-sentence (no thinking sound needed — first audio arrives fast)
+            leds.set_talking()
+            audio.play_stream(
+                tts_generate.speak_streaming(response.text),
+                on_chunk=_check_abort_on_chunk,
+                on_done=leds.all_off,
+            )
+        else:
+            # Pre-generated clip or handler response
+            if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
+                audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+            leds.set_talking()
+            audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
         metrics._write({"type": "timer", "name": "turn_total",
                         "duration_ms": round((time.monotonic() - _turn_start) * 1000, 1),
                         "intent": response.intent, "method": response.method})
@@ -269,7 +275,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         if audio.was_aborted() or os.path.exists(cfg.end_session_file):
             _cleanup_abort_files()
             log.info("Session aborted during playback")
-            if response.is_temp:
+            if response.is_temp and response.wav_path is not None:
                 try:
                     os.unlink(response.wav_path)
                 except OSError:
@@ -283,7 +289,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 ai_local.clear_history()
             return
 
-        if response.is_temp:
+        if response.is_temp and response.wav_path is not None:
             try:
                 os.unlink(response.wav_path)
             except OSError:

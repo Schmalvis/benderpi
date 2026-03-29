@@ -183,6 +183,27 @@ def speak(text: str) -> str:
                 pass
 
 
+
+def speak_streaming(text: str):
+    """
+    Generate TTS audio sentence-by-sentence, yielding WAV paths as each is ready.
+    Sentence 1 is yielded as soon as Piper finishes it; sentences 2+ run concurrently.
+    Caller is responsible for playing and unlinking each yielded path.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    text = _preprocess_text(text)
+    sentences = [s.strip() for s in _SENTENCE_RE.split(text) if s.strip()]
+    if not sentences:
+        return
+    if len(sentences) == 1:
+        yield _speak_single(sentences[0])
+        return
+    # Submit all sentences concurrently; yield in order as each completes
+    with ThreadPoolExecutor(max_workers=min(len(sentences), 3)) as pool:
+        futures = [pool.submit(_speak_single, s) for s in sentences]
+        for future in futures:
+            yield future.result()  # preserves sentence order; blocks only until each is ready
+
 def warm_up():
     """Pre-warm Piper by running a dummy synthesis. Call at service start."""
     log.info("Warming up Piper TTS...")

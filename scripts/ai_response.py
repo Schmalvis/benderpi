@@ -6,7 +6,7 @@ Maintains a rolling conversation history per session.
 Usage from wake_converse.py:
     from ai_response import AIResponder
     ai = AIResponder()
-    wav_path = ai.respond("What is the meaning of life?")
+    reply_text = ai.respond("What is the meaning of life?")
 """
 
 import os
@@ -15,7 +15,6 @@ import sys
 import anthropic
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import tts_generate
 from logger import get_logger
 from metrics import metrics
 from config import cfg
@@ -55,7 +54,7 @@ class AIResponder:
     def respond(self, user_text: str) -> str:
         """
         Generate a Bender-style response to user_text via Claude API.
-        Returns path to a temp WAV file.
+        Returns the reply text string (caller handles TTS).
         """
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
@@ -84,7 +83,7 @@ class AIResponder:
             reply = f"Something went wrong with my brain. Error class: {type(e).__name__}. Sounds like your problem."
 
         self.history.append({"role": "assistant", "content": reply})
-        return tts_generate.speak(reply)
+        return reply
 
     def clear_history(self):
         """Call at end of each conversation session."""

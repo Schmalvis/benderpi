@@ -13,6 +13,7 @@ API:
     play(wav_path)   — play a WAV file
 """
 
+import os
 import threading
 import wave
 
@@ -215,3 +216,59 @@ def play_oneshot(wav_path: str, on_chunk=None, on_done=None):
                 stream.close()
     if on_done:
         on_done()
+
+
+def play_stream(wav_iter, on_chunk=None, on_done=None):
+    """
+    Play WAV files from an iterator, back-to-back with no gap between sentences.
+    Starts playing as soon as the first WAV is yielded; remaining sentences play
+    as they arrive. Handles abort cleanly. Caller's iterator should yield temp
+    file paths; this function unlinks each after playing.
+
+    open_session() must be called first.
+    """
+    with metrics.timer("audio_play"):
+        with _lock:
+            _abort.clear()
+            if _stream is None or not _stream.is_active():
+                open_session()
+
+            _stream.write(_silence(SILENCE_PRE))
+
+            for wav_path in wav_iter:
+                if _abort.is_set():
+                    # Drain remaining paths and clean up
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
+                    for remaining in wav_iter:
+                        try:
+                            os.unlink(remaining)
+                        except OSError:
+                            pass
+                    break
+
+                try:
+                    with wave.open(wav_path, 'rb') as wf:
+                        sw = wf.getsampwidth()
+                        data = wf.readframes(CHUNK)
+                        while data:
+                            if _abort.is_set():
+                                break
+                            _stream.write(data)
+                            if on_chunk:
+                                on_chunk(rms_to_ratio(rms(data, sw)))
+                            data = wf.readframes(CHUNK)
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
+
+            if not _abort.is_set():
+                _stream.write(_silence(SILENCE_POST))
+
+    if on_done:
+        on_done()
+
