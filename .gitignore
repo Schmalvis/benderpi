@@ -47,3 +47,4 @@ timers.json
 
 # Svelte web app
 web/node_modules/
+.worktrees/
