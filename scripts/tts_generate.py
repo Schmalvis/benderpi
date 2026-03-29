@@ -215,6 +215,43 @@ def speak_streaming(text: str):
                         pass
             raise
 
+
+def speak_from_iter(sentence_iter):
+    """Generate TTS for sentences from an iterator (e.g. streaming LLM output).
+    Submits TTS for sentence N+1 concurrently while sentence N is being played.
+    Yields WAV paths in sentence order. Caller must unlink each yielded path.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import collections
+
+    pending = collections.deque()
+
+    _error_occurred = False
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            for sentence in sentence_iter:
+                # Submit this sentence's TTS immediately
+                pending.append(pool.submit(_speak_single, sentence))
+                # If we have a backlog, yield the oldest completed future
+                if len(pending) >= 2:
+                    yield pending.popleft().result()
+            # Flush remaining
+            while pending:
+                yield pending.popleft().result()
+    except Exception:
+        _error_occurred = True
+        raise
+    finally:
+        if _error_occurred:
+            # Pool has already shut down (ThreadPoolExecutor.__exit__ ran); all futures done
+            for f in list(pending):
+                if not f.cancelled():
+                    try:
+                        os.unlink(f.result())
+                    except Exception:
+                        pass
+
+
 def warm_up():
     """Pre-warm Piper by running a dummy synthesis. Call at service start."""
     log.info("Warming up Piper TTS...")

@@ -22,7 +22,7 @@ import time
 
 import tts_generate
 from config import cfg
-from handler_base import Response, Handler  # noqa: F401 — re-export
+from handler_base import Response, ResponseStream, Handler  # noqa: F401 — re-export
 from logger import get_logger
 from metrics import metrics
 
@@ -137,16 +137,10 @@ class Responder:
 
         # Cloud-first path — try cloud, fall back to Hailo on failure
         if effective_routing == "cloud_first":
-            try:
-                return self._respond_cloud(text, ai_cloud, intent_name, sub_key,
-                                           routing_log)
-            except Exception as e:
-                log.warning("Cloud LLM failed (%s), falling back to Hailo", e)
-                routing_log.update({"cloud_failed": True, "cloud_error": str(e)})
-                if ai_local is None:
-                    return self._error_response(text, intent_name, sub_key,
-                                                "Cloud unavailable, no local fallback")
-                # Fall through to local path below
+            # Note: _respond_cloud returns a ResponseStream (deferred generator).
+            # API errors are handled in-character inside respond_streaming(), so
+            # the Hailo fallback no longer applies to the cloud-first path.
+            return self._respond_cloud(text, ai_cloud, intent_name, sub_key, routing_log)
 
         # Cloud-only path
         elif effective_routing == "cloud_only":
@@ -225,30 +219,24 @@ class Responder:
                                    routing_log)
 
     def _respond_cloud(self, text: str, ai_cloud, intent_name: str,
-                       sub_key: str | None, routing_log: dict) -> Response:
-        """Call Claude API fallback, return Response."""
+                       sub_key: str | None, routing_log: dict) -> ResponseStream:
+        """Call Claude API, return ResponseStream for concurrent TTS pipeline."""
         if ai_cloud is None:
             return self._error_response(text, intent_name, sub_key,
                                         "AI responder not available")
-        try:
-            start = time.monotonic()
-            reply = ai_cloud.respond(text)
-            cloud_latency_ms = int((time.monotonic() - start) * 1000)
-            routing_log.update({
-                "escalated_to_cloud": True,
-                "cloud_response": reply,
-                "cloud_latency_ms": cloud_latency_ms,
-                "final_method": "ai_fallback",
-            })
-            return Response(
-                text=reply, wav_path=None,
-                method="ai_fallback", intent=intent_name, sub_key=sub_key,
-                is_temp=False, needs_thinking=True, model=cfg.ai_model,
-                routing_log=routing_log,
-            )
-        except Exception as e:
-            log.error("AI cloud fallback error: %s", e)
-            return self._error_response(text, intent_name, sub_key, str(e))
+        routing_log.update({
+            "escalated_to_cloud": True,
+            "final_method": "ai_streaming",
+        })
+        sentence_iter = ai_cloud.respond_streaming(text)
+        return ResponseStream(
+            intent=intent_name,
+            method="ai_streaming",
+            sentence_iter=sentence_iter,
+            sub_key=sub_key,
+            model=cfg.ai_model,
+            routing_log=routing_log,
+        )
 
     def _error_response(self, text: str, intent_name: str,
                         sub_key: str | None, error_msg: str) -> Response:

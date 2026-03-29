@@ -85,6 +85,63 @@ class AIResponder:
         self.history.append({"role": "assistant", "content": reply})
         return reply
 
+
+    def respond_streaming(self, user_text: str):
+        """Stream response via Claude API, yielding complete sentences as they form.
+        Updates conversation history with the full response when complete.
+        Handles API errors gracefully by yielding an in-character error message.
+        """
+        import re
+        _SENTENCE_END = re.compile(r'(?<=[.!?])\s+(?=[A-Z"\'])')
+
+        self.history.append({"role": "user", "content": user_text})
+        self._trim_history()
+
+        buffer = ""
+        full_response = ""
+
+        try:
+            with metrics.timer("ai_api_call_stream", model=cfg.ai_model):
+                with self.client.messages.stream(
+                    model=cfg.ai_model,
+                    max_tokens=cfg.ai_max_tokens,
+                    system=BENDER_SYSTEM_PROMPT,
+                    messages=self.history,
+                ) as stream:
+                    for text_chunk in stream.text_stream:
+                        buffer += text_chunk
+                        full_response += text_chunk
+                        # Yield complete sentences as they form
+                        while True:
+                            m = _SENTENCE_END.search(buffer)
+                            if not m:
+                                break
+                            sentence = buffer[:m.end()].strip()
+                            buffer = buffer[m.end():]
+                            if sentence:
+                                yield sentence
+            # Yield any remaining text after stream ends
+            remaining = buffer.strip()
+            if remaining:
+                full_response += remaining  # ensure history includes the final fragment
+        except anthropic.AuthenticationError:
+            full_response = "Whoever manages my account is out of credit. Sort it out. I'll be here, annoyed."
+            yield full_response
+        except anthropic.RateLimitError:
+            full_response = "I'm getting too many requests. Slow down, meatbag."
+            yield full_response
+        except anthropic.APIConnectionError:
+            full_response = "Can't reach the cloud right now. I blame the wifi."
+            yield full_response
+        except Exception as e:
+            full_response = f"Something went wrong with my brain. Error: {type(e).__name__}. Probably your fault."
+            yield full_response
+        finally:
+            # Always record the full response in history
+            text_to_store = full_response.strip()
+            if text_to_store:
+                self.history.append({"role": "assistant", "content": text_to_store})
+
     def clear_history(self):
         """Call at end of each conversation session."""
         self.history = []
