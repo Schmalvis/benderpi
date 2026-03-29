@@ -11,7 +11,7 @@ class RealClipHandler(Handler):
     intents = ["GREETING", "AFFIRMATION", "DISMISSAL", "JOKE"]
 
     def __init__(self, index_path: str = None, base_dir: str = None):
-        _base = base_dir or os.path.join(os.path.dirname(__file__), "..")
+        _base = base_dir or os.path.join(os.path.dirname(__file__), "..", "..")
         self._base_dir = os.path.normpath(_base)
         _idx = index_path or os.path.join(self._base_dir, "speech", "responses", "index.json")
         self._index = self._load_index(_idx)
