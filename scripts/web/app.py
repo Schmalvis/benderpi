@@ -350,9 +350,11 @@ async def _puppet_play(wav_path: str) -> None:
     service releases the device so play_oneshot can open at the correct rate.
     """
     import audio
+    import leds
 
     if not _IS_LINUX:
-        await asyncio.to_thread(audio.play_oneshot, wav_path)
+        leds.set_talking()
+        await asyncio.to_thread(audio.play_oneshot, wav_path, leds.set_level, leds.all_off)
         return
 
     # Check current state
@@ -372,8 +374,9 @@ async def _puppet_play(wav_path: str) -> None:
         # Brief pause so PortAudio/ALSA releases the device
         await asyncio.sleep(0.5)
 
+    leds.set_talking()
     try:
-        await asyncio.to_thread(audio.play_oneshot, wav_path)
+        await asyncio.to_thread(audio.play_oneshot, wav_path, leds.set_level, leds.all_off)
     finally:
         if was_running:
             await asyncio.to_thread(

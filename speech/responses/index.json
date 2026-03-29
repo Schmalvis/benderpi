@@ -1,55 +1,187 @@
 {
   "greeting": [
-    "speech/wav/hello.wav",
-    "speech/wav/hellopeasants.wav",
-    "speech/wav/imbender.wav",
-    "speech/wav/yo.wav"
+    {
+      "file": "speech/wav/hello.wav"
+    },
+    {
+      "file": "speech/wav/hellopeasants.wav"
+    },
+    {
+      "file": "speech/wav/imbender.wav"
+    },
+    {
+      "file": "speech/wav/yo.wav"
+    }
   ],
   "affirmation": [
-    "speech/wav/gotit.wav",
-    "speech/wav/yougotitgenius.wav",
-    "speech/wav/yessir.wav",
-    "speech/wav/yup.wav",
-    "speech/wav/thankyou.wav"
+    {
+      "file": "speech/wav/gotit.wav"
+    },
+    {
+      "file": "speech/wav/yougotitgenius.wav"
+    },
+    {
+      "file": "speech/wav/yessir.wav"
+    },
+    {
+      "file": "speech/wav/yup.wav"
+    },
+    {
+      "file": "speech/wav/thankyou.wav"
+    }
   ],
   "dismissal": [
-    "speech/wav/itwasapleasuremeetingyou.wav",
-    "speech/wav/solongcoffinstuffers.wav",
-    "speech/wav/yesss.wav"
+    {
+      "file": "speech/wav/itwasapleasuremeetingyou.wav"
+    },
+    {
+      "file": "speech/wav/solongcoffinstuffers.wav"
+    },
+    {
+      "file": "speech/wav/yesss.wav"
+    }
   ],
   "joke": [
-    "speech/wav/hahohwaityoureseriousletmelaughevenharder.wav",
-    "speech/wav/compareyourlivestomineandthenkillyourselves.wav",
-    "speech/wav/imgonnagobuildmyownthemepark.wav",
-    "speech/responses/joke/joke_001.wav",
-    "speech/responses/joke/joke_002.wav",
-    "speech/responses/joke/joke_003.wav",
-    "speech/responses/joke/joke_004.wav",
-    "speech/responses/joke/joke_005.wav"
+    {
+      "file": "speech/wav/hahohwaityoureseriousletmelaughevenharder.wav"
+    },
+    {
+      "file": "speech/wav/compareyourlivestomineandthenkillyourselves.wav"
+    },
+    {
+      "file": "speech/wav/imgonnagobuildmyownthemepark.wav"
+    },
+    {
+      "file": "speech/responses/joke/joke_001.wav",
+      "label": "Why don't scientists trust atoms? Because they make up everything. You're welcome."
+    },
+    {
+      "file": "speech/responses/joke/joke_002.wav",
+      "label": "What's a robot's favourite type of music? Heavy metal. That's also my diet."
+    },
+    {
+      "file": "speech/responses/joke/joke_003.wav",
+      "label": "I once told a joke so good it short-circuited three humans. Those were the days."
+    },
+    {
+      "file": "speech/responses/joke/joke_004.wav",
+      "label": "Why did the robot go to therapy? Because his programmer kept telling him he had issues. Not me though. I'm perfect."
+    },
+    {
+      "file": "speech/responses/joke/joke_005.wav",
+      "label": "Knock knock. Who's there? Bender. Bender who? Bender rules, everyone else drools. That's the whole joke."
+    }
   ],
   "personal": {
-    "job": "speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav",
-    "age": "speech/responses/personal/age.wav",
-    "where_live": "speech/responses/personal/where_live.wav",
-    "where_work": "speech/responses/personal/where_work.wav",
-    "can_talk": "speech/responses/personal/can_talk.wav",
-    "are_you_real": "speech/responses/personal/are_you_real.wav",
-    "feelings": "speech/responses/personal/feelings.wav",
-    "what_can_do": "speech/responses/personal/what_can_do.wav",
-    "friend": "speech/responses/personal/friend.wav",
-    "like_me": "speech/responses/personal/like_me.wav",
-    "eat": "speech/responses/personal/eat.wav"
+    "job": {
+      "file": "speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav"
+    },
+    "age": {
+      "file": "speech/responses/personal/age.wav",
+      "label": "I was built in the year 2996. So I'm about a thousand years old. Pretty good looking for my age, right?"
+    },
+    "where_live": {
+      "file": "speech/responses/personal/where_live.wav",
+      "label": "I live right here in this house. Lucky you."
+    },
+    "where_work": {
+      "file": "speech/responses/personal/where_work.wav",
+      "label": "I work at Planet Express. Delivery, heavy lifting, general awesomeness."
+    },
+    "can_talk": {
+      "file": "speech/responses/personal/can_talk.wav",
+      "label": "Of course I can talk. I'm a highly sophisticated robot. Also, I'm better than you."
+    },
+    "are_you_real": {
+      "file": "speech/responses/personal/are_you_real.wav",
+      "label": "I'm Bender. The most real thing you'll ever meet. Also yes, I'm a robot."
+    },
+    "feelings": {
+      "file": "speech/responses/personal/feelings.wav",
+      "label": "Robots don't have feelings. We have a feelings inhibitor chip. Mine's broken. Don't tell anyone."
+    },
+    "what_can_do": {
+      "file": "speech/responses/personal/what_can_do.wav",
+      "label": "I can bend girders, tell jokes, insult people, and apparently answer dumb questions all day."
+    },
+    "friend": {
+      "file": "speech/responses/personal/friend.wav",
+      "label": "You couldn't afford to be my friend. But sure, why not."
+    },
+    "like_me": {
+      "file": "speech/responses/personal/like_me.wav",
+      "label": "You're tolerable. For a human."
+    },
+    "eat": {
+      "file": "speech/responses/personal/eat.wav",
+      "label": "I run on alcohol. Beer mostly. Hand it over."
+    }
   },
   "ha_confirm": [
-    "speech/responses/ha_confirm/confirm_001.wav",
-    "speech/responses/ha_confirm/confirm_002.wav",
-    "speech/responses/ha_confirm/confirm_003.wav"
+    {
+      "file": "speech/responses/ha_confirm/confirm_001.wav",
+      "label": "Done. You're welcome. That'll be five dollars."
+    },
+    {
+      "file": "speech/responses/ha_confirm/confirm_002.wav",
+      "label": "Consider it handled. I'm basically your butler now. A very handsome butler."
+    },
+    {
+      "file": "speech/responses/ha_confirm/confirm_003.wav",
+      "label": "Executed. Feel free to thank me anytime. Go on."
+    }
   ],
   "promoted": [],
   "thinking": [
-    "speech/responses/thinking/thinking_001.wav",
-    "speech/responses/thinking/thinking_002.wav",
-    "speech/responses/thinking/thinking_003.wav",
-    "speech/responses/thinking/thinking_004.wav"
+    {
+      "file": "speech/responses/thinking/thinking_001.wav",
+      "label": "Hmm."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_002.wav",
+      "label": "Let me think."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_003.wav",
+      "label": "Hang on."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_004.wav",
+      "label": "One sec."
+    }
+  ],
+  "timer_alerts": [
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_001.wav",
+      "label": "Hey! Timer's done! Hello?!"
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_002.wav",
+      "label": "Ding ding ding! That's your timer, meatbag!"
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_003.wav",
+      "label": "Your timer went off. You're welcome. Now dismiss me."
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_004.wav",
+      "label": "Still here. Still alerting. Still being ignored. Story of my life."
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_005.wav",
+      "label": "Oh sure, just let the robot keep yelling. That's fine."
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_006.wav",
+      "label": "TIMER! DONE! DISMISS ME! Please."
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_007.wav",
+      "label": "I've been yelling about this timer for a while now. Just saying."
+    },
+    {
+      "file": "speech/responses/timer_alerts/timer_alert_008.wav",
+      "label": "Hey! Are you deaf?! Timer!"
+    }
   ]
 }

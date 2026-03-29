@@ -52,10 +52,14 @@ DISMISSAL_PATTERNS = [
     r"\bgoodbye\b",
     r"\bsee you\b",
     r"\bstop(\s+(it|bender))?\b",
-    r"\bshut up\b",
-    r"\bbe quiet\b",
+    r"\bbender[,\s]+stop\b",          # "Bender stop" / "Bender, stop"
+    r"\bshut up(\s+bender)?\b",
+    r"\bbender[,\s]+shut up\b",       # "Bender, shut up" / "Bender shut up"
+    r"\bbe quiet(\s+bender)?\b",
     r"\bthat'?s?\s*all\b",
     r"\bno more\b",
+    r"^enough(\s+bender)?[.!]?$",     # "Enough" / "Enough Bender"
+    r"\bstop (talking|it|now)\b",
 ]
 
 JOKE_PATTERNS = [
