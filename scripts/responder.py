@@ -161,7 +161,6 @@ class Responder:
             local_response_text = ai_local.generate(text)
             local_latency_ms = int((time.monotonic() - start) * 1000)
 
-            wav = tts_generate.speak(local_response_text)
             routing_log.update({
                 "local_attempted": True,
                 "local_response": local_response_text,
@@ -171,9 +170,9 @@ class Responder:
                 "final_method": "ai_local",
             })
             return Response(
-                text=local_response_text, wav_path=wav,
+                text=local_response_text, wav_path=None,
                 method="ai_local", intent=intent_name, sub_key=sub_key,
-                is_temp=True, needs_thinking=True, routing_log=routing_log)
+                is_temp=False, needs_thinking=True, routing_log=routing_log)
 
         except QualityCheckFailed as qcf:
             local_latency_ms = int((time.monotonic() - start) * 1000)
@@ -204,15 +203,14 @@ class Responder:
             if local_response_text:
                 # Intentional: TTS for rejected response —
                 # local_only means use it regardless of quality check outcome.
-                wav = tts_generate.speak(local_response_text)
                 routing_log.update({
                     "escalated_to_cloud": False,
                     "final_method": "ai_local_forced",
                 })
                 return Response(
-                    text=local_response_text, wav_path=wav,
+                    text=local_response_text, wav_path=None,
                     method="ai_local_forced", intent=intent_name,
-                    sub_key=sub_key, is_temp=True, needs_thinking=True,
+                    sub_key=sub_key, is_temp=False, needs_thinking=True,
                     routing_log=routing_log)
             else:
                 # local_only but local failed entirely — return error
@@ -234,9 +232,8 @@ class Responder:
                                         "AI responder not available")
         try:
             start = time.monotonic()
-            wav = ai_cloud.respond(text)
+            reply = ai_cloud.respond(text)
             cloud_latency_ms = int((time.monotonic() - start) * 1000)
-            reply = ai_cloud.history[-1]["content"] if ai_cloud.history else ""
             routing_log.update({
                 "escalated_to_cloud": True,
                 "cloud_response": reply,
@@ -244,9 +241,9 @@ class Responder:
                 "final_method": "ai_fallback",
             })
             return Response(
-                text=reply, wav_path=wav,
+                text=reply, wav_path=None,
                 method="ai_fallback", intent=intent_name, sub_key=sub_key,
-                is_temp=True, needs_thinking=True, model=cfg.ai_model,
+                is_temp=False, needs_thinking=True, model=cfg.ai_model,
                 routing_log=routing_log,
             )
         except Exception as e:

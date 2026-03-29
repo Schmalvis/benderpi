@@ -16,9 +16,9 @@ class Response:
     """Standard response object returned by all handlers."""
 
     text: str               # display text or clip basename
-    wav_path: str           # WAV file to play
     method: str             # real_clip | pre_gen_tts | promoted_tts | handler_* | ai_fallback | error_fallback
     intent: str             # classified intent name
+    wav_path: str | None = None   # WAV file to play; None for streaming AI responses
     sub_key: str | None = None
     is_temp: bool = False           # caller must os.unlink() after playback
     needs_thinking: bool = False    # True if response generated on-the-fly
