@@ -201,8 +201,19 @@ def speak_streaming(text: str):
     # Submit all sentences concurrently; yield in order as each completes
     with ThreadPoolExecutor(max_workers=min(len(sentences), 3)) as pool:
         futures = [pool.submit(_speak_single, s) for s in sentences]
-        for future in futures:
-            yield future.result()  # preserves sentence order; blocks only until each is ready
+        try:
+            for future in futures:
+                yield future.result()  # preserves sentence order; blocks only until each is ready
+        except Exception:
+            # Clean up temp files from any futures that already completed
+            for f in futures:
+                if f.done() and not f.cancelled():
+                    try:
+                        result = f.result()
+                        os.unlink(result)
+                    except Exception:
+                        pass
+            raise
 
 def warm_up():
     """Pre-warm Piper by running a dummy synthesis. Call at service start."""
