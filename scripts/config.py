@@ -20,6 +20,8 @@ _ENV_OVERRIDES = {
     "BENDER_LOG_LEVEL_FILE": "log_level_file",
     "BENDER_AI_MODEL": "ai_model",
     "BENDER_WHISPER_MODEL": "whisper_model",
+    "BENDER_VAD_SILENCE_FRAMES": "silence_frames",
+    "BENDER_VAD_AGGRESSIVENESS": "vad_aggressiveness",
 }
 
 
@@ -36,8 +38,8 @@ class Config:
 
     # STT
     whisper_model: str = "tiny.en"
-    vad_aggressiveness: int = 2
-    silence_frames: int = 50
+    vad_aggressiveness: int = 3  # 0–3 scale; 3 = most aggressive non-speech filtering → faster silence detection
+    silence_frames: int = 15  # 15×30ms = 450ms — was 50 (1.5s); tune via BENDER_VAD_SILENCE_FRAMES
     max_record_seconds: int = 15
 
     # TTS
