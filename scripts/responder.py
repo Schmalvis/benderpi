@@ -137,16 +137,10 @@ class Responder:
 
         # Cloud-first path — try cloud, fall back to Hailo on failure
         if effective_routing == "cloud_first":
-            try:
-                return self._respond_cloud(text, ai_cloud, intent_name, sub_key,
-                                           routing_log)
-            except Exception as e:
-                log.warning("Cloud LLM failed (%s), falling back to Hailo", e)
-                routing_log.update({"cloud_failed": True, "cloud_error": str(e)})
-                if ai_local is None:
-                    return self._error_response(text, intent_name, sub_key,
-                                                "Cloud unavailable, no local fallback")
-                # Fall through to local path below
+            # Note: _respond_cloud returns a ResponseStream (deferred generator).
+            # API errors are handled in-character inside respond_streaming(), so
+            # the Hailo fallback no longer applies to the cloud-first path.
+            return self._respond_cloud(text, ai_cloud, intent_name, sub_key, routing_log)
 
         # Cloud-only path
         elif effective_routing == "cloud_only":

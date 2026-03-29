@@ -123,7 +123,7 @@ class AIResponder:
             # Yield any remaining text after stream ends
             remaining = buffer.strip()
             if remaining:
-                yield remaining
+                full_response += remaining  # ensure history includes the final fragment
         except anthropic.AuthenticationError:
             full_response = "Whoever manages my account is out of credit. Sort it out. I'll be here, annoyed."
             yield full_response

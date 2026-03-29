@@ -226,6 +226,7 @@ def speak_from_iter(sentence_iter):
 
     pending = collections.deque()
 
+    _error_occurred = False
     try:
         with ThreadPoolExecutor(max_workers=3) as pool:
             for sentence in sentence_iter:
@@ -238,14 +239,17 @@ def speak_from_iter(sentence_iter):
             while pending:
                 yield pending.popleft().result()
     except Exception:
-        # Clean up any completed futures' temp files that weren't yielded
-        for f in pending:
-            if f.done() and not f.cancelled():
-                try:
-                    os.unlink(f.result())
-                except Exception:
-                    pass
+        _error_occurred = True
         raise
+    finally:
+        if _error_occurred:
+            # Pool has already shut down (ThreadPoolExecutor.__exit__ ran); all futures done
+            for f in list(pending):
+                if not f.cancelled():
+                    try:
+                        os.unlink(f.result())
+                    except Exception:
+                        pass
 
 
 def warm_up():
