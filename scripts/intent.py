@@ -51,7 +51,7 @@ DISMISSAL_PATTERNS = [
     r"^bye\b",
     r"\bgoodbye\b",
     r"\bsee you\b",
-    r"\bstop(\s+(it|bender))?\b",
+    r"(?<!don't )(?<!dont )\bstop(\s+(it|bender))?\b",
     r"\bbender[,\s]+stop\b",          # "Bender stop" / "Bender, stop"
     r"\bshut up(\s+bender)?\b",
     r"\bbender[,\s]+shut up\b",       # "Bender, shut up" / "Bender shut up"

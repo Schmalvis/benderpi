@@ -3,10 +3,10 @@ import json
 import os
 import tempfile
 
-def test_config_loads_defaults():
+def test_config_loads_defaults(tmp_path):
     """Config should have sensible defaults without any files."""
     from config import Config
-    cfg = Config()
+    cfg = Config(config_path=str(tmp_path / "nonexistent.json"))
     assert cfg.sample_rate == 44100
     assert cfg.whisper_model == "tiny.en"
     assert cfg.silence_timeout == 8.0
@@ -84,17 +84,19 @@ def test_ha_room_synonyms_default():
 
 
 class TestLocalLLMConfig:
-    def test_defaults(self):
+    def test_defaults(self, tmp_path):
         from config import Config
-        c = Config(config_path="/dev/null", env_path="/dev/null")
+        empty_cfg = tmp_path / "empty.json"
+        empty_cfg.write_text("{}")
+        c = Config(config_path=str(empty_cfg), env_path="/dev/null")
         assert c.ai_backend == "hybrid"
         assert c.local_llm_model == "qwen2.5:1.5b"
         assert c.local_llm_url == "http://localhost:11434"
-        assert c.local_llm_timeout == 6
+        assert c.local_llm_timeout == 3
         assert c.ai_routing == {
-            "conversation": "local_first",
-            "knowledge": "local_first",
-            "creative": "local_first",
+            "conversation": "cloud_first",
+            "knowledge": "cloud_first",
+            "creative": "cloud_first",
         }
 
     def test_config_override(self, tmp_path):

@@ -102,8 +102,8 @@ class TestRespondAIRouting:
 
         resp = responder._respond_ai("who was the first king", ai_cloud,
                                      "UNKNOWN", None, ai_local)
-        assert resp.method == "ai_fallback"
-        ai_cloud.respond.assert_called_once()
+        assert resp.method == "ai_streaming"
+        ai_cloud.respond_streaming.assert_called_once()
 
     @patch("responder.tts_generate")
     @patch("responder.cfg")
@@ -119,7 +119,7 @@ class TestRespondAIRouting:
 
         resp = responder._respond_ai("tell me something", ai_cloud,
                                      "UNKNOWN", None, ai_local)
-        assert resp.method == "ai_fallback"
+        assert resp.method == "ai_streaming"
 
     @patch("responder.cfg")
     def test_cloud_only_skips_local(self, mock_cfg, responder):
@@ -131,7 +131,7 @@ class TestRespondAIRouting:
 
         resp = responder._respond_ai("hello", ai_cloud,
                                      "UNKNOWN", None, ai_local)
-        assert resp.method == "ai_fallback"
+        assert resp.method == "ai_streaming"
         ai_local.generate.assert_not_called()
 
     @patch("responder.tts_generate")
@@ -178,7 +178,7 @@ class TestRespondAIRouting:
 
         resp = responder._respond_ai("hello", ai_cloud,
                                      "UNKNOWN", None, ai_local=None)
-        assert resp.method == "ai_fallback"
+        assert resp.method == "ai_streaming"
 
     @patch("responder.tts_generate")
     @patch("responder.cfg")
