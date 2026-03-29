@@ -18,6 +18,7 @@ import queue
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import wave
 import numpy as np
@@ -138,7 +139,9 @@ class _PiperProcess:
             log.warning("Piper process died — restarting")
             self._start()
 
-        out_path = tempfile.mktemp(suffix=".wav", dir="/tmp")
+        fd, out_path = tempfile.mkstemp(suffix=".wav", dir="/tmp")
+        os.close(fd)
+        os.unlink(out_path)  # let Piper create it
         payload = (json.dumps({"text": text, "output_file": out_path}) + "\n").encode()
 
         try:
@@ -157,7 +160,7 @@ class _PiperProcess:
         while time.monotonic() < deadline:
             if os.path.exists(out_path):
                 size = os.path.getsize(out_path)
-                if size > 0 and size == prev_size:
+                if size > 44 and size == prev_size:
                     return out_path
                 prev_size = size
             time.sleep(0.005)
@@ -200,12 +203,15 @@ class PiperPool:
 
 
 _piper_pool: "PiperPool | None" = None
+_piper_pool_lock = threading.Lock()
 
 
 def _get_piper_pool() -> "PiperPool":
     global _piper_pool
     if _piper_pool is None:
-        _piper_pool = PiperPool()
+        with _piper_pool_lock:
+            if _piper_pool is None:
+                _piper_pool = PiperPool()
     return _piper_pool
 
 
