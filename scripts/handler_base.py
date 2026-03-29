@@ -26,6 +26,17 @@ class Response:
     routing_log: dict | None = None     # AI routing decision log (for conversation_log)
 
 
+
+@dataclass
+class ResponseStream:
+    """Streaming AI response — sentence iterator instead of a pre-generated WAV."""
+    intent: str
+    method: str
+    sentence_iter: object   # Iterator[str] — yields text sentences from LLM stream
+    sub_key: str | None = None
+    model: str | None = None
+    routing_log: dict | None = None
+
 class Handler:
     """Base class for intent handlers.
 

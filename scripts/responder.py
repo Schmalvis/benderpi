@@ -22,7 +22,7 @@ import time
 
 import tts_generate
 from config import cfg
-from handler_base import Response, Handler  # noqa: F401 — re-export
+from handler_base import Response, ResponseStream, Handler  # noqa: F401 — re-export
 from logger import get_logger
 from metrics import metrics
 
@@ -225,30 +225,24 @@ class Responder:
                                    routing_log)
 
     def _respond_cloud(self, text: str, ai_cloud, intent_name: str,
-                       sub_key: str | None, routing_log: dict) -> Response:
-        """Call Claude API fallback, return Response."""
+                       sub_key: str | None, routing_log: dict) -> ResponseStream:
+        """Call Claude API, return ResponseStream for concurrent TTS pipeline."""
         if ai_cloud is None:
             return self._error_response(text, intent_name, sub_key,
                                         "AI responder not available")
-        try:
-            start = time.monotonic()
-            reply = ai_cloud.respond(text)
-            cloud_latency_ms = int((time.monotonic() - start) * 1000)
-            routing_log.update({
-                "escalated_to_cloud": True,
-                "cloud_response": reply,
-                "cloud_latency_ms": cloud_latency_ms,
-                "final_method": "ai_fallback",
-            })
-            return Response(
-                text=reply, wav_path=None,
-                method="ai_fallback", intent=intent_name, sub_key=sub_key,
-                is_temp=False, needs_thinking=True, model=cfg.ai_model,
-                routing_log=routing_log,
-            )
-        except Exception as e:
-            log.error("AI cloud fallback error: %s", e)
-            return self._error_response(text, intent_name, sub_key, str(e))
+        routing_log.update({
+            "escalated_to_cloud": True,
+            "final_method": "ai_streaming",
+        })
+        sentence_iter = ai_cloud.respond_streaming(text)
+        return ResponseStream(
+            intent=intent_name,
+            method="ai_streaming",
+            sentence_iter=sentence_iter,
+            sub_key=sub_key,
+            model=cfg.ai_model,
+            routing_log=routing_log,
+        )
 
     def _error_response(self, text: str, intent_name: str,
                         sub_key: str | None, error_msg: str) -> Response:

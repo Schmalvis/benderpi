@@ -42,7 +42,7 @@ from conversation_log import SessionLogger
 from responder import Responder
 from handlers.clip_handler import RealClipHandler
 from handlers.timer_alert import TimerAlertRunner
-from handler_base import load_clips_from_index
+from handler_base import load_clips_from_index, ResponseStream
 from logger import get_logger
 from config import cfg
 from metrics import metrics
@@ -236,7 +236,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         # DISMISSAL fast-path — skip farewell clip if configured
         if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
             log.info("DISMISSAL: abrupt session end")
-            if response.is_temp and response.wav_path is not None:
+            if not isinstance(response, ResponseStream) and response.is_temp and response.wav_path is not None:
                 try:
                     os.unlink(response.wav_path)
                 except OSError:
@@ -252,30 +252,60 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 ai_local.clear_history()
             return
 
-        # Play response — streaming for AI (wav_path=None), direct play for pre-generated clips
-        if response.wav_path is None:
-            # AI response: stream TTS sentence-by-sentence (no thinking sound needed — first audio arrives fast)
+        # Play response — three cases: streaming cloud AI, sync AI, pre-generated clip
+        if isinstance(response, ResponseStream):
+            # Streaming cloud AI: LLM tokens → TTS → play concurrently
+            _collected: list[str] = []
+
+            def _collecting_iter(it):
+                for s in it:
+                    _collected.append(s)
+                    yield s
+
+            leds.set_talking()
+            audio.play_stream(
+                tts_generate.speak_from_iter(_collecting_iter(response.sentence_iter)),
+                on_chunk=_check_abort_on_chunk,
+                on_done=leds.all_off,
+            )
+            _response_text = " ".join(_collected)
+            _response_model = response.model
+            _response_method = response.method
+            _response_routing = response.routing_log
+
+        elif response.wav_path is None:
+            # Local/synchronous AI response (Phase 2 path)
             leds.set_talking()
             audio.play_stream(
                 tts_generate.speak_streaming(response.text),
                 on_chunk=_check_abort_on_chunk,
                 on_done=leds.all_off,
             )
+            _response_text = response.text
+            _response_model = response.model
+            _response_method = response.method
+            _response_routing = response.routing_log
+
         else:
             # Pre-generated clip or handler response
             if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
                 audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
             leds.set_talking()
             audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+            _response_text = response.text
+            _response_model = getattr(response, 'model', None)
+            _response_method = response.method
+            _response_routing = getattr(response, 'routing_log', None)
+
         metrics._write({"type": "timer", "name": "turn_total",
                         "duration_ms": round((time.monotonic() - _turn_start) * 1000, 1),
-                        "intent": response.intent, "method": response.method})
+                        "intent": response.intent, "method": _response_method})
 
         # Check if playback was aborted (UI stop button pressed during response)
         if audio.was_aborted() or os.path.exists(cfg.end_session_file):
             _cleanup_abort_files()
             log.info("Session aborted during playback")
-            if response.is_temp and response.wav_path is not None:
+            if not isinstance(response, ResponseStream) and response.is_temp and response.wav_path is not None:
                 try:
                     os.unlink(response.wav_path)
                 except OSError:
@@ -289,15 +319,15 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 ai_local.clear_history()
             return
 
-        if response.is_temp and response.wav_path is not None:
+        if not isinstance(response, ResponseStream) and response.is_temp and response.wav_path is not None:
             try:
                 os.unlink(response.wav_path)
             except OSError:
                 pass
 
         session_log.log_turn(text, response.intent, response.sub_key,
-                        response.method, response.text, response.model,
-                        ai_routing=response.routing_log)
+                        _response_method, _response_text, _response_model,
+                        ai_routing=_response_routing)
         _write_session_file(session_log.session_id, session_log.turn)
 
         if response.intent == "DISMISSAL":
