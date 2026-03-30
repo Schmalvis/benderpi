@@ -70,6 +70,13 @@ class TestQualityCheckFailed:
 
 
 class TestLocalAIResponder:
+    def setup_method(self):
+        self._hailo_patch = patch("ai_local._HailoLLMResponder._load", return_value=False)
+        self._hailo_patch.start()
+
+    def teardown_method(self):
+        self._hailo_patch.stop()
+
     def _mock_ollama_response(self, content, status=200):
         mock_resp = MagicMock()
         mock_resp.status_code = status
@@ -86,7 +93,7 @@ class TestLocalAIResponder:
                 "Bite my shiny metal ass, meatbag!")
             result = responder.generate("Hello Bender")
         assert result == "Bite my shiny metal ass, meatbag!"
-        assert len(responder.history) == 2
+        assert len(responder._ollama.history) == 2
 
     def test_quality_check_failure_raises(self):
         responder = LocalAIResponder()
@@ -126,7 +133,7 @@ class TestLocalAIResponder:
                 "Yeah yeah, what do you want, meatbag?")
             for i in range(10):
                 responder.generate(f"Message {i}")
-        assert len(responder.history) <= 12
+        assert len(responder._ollama.history) <= 12
 
     def test_clear_history(self):
         responder = LocalAIResponder()
@@ -134,9 +141,9 @@ class TestLocalAIResponder:
             mock_post.return_value = self._mock_ollama_response(
                 "Whatever, meatbag. Leave me alone.")
             responder.generate("Hi")
-        assert len(responder.history) == 2
+        assert len(responder._ollama.history) == 2
         responder.clear_history()
-        assert len(responder.history) == 0
+        assert len(responder._ollama.history) == 0
 
     def test_sends_system_prompt(self):
         responder = LocalAIResponder()
