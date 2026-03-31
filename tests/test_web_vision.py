@@ -90,7 +90,7 @@ def test_vision_analyse_empty():
 
     mock_scene = MagicMock(spec=SceneDescription)
     mock_scene.is_empty.return_value = True
-    mock_scene.faces = []
+    mock_scene.persons = []
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
@@ -104,26 +104,25 @@ def test_vision_analyse_empty():
     assert resp.status_code == 200
     data = resp.json()
     assert "I don't see anyone" in data["text"]
-    assert data["faces"] == []
+    assert data["persons"] == []
 
 
-def test_vision_analyse_with_faces():
-    from vision import SceneDescription, FaceInfo
+def test_vision_analyse_with_persons():
+    from vision import SceneDescription, PersonInfo
 
-    face = MagicMock(spec=FaceInfo)
-    face.age_estimate = 35
-    face.gender = "male"
-    face.confidence = 0.92
+    person = MagicMock(spec=PersonInfo)
+    person.confidence = 0.92
+    person.bbox = (10.0, 20.0, 100.0, 200.0)
 
     mock_scene = MagicMock(spec=SceneDescription)
     mock_scene.is_empty.return_value = False
-    mock_scene.faces = [face]
+    mock_scene.persons = [person]
     mock_scene.to_context_string.return_value = "[Room: 1 person]"
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
     mocks["vision"].SceneDescription = SceneDescription
-    mocks["vision"].FaceInfo = FaceInfo
+    mocks["vision"].PersonInfo = PersonInfo
 
     with patch.dict(sys.modules, mocks):
         client = get_client()
@@ -133,6 +132,5 @@ def test_vision_analyse_with_faces():
     assert resp.status_code == 200
     data = resp.json()
     assert "I can see" in data["text"]
-    assert len(data["faces"]) == 1
-    assert data["faces"][0]["age"] == 35
-    assert data["faces"][0]["gender"] == "male"
+    assert len(data["persons"]) == 1
+    assert data["persons"][0]["confidence"] == 0.92

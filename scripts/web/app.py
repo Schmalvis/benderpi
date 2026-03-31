@@ -5,11 +5,12 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -798,8 +799,49 @@ async def remote_ask(audio: UploadFile = File(...)):
 
 # ── Camera Stream ─────────────────────────────────────────────────────────────
 
+# Shared Picamera2 instance — stream and analyse both use this so there is
+# never a second camera open while the first is running.
+_shared_cam = None
+_shared_cam_lock = threading.Lock()
+_shared_cam_refcount = 0
+
+
+def _acquire_camera():
+    """Start (or reuse) the shared camera. Returns the Picamera2 instance."""
+    global _shared_cam, _shared_cam_refcount
+    from picamera2 import Picamera2
+    with _shared_cam_lock:
+        if _shared_cam is None:
+            cam = Picamera2()
+            config = cam.create_video_configuration(
+                main={"size": (640, 480), "format": "RGB888"}
+            )
+            cam.configure(config)
+            cam.start()
+            _shared_cam = cam
+        _shared_cam_refcount += 1
+        return _shared_cam
+
+
+def _release_camera():
+    """Decrement refcount; stop+close camera when last consumer disconnects."""
+    global _shared_cam, _shared_cam_refcount
+    with _shared_cam_lock:
+        _shared_cam_refcount = max(0, _shared_cam_refcount - 1)
+        if _shared_cam_refcount == 0 and _shared_cam is not None:
+            try:
+                _shared_cam.stop()
+                _shared_cam.close()
+            except Exception:
+                pass
+            _shared_cam = None
+
+
 def _check_camera() -> bool:
     """Returns True if picamera2 and camera hardware are both available."""
+    with _shared_cam_lock:
+        if _shared_cam is not None:
+            return True
     try:
         from picamera2 import Picamera2
         cam = Picamera2()
@@ -826,16 +868,10 @@ async def puppet_camera_stream(pin: str = ""):
         raise HTTPException(status_code=503, detail="Camera not available")
 
     async def generate():
-        from picamera2 import Picamera2
         import io
-        cam = Picamera2()
-        config = cam.create_video_configuration(
-            main={"size": (640, 480), "format": "RGB888"}
-        )
-        cam.configure(config)
-        cam.start()
+        from PIL import Image
+        cam = await asyncio.to_thread(_acquire_camera)
         try:
-            from PIL import Image
             while True:
                 frame = await asyncio.to_thread(cam.capture_array)
                 buf = io.BytesIO()
@@ -849,8 +885,7 @@ async def puppet_camera_stream(pin: str = ""):
         except asyncio.CancelledError:
             pass
         finally:
-            cam.stop()
-            cam.close()
+            await asyncio.to_thread(_release_camera)
 
     from fastapi.responses import StreamingResponse
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -938,31 +973,34 @@ async def vision_passive_status():
 
 
 @app.post("/api/vision/analyse", dependencies=[Depends(require_pin)])
-async def vision_analyse():
+async def vision_analyse(background_tasks: BackgroundTasks):
     import tts_generate as _tts
-    scene = _vision.analyse_scene()
+
+    scene = await asyncio.to_thread(_vision.analyse_scene)
     if scene.is_empty():
         text = "I don't see anyone in the room."
     else:
         desc = scene.to_context_string().replace("[Room: ", "").rstrip("]")
         text = f"I can see {desc} in the room."
 
-    # Speak on device
-    try:
-        wav = _tts.speak(text)
+    def _speak_in_background(t: str):
         try:
-            leds.set_talking()
-            audio.play(wav, on_done=leds.all_off)
-        finally:
-            import os as _os
-            if _os.path.exists(wav):
-                _os.unlink(wav)
-    except Exception as exc:
-        log.warning("vision_analyse TTS/audio failed: %s", exc)
+            wav = _tts.speak(t)
+            try:
+                leds.set_talking()
+                audio.play(wav, on_done=leds.all_off)
+            finally:
+                import os as _os
+                if _os.path.exists(wav):
+                    _os.unlink(wav)
+        except Exception as exc:
+            log.warning("vision_analyse TTS/audio failed: %s", exc)
 
-    faces = [{"age": f.age_estimate, "gender": f.gender, "confidence": f.confidence}
-             for f in scene.faces]
-    return {"text": text, "faces": faces}
+    background_tasks.add_task(_speak_in_background, text)
+
+    persons = [{"confidence": p.confidence, "bbox": list(p.bbox)}
+               for p in scene.persons]
+    return {"text": text, "persons": persons}
 
 
 # ── Static files (must be last — catches all unmatched routes) ──
