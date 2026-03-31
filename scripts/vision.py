@@ -6,6 +6,7 @@ using OpenCV DNN (CPU-based, no Hailo/IMX500 required).
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -55,6 +56,7 @@ AGE_MAP = {0: 1, 1: 5, 2: 10, 3: 17, 4: 28, 5: 40, 6: 50, 7: 75}
 _face_net = None
 _age_net = None
 _gender_net = None
+_nets_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +131,13 @@ def _load_nets():
     import cv2  # noqa: import-outside-toplevel — guarded
 
     global _face_net, _age_net, _gender_net
-    if _face_net is None:
-        _face_net = cv2.dnn.readNet(_FACE_MODEL, _FACE_PROTO)
-    if _age_net is None:
-        _age_net = cv2.dnn.readNet(_AGE_MODEL, _AGE_PROTO)
-    if _gender_net is None:
-        _gender_net = cv2.dnn.readNet(_GENDER_MODEL, _GENDER_PROTO)
+    with _nets_lock:
+        if _face_net is None:
+            _face_net = cv2.dnn.readNet(_FACE_MODEL, _FACE_PROTO)
+        if _age_net is None:
+            _age_net = cv2.dnn.readNet(_AGE_MODEL, _AGE_PROTO)
+        if _gender_net is None:
+            _gender_net = cv2.dnn.readNet(_GENDER_MODEL, _GENDER_PROTO)
 
 
 def _detect_faces(frame_bgr, net, conf_threshold: float = 0.5):
@@ -171,12 +174,19 @@ def _estimate_age_gender(face_crop, age_net, gender_net):
     age_net.setInput(blob)
     age_preds = age_net.forward()
     age_idx = int(age_preds[0].argmax())
-    age = AGE_MAP.get(age_idx, 25)
+    age = AGE_MAP.get(age_idx)
+    if age is None:
+        log.warning("Unexpected age index %d from model, using 25", age_idx)
+        age = 25
 
     gender_net.setInput(blob)
     gender_preds = gender_net.forward()
     gender_idx = int(gender_preds[0].argmax())
-    gender = GENDER_LIST[gender_idx]
+    if gender_idx >= len(GENDER_LIST):
+        log.warning("Unexpected gender index %d from model", gender_idx)
+        gender = "unknown"
+    else:
+        gender = GENDER_LIST[gender_idx]
 
     return age, gender
 
@@ -209,9 +219,11 @@ def analyse_scene() -> SceneDescription:
         )
         cam.configure(config)
         cam.start()
-        frame_rgb = cam.capture_array()
-        cam.stop()
-        cam.close()
+        try:
+            frame_rgb = cam.capture_array()
+        finally:
+            cam.stop()
+            cam.close()
     except Exception as exc:
         log.error("Camera capture failed: %s", exc)
         return SceneDescription()
