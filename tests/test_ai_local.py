@@ -70,6 +70,13 @@ class TestQualityCheckFailed:
 
 
 class TestLocalAIResponder:
+    def setup_method(self):
+        self._hailo_patch = patch("ai_local._HailoLLMResponder._load", return_value=False)
+        self._hailo_patch.start()
+
+    def teardown_method(self):
+        self._hailo_patch.stop()
+
     def _mock_ollama_response(self, content, status=200):
         mock_resp = MagicMock()
         mock_resp.status_code = status
@@ -86,7 +93,7 @@ class TestLocalAIResponder:
                 "Bite my shiny metal ass, meatbag!")
             result = responder.generate("Hello Bender")
         assert result == "Bite my shiny metal ass, meatbag!"
-        assert len(responder.history) == 2
+        assert len(responder._ollama.history) == 2
 
     def test_quality_check_failure_raises(self):
         responder = LocalAIResponder()
@@ -126,7 +133,7 @@ class TestLocalAIResponder:
                 "Yeah yeah, what do you want, meatbag?")
             for i in range(10):
                 responder.generate(f"Message {i}")
-        assert len(responder.history) <= 12
+        assert len(responder._ollama.history) <= 12
 
     def test_clear_history(self):
         responder = LocalAIResponder()
@@ -134,9 +141,9 @@ class TestLocalAIResponder:
             mock_post.return_value = self._mock_ollama_response(
                 "Whatever, meatbag. Leave me alone.")
             responder.generate("Hi")
-        assert len(responder.history) == 2
+        assert len(responder._ollama.history) == 2
         responder.clear_history()
-        assert len(responder.history) == 0
+        assert len(responder._ollama.history) == 0
 
     def test_sends_system_prompt(self):
         responder = LocalAIResponder()
@@ -148,3 +155,32 @@ class TestLocalAIResponder:
             messages = call_kwargs["json"]["messages"]
             assert messages[0]["role"] == "system"
             assert "Bender" in messages[0]["content"]
+
+    def test_inject_scene_context_delegates_to_both(self):
+        """inject_scene_context() sets _scene_context on both _hailo and _ollama."""
+        responder = LocalAIResponder()
+        responder.inject_scene_context("[Room: adult male ~35]")
+        assert responder._hailo._scene_context == "[Room: adult male ~35]"
+        assert responder._ollama._scene_context == "[Room: adult male ~35]"
+
+    def test_inject_scene_context_prepends_to_first_ollama_message(self):
+        """Scene context is prepended to first user message sent to Ollama."""
+        responder = LocalAIResponder()
+        responder.inject_scene_context("[Room: child ~8]")
+        with patch("ai_local.requests.post") as mock_post:
+            mock_post.return_value = self._mock_ollama_response(
+                "I'm Bender, baby! The greatest robot!")
+            responder.generate("hello")
+            call_kwargs = mock_post.call_args.kwargs
+            messages = call_kwargs["json"]["messages"]
+            # First non-system message should have context prepended
+            user_messages = [m for m in messages if m["role"] == "user"]
+            assert user_messages[0]["content"] == "[Room: child ~8] hello"
+
+    def test_clear_history_resets_scene_context_on_delegates(self):
+        """clear_history() resets _scene_context on both delegates."""
+        responder = LocalAIResponder()
+        responder.inject_scene_context("[Room: adult male ~35]")
+        responder.clear_history()
+        assert responder._hailo._scene_context == ""
+        assert responder._ollama._scene_context == ""

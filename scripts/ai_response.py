@@ -45,6 +45,11 @@ class AIResponder:
             raise RuntimeError("ANTHROPIC_API_KEY not set in environment")
         self.client = anthropic.Anthropic(api_key=api_key)
         self.history: list[dict] = []  # rolling conversation history
+        self._scene_context: str = ""
+
+    def inject_scene_context(self, text: str):
+        """Store scene context to be prepended to the first user message of the session."""
+        self._scene_context = text
 
     def _trim_history(self):
         """Keep only the last MAX_HISTORY turns."""
@@ -56,6 +61,10 @@ class AIResponder:
         Generate a Bender-style response to user_text via Claude API.
         Returns the reply text string (caller handles TTS).
         """
+        # Prepend scene context to first user message of the session
+        if self._scene_context and len(self.history) == 0:
+            user_text = f"{self._scene_context} {user_text}"
+
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
 
@@ -93,6 +102,10 @@ class AIResponder:
         """
         import re
         _SENTENCE_END = re.compile(r'(?<=[.!?])\s+(?=[A-Z"\'])')
+
+        # Prepend scene context to first user message of the session
+        if self._scene_context and len(self.history) == 0:
+            user_text = f"{self._scene_context} {user_text}"
 
         self.history.append({"role": "user", "content": user_text})
         self._trim_history()
@@ -145,6 +158,7 @@ class AIResponder:
     def clear_history(self):
         """Call at end of each conversation session."""
         self.history = []
+        self._scene_context = ""
 
 
 if __name__ == "__main__":
