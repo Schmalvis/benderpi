@@ -176,6 +176,11 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     _write_session_file(session_log.session_id, 0)
     audio.open_session()
 
+    # Clear state from previous session before this session begins
+    ai.clear_history()
+    if ai_local:
+        ai_local.clear_history()
+
     # Submit scene analysis concurrently — will complete while greeting plays
     scene_future = _vision_executor.submit(vision.analyse_scene)
 
@@ -212,7 +217,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     except Exception as exc:
         log.warning("Vision scene analysis failed: %s", exc)
 
-    ai.clear_history()
     last_heard = time.time()
 
     while True:
