@@ -97,6 +97,12 @@ class TestDispatchTable:
         for intent in expected:
             assert intent in r._dispatch, f"Missing handler for {intent}"
 
+    def test_vision_handler_registered(self, tmp_path):
+        from responder import Responder
+        idx = _make_index(tmp_path)
+        r = Responder(index_path=idx, base_dir=str(tmp_path))
+        assert "VISION" in r._dispatch
+
     def test_unknown_intent_not_in_dispatch(self, tmp_path):
         from responder import Responder
         idx = _make_index(tmp_path)
