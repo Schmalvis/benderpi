@@ -120,28 +120,39 @@ class SceneDescription:
 def analyse_scene() -> SceneDescription:
     """Return detected persons using IMX500 on-device inference.
 
-    Reads inference metadata from the shared camera. Returns empty
-    SceneDescription if camera not initialised or inference not yet ready.
+    Acquires the shared camera (starting it if needed), reads inference
+    metadata, then releases. Works whether or not the MJPEG stream is active.
     """
+    try:
+        cam = acquire_camera()
+    except Exception as exc:
+        log.error("Failed to acquire camera for analysis: %s", exc)
+        return SceneDescription()
+
     with _cam_lock:
-        if _cam is None or _imx500 is None:
-            log.warning("Camera not initialised -- returning empty scene")
-            return SceneDescription()
-        global _cam_refcount
-        _cam_refcount += 1   # pin: prevent release_camera() from closing during use
-        cam = _cam
         imx500 = _imx500
 
+    if imx500 is None:
+        release_camera()
+        return SceneDescription()
+
     try:
-        metadata = cam.capture_metadata()
-        np_outputs = imx500.get_outputs(metadata, add_batch=True)
+        # Retry a few times in case inference is still warming up
+        np_outputs = None
+        for attempt in range(5):
+            metadata = cam.capture_metadata()
+            np_outputs = imx500.get_outputs(metadata, add_batch=True)
+            if np_outputs is not None:
+                break
+            import time as _time
+            _time.sleep(0.2)
 
         if np_outputs is None:
-            log.info("IMX500 inference not ready (model warmup) -- returning empty scene")
+            log.info("IMX500 inference not ready after warmup — returning empty scene")
             return SceneDescription()
 
-        boxes = np_outputs[_OUT_BOXES][0]      # (100, 4) pixel coords
-        scores = np_outputs[_OUT_SCORES][0]    # (100,)
+        boxes = np_outputs[_OUT_BOXES][0]    # (100, 4) pixel coords
+        scores = np_outputs[_OUT_SCORES][0]  # (100,)
         classes = np_outputs[_OUT_CLASSES][0]  # (100,)
 
         persons = []
@@ -159,4 +170,4 @@ def analyse_scene() -> SceneDescription:
                  len(persons), float(max(scores)) if len(scores) else 0.0)
         return SceneDescription(persons=persons, captured_at=datetime.now())
     finally:
-        release_camera()   # decrement refcount (may close camera if last consumer)
+        release_camera()

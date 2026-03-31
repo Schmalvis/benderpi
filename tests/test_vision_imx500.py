@@ -89,9 +89,9 @@ def test_analyse_scene_no_persons(monkeypatch):
             classes=[0.0],  # person class
         )
     )
-    monkeypatch.setattr(_vision_module, '_cam', fake_cam)
+    monkeypatch.setattr(_vision_module, 'acquire_camera', lambda: fake_cam)
+    monkeypatch.setattr(_vision_module, 'release_camera', lambda: None)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
-    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
@@ -107,9 +107,9 @@ def test_analyse_scene_person_detected(monkeypatch):
             classes=[0.0],  # class 0 = person
         )
     )
-    monkeypatch.setattr(_vision_module, '_cam', fake_cam)
+    monkeypatch.setattr(_vision_module, 'acquire_camera', lambda: fake_cam)
+    monkeypatch.setattr(_vision_module, 'release_camera', lambda: None)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
-    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert len(result.persons) == 1
@@ -126,9 +126,9 @@ def test_analyse_scene_non_person_filtered(monkeypatch):
             classes=[75.0],  # class 75 = clock, not person
         )
     )
-    monkeypatch.setattr(_vision_module, '_cam', fake_cam)
+    monkeypatch.setattr(_vision_module, 'acquire_camera', lambda: fake_cam)
+    monkeypatch.setattr(_vision_module, 'release_camera', lambda: None)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
-    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
@@ -140,18 +140,17 @@ def test_analyse_scene_inference_not_ready(monkeypatch):
     fake_imx500 = types.SimpleNamespace(
         get_outputs=lambda metadata, add_batch=False: None
     )
-    monkeypatch.setattr(_vision_module, '_cam', fake_cam)
+    monkeypatch.setattr(_vision_module, 'acquire_camera', lambda: fake_cam)
+    monkeypatch.setattr(_vision_module, 'release_camera', lambda: None)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
-    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
 
 
 def test_analyse_scene_camera_not_initialised(monkeypatch):
-    """No camera initialised → empty scene, no crash."""
-    monkeypatch.setattr(_vision_module, '_cam', None)
-    monkeypatch.setattr(_vision_module, '_imx500', None)
+    """Camera init failure → empty scene, no crash."""
+    monkeypatch.setattr(_vision_module, 'acquire_camera', lambda: (_ for _ in ()).throw(RuntimeError("no camera")))
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
