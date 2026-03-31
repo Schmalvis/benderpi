@@ -16,6 +16,7 @@ Intents:
   WEATHER       — weather/forecast/rain
   NEWS          — news/headlines/what's happening
   HA_CONTROL    — Commands to control HA devices (lights, switches)
+  VISION        — scene/room awareness queries (what do you see, who's in the room)
   UNKNOWN       — everything else → AI fallback
 """
 
@@ -119,6 +120,14 @@ HA_CONTROL_PATTERNS = [
     r"\b(light|lamp)\b.{0,30}\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|utility|ensuite)\b",
 ]
 
+VISION_PATTERNS = [
+    r"\bwhat (do you see|can you see)\b",
+    r"\bwho('?s| is) in the room\b",
+    r"\bdescribe (the room|what you see)\b",
+    r"\blook around\b",
+    r"\bwhat('?s| is) (in front of|around) you\b",
+]
+
 PERSONAL_PATTERNS = [
     ("eat",         r"\b(eat|food|drink|hungry|alcohol|beer|fuel|power)\b"),
     ("feelings",    r"\b(feel(ings?)?|emotion(al)?|happy|sad|angry|upset|care)\b|\bhow are you\b"),
@@ -149,9 +158,9 @@ CONTEXTUAL_PATTERNS = [
 
 # Location words to strip from extracted place names
 _WEATHER_NOISE = re.compile(
-    r"(what'?s?|what is|how'?s?|how is|tell me|give me|is it|will it|"
+    r"(what'?s?|what is|how'?s?|how is|tell me|give me|is it|will it|"
     r"the|weather|forecast|temperature|rain|raining|like|today|tomorrow|"
-    r"right now|now|currently|outside|there|please|bender)",
+    r"right now|now|currently|outside|there|please|bender)",
     re.IGNORECASE,
 )
 
@@ -231,6 +240,8 @@ def _check_all_intents(t: str) -> list[str]:
         matched.append("DISMISSAL")
     if _match_any(t, JOKE_PATTERNS):
         matched.append("JOKE")
+    if _match_any(t, VISION_PATTERNS):
+        matched.append("VISION")
     if _match_any(t, GREETING_PATTERNS):
         matched.append("GREETING")
     if _match_any(t, AFFIRMATION_PATTERNS):
@@ -267,6 +278,8 @@ def classify(text: str) -> tuple[str, str | None]:
         return ("DISMISSAL", None)
     if _match_any(t, JOKE_PATTERNS):
         return ("JOKE", None)
+    if _match_any(t, VISION_PATTERNS):
+        return ("VISION", None)
 
     # CONTEXTUAL (before PERSONAL — more specific patterns)
     for sub_key, pattern in CONTEXTUAL_PATTERNS:
@@ -328,6 +341,8 @@ if __name__ == "__main__":
         "Are you a robot?",
         "What is the meaning of life?",
         "Can you play some music?",
+        "What do you see?",
+        "Who's in the room?",
     ]
     for t in tests:
         intent, sub = classify(t)

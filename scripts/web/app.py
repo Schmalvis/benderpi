@@ -1,10 +1,13 @@
 """BenderPi Web UI — FastAPI application."""
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
+
+log = logging.getLogger(__name__)
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -14,6 +17,8 @@ from web.auth import require_pin, verify_pin
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import cfg
+import audio
+import leds
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -349,9 +354,6 @@ async def _puppet_play(wav_path: str) -> None:
     (porcupine mic). bender-web needs 44100 Hz for output. Stopping the
     service releases the device so play_oneshot can open at the correct rate.
     """
-    import audio
-    import leds
-
     if not _IS_LINUX:
         leds.set_talking()
         await asyncio.to_thread(audio.play_oneshot, wav_path, leds.set_level, leds.all_off)
@@ -494,6 +496,14 @@ async def volume_set(body: dict = Body(...)):
     return {"status": "ok", "level": level}
 
 
+@app.post("/api/config/led-brightness", dependencies=[Depends(require_pin)])
+async def set_led_brightness(body: dict = Body(...)):
+    value = float(body.get("brightness", 1.0))
+    value = max(0.0, min(1.0, value))
+    leds.set_brightness(value)
+    return {"brightness": value}
+
+
 # ── Log Endpoints ───────────────────────────────────────────────
 
 
@@ -519,7 +529,7 @@ async def log_conversations_list(days: int = 7):
             except OSError:
                 size = 0
             files.append({"date": date_str, "filename": fname, "size": size})
-    return {"files": files}
+    return {"dates": [f["date"] for f in files], "files": files}
 
 
 @app.get("/api/logs/conversations/{date}", dependencies=[Depends(require_pin)])
@@ -562,7 +572,7 @@ async def log_conversations_date(date: str):
                 events.append(event)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"events": events}
+    return {"entries": events}
 
 
 @app.get("/api/logs/system", dependencies=[Depends(require_pin)])
@@ -590,14 +600,14 @@ async def log_system(lines: int = 200, level: str = ""):
         all_lines = [ln for ln in all_lines if level in ln]
     # Return last N lines
     result = [ln.rstrip("\n") for ln in all_lines[-lines:]]
-    return {"lines": result}
+    return {"log": "\n".join(result)}
 
 
 @app.get("/api/logs/metrics", dependencies=[Depends(require_pin)])
 async def log_metrics(name: str = "", hours: int = 24):
     """Filter metrics.jsonl by name and time window, return last 500 events."""
     if not os.path.isfile(_METRICS_LOG):
-        return {"events": []}
+        return {"entries": []}
     cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     events = []
     try:
@@ -625,7 +635,7 @@ async def log_metrics(name: str = "", hours: int = 24):
                 events.append(event)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"events": events[-500:]}
+    return {"entries": events[-500:]}
 
 
 @app.get("/api/logs/download/{filename}", dependencies=[Depends(require_pin)])
@@ -885,6 +895,75 @@ async def puppet_mic_ws(websocket: WebSocket):
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 proc.kill()
+
+# ── Vision Endpoints ──
+
+import vision as _vision
+
+
+@app.post("/api/vision/passive", dependencies=[Depends(require_pin)])
+async def vision_passive_enable(body: dict = Body(...)):
+    duration_minutes = body.get("duration_minutes")  # int or None
+    cfg.vision_passive_enabled = True
+    if duration_minutes is not None:
+        from datetime import datetime, timezone, timedelta
+        expires = datetime.now(tz=timezone.utc) + timedelta(minutes=int(duration_minutes))
+        cfg.vision_passive_expires_at = expires.isoformat()
+    else:
+        cfg.vision_passive_expires_at = ""  # indefinite
+    return {"enabled": True, "expires_at": cfg.vision_passive_expires_at}
+
+
+@app.delete("/api/vision/passive", dependencies=[Depends(require_pin)])
+async def vision_passive_disable():
+    cfg.vision_passive_enabled = False
+    cfg.vision_passive_expires_at = ""
+    return {"enabled": False}
+
+
+@app.get("/api/vision/passive", dependencies=[Depends(require_pin)])
+async def vision_passive_status():
+    enabled = cfg.vision_passive_enabled
+    expires_at = cfg.vision_passive_expires_at
+    minutes_remaining = None
+    if enabled and expires_at:
+        from datetime import datetime, timezone
+        try:
+            exp = datetime.fromisoformat(expires_at)
+            delta = (exp - datetime.now(tz=timezone.utc)).total_seconds()
+            minutes_remaining = max(0, int(delta / 60))
+        except ValueError:
+            pass
+    return {"enabled": enabled, "expires_at": expires_at, "minutes_remaining": minutes_remaining}
+
+
+@app.post("/api/vision/analyse", dependencies=[Depends(require_pin)])
+async def vision_analyse():
+    import tts_generate as _tts
+    scene = _vision.analyse_scene()
+    if scene.is_empty():
+        text = "I don't see anyone in the room."
+    else:
+        desc = scene.to_context_string().replace("[Room: ", "").rstrip("]")
+        text = f"I can see {desc} in the room."
+
+    # Speak on device
+    try:
+        wav = _tts.speak(text)
+        try:
+            leds.set_talking()
+            audio.play(wav, on_done=leds.all_off)
+        finally:
+            import os as _os
+            if _os.path.exists(wav):
+                _os.unlink(wav)
+    except Exception as exc:
+        log.warning("vision_analyse TTS/audio failed: %s", exc)
+
+    faces = [{"age": f.age_estimate, "gender": f.gender, "confidence": f.confidence}
+             for f in scene.faces]
+    return {"text": text, "faces": faces}
+
 
 # ── Static files (must be last — catches all unmatched routes) ──
 

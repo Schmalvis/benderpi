@@ -48,6 +48,11 @@ class _HailoLLMResponder:
         self._llm = None
         self._available = None  # None = not yet attempted
         self.history: list[dict] = []
+        self._scene_context: str = ""
+
+    def inject_scene_context(self, text: str):
+        """Store scene context to be prepended to the first user message of the session."""
+        self._scene_context = text
 
     def _load(self) -> bool:
         if self._available is not None:
@@ -78,6 +83,10 @@ class _HailoLLMResponder:
     def generate(self, user_text: str) -> str:
         if not self._load():
             raise RuntimeError("Hailo LLM not available")
+
+        # Prepend scene context to first user message of the session
+        if self._scene_context and len(self.history) == 0:
+            user_text = f"{self._scene_context} {user_text}"
 
         self.history.append({
             "role": "user",
@@ -115,6 +124,7 @@ class _HailoLLMResponder:
 
     def clear_history(self):
         self.history = []
+        self._scene_context = ""
         if self._llm is not None:
             try:
                 self._llm.clear_context()
@@ -128,12 +138,21 @@ class _OllamaResponder:
 
     def __init__(self):
         self.history: list[dict] = []
+        self._scene_context: str = ""
+
+    def inject_scene_context(self, text: str):
+        """Store scene context to be prepended to the first user message of the session."""
+        self._scene_context = text
 
     def _trim_history(self):
         if len(self.history) > cfg.ai_max_history * 2:
             self.history = self.history[-(cfg.ai_max_history * 2):]
 
     def generate(self, user_text: str) -> str:
+        # Prepend scene context to first user message of the session
+        if self._scene_context and len(self.history) == 0:
+            user_text = f"{self._scene_context} {user_text}"
+
         self.history.append({"role": "user", "content": user_text})
 
         with metrics.timer("ai_local_call", model=cfg.local_llm_model):
@@ -165,6 +184,7 @@ class _OllamaResponder:
 
     def clear_history(self):
         self.history = []
+        self._scene_context = ""
 
 
 class LocalAIResponder:
@@ -173,6 +193,11 @@ class LocalAIResponder:
     def __init__(self):
         self._hailo = _HailoLLMResponder()
         self._ollama = _OllamaResponder()
+
+    def inject_scene_context(self, text: str):
+        """Delegate scene context to both underlying responders."""
+        self._hailo.inject_scene_context(text)
+        self._ollama.inject_scene_context(text)
 
     def generate(self, user_text: str) -> str:
         """Try Hailo first; fall back to Ollama on hardware unavailability only.

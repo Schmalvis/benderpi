@@ -18,6 +18,9 @@ import random
 import time
 import sys
 import struct
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR   = os.path.dirname(SCRIPT_DIR)
@@ -36,6 +39,7 @@ import tts_generate
 import stt
 import briefings
 import leds
+import vision
 from ai_response import AIResponder
 from ai_local import LocalAIResponder
 from conversation_log import SessionLogger
@@ -48,6 +52,9 @@ from config import cfg
 from metrics import metrics
 
 log = get_logger("converse")
+
+# Module-level executor for vision scene analysis (one session at a time)
+_vision_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -169,6 +176,14 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     _write_session_file(session_log.session_id, 0)
     audio.open_session()
 
+    # Clear state from previous session before this session begins
+    ai.clear_history()
+    if ai_local:
+        ai_local.clear_history()
+
+    # Submit scene analysis concurrently — will complete while greeting plays
+    scene_future = _vision_executor.submit(vision.analyse_scene)
+
     # Greeting — skip audio if silent_wakeword is enabled (LED-only notification)
     if cfg.silent_wakeword and cfg.led_listening_enabled:
         log.info("Silent wake word mode — skipping audio greeting")
@@ -191,7 +206,17 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 os.unlink(wav)
             session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
 
-    ai.clear_history()
+    # Collect scene analysis result and inject into AI context
+    try:
+        scene = scene_future.result(timeout=10)
+        ctx = scene.to_context_string()
+        ai.inject_scene_context(ctx)
+        if ai_local:
+            ai_local.inject_scene_context(ctx)
+        log.info("Vision context: %s", ctx)
+    except Exception as exc:
+        log.warning("Vision scene analysis failed: %s", exc)
+
     last_heard = time.time()
 
     while True:
@@ -354,6 +379,57 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
 
 # ---------------------------------------------------------------------------
+# Vision passive mode watcher
+# ---------------------------------------------------------------------------
+
+def _vision_watcher():
+    """Daemon thread: periodically analyse scene and speak if passive mode active."""
+    while True:
+        time.sleep(cfg.vision_passive_interval_minutes * 60)
+
+        # Check if passive mode enabled
+        if not cfg.vision_passive_enabled:
+            continue
+
+        # Check if expired
+        if cfg.vision_passive_expires_at:
+            try:
+                expires = datetime.fromisoformat(cfg.vision_passive_expires_at)
+                if datetime.now(tz=timezone.utc) > expires:
+                    cfg.vision_passive_enabled = False
+                    cfg.vision_passive_expires_at = ""
+                    log.info("Vision passive mode expired")
+                    continue
+            except ValueError:
+                pass
+
+        # Skip if session is active
+        if os.path.exists(cfg.session_file):
+            log.debug("Vision passive: skipping — session active")
+            continue
+
+        # Analyse and speak if not empty
+        try:
+            scene = vision.analyse_scene()
+            if scene.is_empty():
+                log.debug("Vision passive: empty scene, skipping")
+                continue
+
+            description = scene.to_context_string().replace("[Room: ", "").rstrip("]")
+            comment = f"Just so you know, I can see {description} in the room."
+            wav = tts_generate.speak(comment)
+            try:
+                leds.set_talking()
+                audio.play(wav, on_done=leds.all_off)
+            finally:
+                if os.path.exists(wav):
+                    os.unlink(wav)
+            log.info("Vision passive: announced scene")
+        except Exception as exc:
+            log.warning("Vision passive watcher error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -368,8 +444,8 @@ def main():
         except Exception as e:
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
-    import threading
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
+    threading.Thread(target=_vision_watcher, daemon=True, name="vision-watcher").start()
     # Warm up Piper TTS (pre-loads ONNX model)
     tts_generate.warm_up()
     # Load thinking clips from index

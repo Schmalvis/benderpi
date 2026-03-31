@@ -98,6 +98,11 @@ class Config:
     # Stop behaviour
     dismissal_ends_session: bool = True
 
+    # Vision
+    vision_passive_enabled: bool = False
+    vision_passive_expires_at: str = ""   # ISO format datetime string, "" = indefinite
+    vision_passive_interval_minutes: int = 10
+
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
         path = config_path or _DEFAULT_CONFIG_PATH

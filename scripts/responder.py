@@ -55,6 +55,7 @@ class Responder:
         from handlers.ha_handler import HAHandler
         from handlers.timer_handler import TimerHandler
         from handlers.contextual_handler import ContextualHandler
+        from handlers.vision_handler import VisionHandler
 
         handlers = [
             RealClipHandler(index_path=idx_path, base_dir=self._base_dir),
@@ -65,6 +66,7 @@ class Responder:
             NewsHandler(),
             HAHandler(),
             TimerHandler(),
+            VisionHandler(),
         ]
         self._dispatch: dict[str, list[Handler]] = {}
         for h in handlers:

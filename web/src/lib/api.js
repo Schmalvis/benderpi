@@ -68,3 +68,9 @@ export const dismissAllTimers = () => request('/api/timers/dismiss-all', { metho
 
 // Remote
 export const remoteAsk = (text) => request('/api/remote/ask', { method: 'POST', body: JSON.stringify({ text }) });
+
+// Vision
+export const getVisionPassive = () => request('/api/vision/passive');
+export const enableVisionPassive = (duration_minutes) => request('/api/vision/passive', { method: 'POST', body: JSON.stringify({ duration_minutes }) });
+export const disableVisionPassive = () => request('/api/vision/passive', { method: 'DELETE' });
+export const analyseVision = () => request('/api/vision/analyse', { method: 'POST' });

@@ -141,3 +141,21 @@ class TestContextualIntent:
     def test_how_are_you_bare_stays_personal(self):
         intent, sub = classify("how are you")
         assert intent == "PERSONAL"
+
+
+# === Vision intent ===
+
+import pytest
+
+@pytest.mark.parametrize("text,expected_intent", [
+    ("what do you see", "VISION"),
+    ("who's in the room", "VISION"),
+    ("describe the room", "VISION"),
+    ("look around", "VISION"),
+    ("what is in front of you", "VISION"),
+    ("tell me a joke", "JOKE"),  # ensure VISION does not over-match
+])
+def test_vision_intent_patterns(text, expected_intent):
+    from intent import classify
+    intent, _ = classify(text)
+    assert intent == expected_intent
