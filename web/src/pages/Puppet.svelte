@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
-  import { getClips, speak, getCameraStatus, cameraStreamUrl } from '../lib/api.js';
+  import { getClips, speak, getCameraStatus, cameraStreamUrl, analyseVision } from '../lib/api.js';
   import { session } from '../lib/stores/session.js';
   import { toast } from '../lib/stores/toast.js';
   import ClipButton from '../lib/components/ClipButton.svelte';
@@ -22,6 +22,11 @@
   let cameraActive = false;
   let cameraError = false;
   let cameraSrc = '';
+
+  // Vision analyse state
+  let analysing = false;
+  let analyseResult = '';
+  let analyseError = '';
 
   $: grouped = groupByCategory(clips);
   $: favourites = clips.filter(c => c.favourite);
@@ -79,6 +84,20 @@
   function handleFavToggle() {
     refreshKey++;
     clips = [...clips];
+  }
+
+  async function handleAnalyse() {
+    if (analysing) return;
+    analysing = true;
+    analyseResult = '';
+    analyseError = '';
+    try {
+      const data = await analyseVision();
+      analyseResult = data.text ?? '';
+    } catch (e) {
+      analyseError = e.message;
+    }
+    analysing = false;
   }
 
   // ── Mic streaming ──────────────────────────────────────────────
@@ -253,6 +272,23 @@
         on:error={handleCameraError}
         class="w-full object-contain max-h-96"
       />
+      <!-- Ask Bender -->
+      <div class="px-4 pb-4 pt-3 border-t border-border space-y-3">
+        <button
+          on:click={handleAnalyse}
+          disabled={analysing}
+          class="bg-accent text-bg font-bold px-5 py-2 rounded
+                 hover:opacity-90 transition-opacity disabled:opacity-50"
+        >
+          {analysing ? 'Thinking…' : 'Ask Bender'}
+        </button>
+        {#if analyseResult}
+          <p class="text-sm text-text-default">{analyseResult}</p>
+        {/if}
+        {#if analyseError}
+          <p class="text-sm text-error">{analyseError}</p>
+        {/if}
+      </div>
     </div>
   {/if}
 

@@ -1,19 +1,70 @@
 <script>
   import { onMount } from 'svelte';
   import { config, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
-  import { getWatchdogConfig, updateWatchdogConfig } from '../lib/api.js';
+  import { getWatchdogConfig, updateWatchdogConfig, getVisionPassive, enableVisionPassive, disableVisionPassive } from '../lib/api.js';
 
   let saving = false;
   let saveMsg = '';
   let watchdog = {};
   let watchdogDirty = false;
 
+  // Vision passive mode state
+  let visionPassive = { enabled: false, expires_at: null, minutes_remaining: null };
+  let visionError = '';
+  let visionPollInterval = null;
+
+  const visionPresets = [
+    { label: '15m', minutes: 15 },
+    { label: '30m', minutes: 30 },
+    { label: '1h', minutes: 60 },
+    { label: '3h', minutes: 180 },
+    { label: '∞', minutes: null },
+  ];
+
   onMount(async () => {
     await loadConfig();
     try {
       watchdog = await getWatchdogConfig();
     } catch { /* ignore */ }
+    await loadVisionPassive();
+    visionPollInterval = setInterval(loadVisionPassive, 60000);
+    return () => clearInterval(visionPollInterval);
   });
+
+  async function loadVisionPassive() {
+    try {
+      visionPassive = await getVisionPassive();
+      visionError = '';
+    } catch (e) {
+      visionError = e.message;
+    }
+  }
+
+  async function handleVisionEnable(minutes) {
+    try {
+      await enableVisionPassive(minutes);
+      await loadVisionPassive();
+      visionError = '';
+    } catch (e) {
+      visionError = e.message;
+    }
+  }
+
+  async function handleVisionDisable() {
+    try {
+      await disableVisionPassive();
+      await loadVisionPassive();
+      visionError = '';
+    } catch (e) {
+      visionError = e.message;
+    }
+  }
+
+  function activePreset() {
+    if (!visionPassive.enabled) return null;
+    if (visionPassive.minutes_remaining === null) return null; // indefinite
+    return visionPassive.minutes_remaining;
+  }
 
   async function handleSave() {
     saving = true;
@@ -225,6 +276,56 @@
         ></textarea>
         {#if synonymsError}
           <p class="text-error text-[11px] mt-1">{synonymsError}</p>
+        {/if}
+      </div>
+
+    </div>
+  </details>
+
+  <!-- Vision -->
+  <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">
+    <summary class={summaryClass + ' px-4'}>Vision</summary>
+    <div class="px-4 pb-4 pt-2 space-y-4">
+
+      <div>
+        <p class={labelClass}>Passive Mode</p>
+        <div class="flex flex-wrap gap-2 mt-1">
+          <button
+            on:click={handleVisionDisable}
+            class="px-3 py-1.5 rounded text-sm font-medium transition-colors
+                   {!visionPassive.enabled
+                     ? 'bg-accent text-bg'
+                     : 'bg-bg-input border border-border text-text-muted hover:border-accent hover:text-text-default'}"
+          >
+            OFF
+          </button>
+          {#each visionPresets as preset}
+            <button
+              on:click={() => handleVisionEnable(preset.minutes)}
+              class="px-3 py-1.5 rounded text-sm font-medium transition-colors
+                     {visionPassive.enabled && (
+                       preset.minutes === null
+                         ? visionPassive.minutes_remaining === null
+                         : visionPassive.minutes_remaining !== null
+                     )
+                       ? 'bg-accent text-bg'
+                       : 'bg-bg-input border border-border text-text-muted hover:border-accent hover:text-text-default'}"
+            >
+              {preset.label}
+            </button>
+          {/each}
+        </div>
+        {#if visionPassive.enabled}
+          <p class="text-[11px] text-text-muted mt-2">
+            {#if visionPassive.minutes_remaining !== null}
+              Time remaining: {visionPassive.minutes_remaining} minute{visionPassive.minutes_remaining === 1 ? '' : 's'}
+            {:else}
+              Active indefinitely
+            {/if}
+          </p>
+        {/if}
+        {#if visionError}
+          <p class="text-error text-[11px] mt-1">{visionError}</p>
         {/if}
       </div>
 
