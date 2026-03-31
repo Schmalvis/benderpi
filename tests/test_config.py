@@ -115,3 +115,24 @@ class TestLocalLLMConfig:
         assert c.local_llm_timeout == 10
         assert c.ai_routing["conversation"] == "cloud_only"
         assert c.ai_routing["creative"] == "local_only"
+
+
+def test_vision_passive_defaults(tmp_path):
+    from config import Config
+    cfg = Config(config_path=str(tmp_path / "nonexistent.json"))
+    assert cfg.vision_passive_enabled is False
+    assert cfg.vision_passive_expires_at == ""
+    assert cfg.vision_passive_interval_minutes == 10
+
+
+def test_vision_passive_json_override(tmp_path):
+    import json
+    from config import Config
+    json_path = tmp_path / "bender_config.json"
+    json_path.write_text(json.dumps({
+        "vision_passive_enabled": True,
+        "vision_passive_interval_minutes": 5
+    }))
+    cfg = Config(config_path=str(json_path))
+    assert cfg.vision_passive_enabled is True
+    assert cfg.vision_passive_interval_minutes == 5
