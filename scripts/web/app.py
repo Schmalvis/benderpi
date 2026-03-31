@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import subprocess
-import threading
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
@@ -799,53 +798,11 @@ async def remote_ask(audio: UploadFile = File(...)):
 
 # ── Camera Stream ─────────────────────────────────────────────────────────────
 
-# Shared Picamera2 instance — stream and analyse both use this so there is
-# never a second camera open while the first is running.
-_shared_cam = None
-_shared_cam_lock = threading.Lock()
-_shared_cam_refcount = 0
-
-
-def _acquire_camera():
-    """Start (or reuse) the shared camera. Returns the Picamera2 instance."""
-    global _shared_cam, _shared_cam_refcount
-    from picamera2 import Picamera2
-    with _shared_cam_lock:
-        if _shared_cam is None:
-            cam = Picamera2()
-            config = cam.create_video_configuration(
-                main={"size": (640, 480), "format": "RGB888"}
-            )
-            cam.configure(config)
-            cam.start()
-            _shared_cam = cam
-        _shared_cam_refcount += 1
-        return _shared_cam
-
-
-def _release_camera():
-    """Decrement refcount; stop+close camera when last consumer disconnects."""
-    global _shared_cam, _shared_cam_refcount
-    with _shared_cam_lock:
-        _shared_cam_refcount = max(0, _shared_cam_refcount - 1)
-        if _shared_cam_refcount == 0 and _shared_cam is not None:
-            try:
-                _shared_cam.stop()
-                _shared_cam.close()
-            except Exception:
-                pass
-            _shared_cam = None
-
-
 def _check_camera() -> bool:
-    """Returns True if picamera2 and camera hardware are both available."""
-    with _shared_cam_lock:
-        if _shared_cam is not None:
-            return True
+    """Returns True if the IMX500 camera can be initialised."""
     try:
-        from picamera2 import Picamera2
-        cam = Picamera2()
-        cam.close()
+        _vision.acquire_camera()
+        _vision.release_camera()
         return True
     except Exception:
         return False
@@ -870,7 +827,7 @@ async def puppet_camera_stream(pin: str = ""):
     async def generate():
         import io
         from PIL import Image
-        cam = await asyncio.to_thread(_acquire_camera)
+        cam = await asyncio.to_thread(_vision.acquire_camera)
         try:
             while True:
                 frame = await asyncio.to_thread(cam.capture_array)
@@ -885,7 +842,7 @@ async def puppet_camera_stream(pin: str = ""):
         except asyncio.CancelledError:
             pass
         finally:
-            await asyncio.to_thread(_release_camera)
+            await asyncio.to_thread(_vision.release_camera)
 
     from fastapi.responses import StreamingResponse
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
