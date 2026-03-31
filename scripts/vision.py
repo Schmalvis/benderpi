@@ -53,7 +53,11 @@ def _init_camera():
         buffer_count=12,
     )
     cam.configure(config)
-    cam.start()
+    try:
+        cam.start()
+    except Exception:
+        cam.close()
+        raise
     _imx500 = imx500
     _cam = cam
     log.info("IMX500 camera started")
@@ -120,35 +124,39 @@ def analyse_scene() -> SceneDescription:
     SceneDescription if camera not initialised or inference not yet ready.
     """
     with _cam_lock:
+        if _cam is None or _imx500 is None:
+            log.warning("Camera not initialised -- returning empty scene")
+            return SceneDescription()
+        global _cam_refcount
+        _cam_refcount += 1   # pin: prevent release_camera() from closing during use
         cam = _cam
         imx500 = _imx500
 
-    if cam is None or imx500 is None:
-        log.warning("Camera not initialised -- returning empty scene")
-        return SceneDescription()
+    try:
+        metadata = cam.capture_metadata()
+        np_outputs = imx500.get_outputs(metadata, add_batch=True)
 
-    metadata = cam.capture_metadata()
-    np_outputs = imx500.get_outputs(metadata, add_batch=True)
+        if np_outputs is None:
+            log.info("IMX500 inference not ready (model warmup) -- returning empty scene")
+            return SceneDescription()
 
-    if np_outputs is None:
-        log.info("IMX500 inference not ready (model warmup) -- returning empty scene")
-        return SceneDescription()
+        boxes = np_outputs[_OUT_BOXES][0]      # (100, 4) pixel coords
+        scores = np_outputs[_OUT_SCORES][0]    # (100,)
+        classes = np_outputs[_OUT_CLASSES][0]  # (100,)
 
-    boxes = np_outputs[_OUT_BOXES][0]      # (100, 4) pixel coords
-    scores = np_outputs[_OUT_SCORES][0]    # (100,)
-    classes = np_outputs[_OUT_CLASSES][0]  # (100,)
+        persons = []
+        for box, score, cls in zip(boxes, scores, classes):
+            if float(score) < _PERSON_CONFIDENCE_THRESHOLD:
+                continue
+            if int(round(float(cls))) != _COCO_PERSON_CLASS:
+                continue
+            persons.append(PersonInfo(
+                confidence=float(score),
+                bbox=tuple(float(v) for v in box),
+            ))
 
-    persons = []
-    for box, score, cls in zip(boxes, scores, classes):
-        if float(score) < _PERSON_CONFIDENCE_THRESHOLD:
-            continue
-        if int(round(float(cls))) != _COCO_PERSON_CLASS:
-            continue
-        persons.append(PersonInfo(
-            confidence=float(score),
-            bbox=tuple(float(v) for v in box),
-        ))
-
-    log.info("Vision: %d person(s) detected (top score=%.3f)",
-             len(persons), float(max(scores)) if len(scores) else 0.0)
-    return SceneDescription(persons=persons, captured_at=datetime.now())
+        log.info("Vision: %d person(s) detected (top score=%.3f)",
+                 len(persons), float(max(scores)) if len(scores) else 0.0)
+        return SceneDescription(persons=persons, captured_at=datetime.now())
+    finally:
+        release_camera()   # decrement refcount (may close camera if last consumer)

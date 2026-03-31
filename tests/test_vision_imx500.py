@@ -52,19 +52,36 @@ import vision as _vision_module
 
 
 def _make_fake_outputs(boxes, scores, classes):
-    """Return list of 4 tensors in efficientdet_lite0_pp output format."""
-    n = len(scores)
+    """Return list of 4 tensors in efficientdet_lite0_pp output format.
+    Always pads to 100 detections to match real hardware output shape.
+    """
+    assert len(boxes) == len(scores) == len(classes)
+    n_real = len(scores)
+    # Pad to 100 slots with zero-confidence padding
+    pad = 100 - n_real
+    boxes_padded = list(boxes) + [[0.0, 0.0, 0.0, 0.0]] * pad
+    scores_padded = list(scores) + [0.0] * pad
+    classes_padded = list(classes) + [0.0] * pad
     return [
-        np.array(boxes, dtype=np.float32).reshape(1, n, 4),  # boxes (pixel coords)
-        np.array([scores], dtype=np.float32),                  # scores
-        np.array([classes], dtype=np.float32),                 # classes
-        np.array([[n]], dtype=np.float32),                     # count
+        np.array(boxes_padded, dtype=np.float32).reshape(1, 100, 4),
+        np.array([scores_padded], dtype=np.float32),   # (1, 100)
+        np.array([classes_padded], dtype=np.float32),  # (1, 100)
+        np.array([[100.0]], dtype=np.float32),          # count
     ]
+
+
+def _make_fake_cam():
+    """SimpleNamespace camera with no-op stop/close for release_camera() compatibility."""
+    return types.SimpleNamespace(
+        capture_metadata=lambda: {},
+        stop=lambda: None,
+        close=lambda: None,
+    )
 
 
 def test_analyse_scene_no_persons(monkeypatch):
     """All detections below threshold → empty SceneDescription."""
-    fake_cam = types.SimpleNamespace(capture_metadata=lambda: {})
+    fake_cam = _make_fake_cam()
     fake_imx500 = types.SimpleNamespace(
         get_outputs=lambda metadata, add_batch=False: _make_fake_outputs(
             boxes=[[10, 10, 100, 200]],
@@ -74,6 +91,7 @@ def test_analyse_scene_no_persons(monkeypatch):
     )
     monkeypatch.setattr(_vision_module, '_cam', fake_cam)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
+    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
@@ -81,7 +99,7 @@ def test_analyse_scene_no_persons(monkeypatch):
 
 def test_analyse_scene_person_detected(monkeypatch):
     """Person above threshold → SceneDescription with 1 person."""
-    fake_cam = types.SimpleNamespace(capture_metadata=lambda: {})
+    fake_cam = _make_fake_cam()
     fake_imx500 = types.SimpleNamespace(
         get_outputs=lambda metadata, add_batch=False: _make_fake_outputs(
             boxes=[[10, 20, 200, 400]],
@@ -91,6 +109,7 @@ def test_analyse_scene_person_detected(monkeypatch):
     )
     monkeypatch.setattr(_vision_module, '_cam', fake_cam)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
+    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert len(result.persons) == 1
@@ -99,7 +118,7 @@ def test_analyse_scene_person_detected(monkeypatch):
 
 def test_analyse_scene_non_person_filtered(monkeypatch):
     """Non-person class above threshold is not included."""
-    fake_cam = types.SimpleNamespace(capture_metadata=lambda: {})
+    fake_cam = _make_fake_cam()
     fake_imx500 = types.SimpleNamespace(
         get_outputs=lambda metadata, add_batch=False: _make_fake_outputs(
             boxes=[[0, 0, 160, 240]],
@@ -109,6 +128,7 @@ def test_analyse_scene_non_person_filtered(monkeypatch):
     )
     monkeypatch.setattr(_vision_module, '_cam', fake_cam)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
+    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
@@ -116,12 +136,13 @@ def test_analyse_scene_non_person_filtered(monkeypatch):
 
 def test_analyse_scene_inference_not_ready(monkeypatch):
     """None from get_outputs (model warmup) → empty scene, no crash."""
-    fake_cam = types.SimpleNamespace(capture_metadata=lambda: {})
+    fake_cam = _make_fake_cam()
     fake_imx500 = types.SimpleNamespace(
         get_outputs=lambda metadata, add_batch=False: None
     )
     monkeypatch.setattr(_vision_module, '_cam', fake_cam)
     monkeypatch.setattr(_vision_module, '_imx500', fake_imx500)
+    monkeypatch.setattr(_vision_module, '_cam_refcount', 1)
 
     result = _vision_module.analyse_scene()
     assert result.is_empty()
