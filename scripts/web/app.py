@@ -802,10 +802,12 @@ def _check_camera() -> bool:
     """Returns True if the IMX500 camera can be initialised."""
     try:
         _vision.acquire_camera()
-        _vision.release_camera()
-        return True
     except Exception:
         return False
+    try:
+        return True
+    finally:
+        _vision.release_camera()
 
 
 @app.get("/api/puppet/camera/status", dependencies=[Depends(require_pin)])
