@@ -934,20 +934,23 @@ async def vision_passive_status():
 @app.post("/api/vision/analyse", dependencies=[Depends(require_pin)])
 async def vision_analyse(background_tasks: BackgroundTasks):
     import tts_generate as _tts
+    from ai_response import AIResponder
 
     scene = await asyncio.to_thread(_vision.analyse_scene)
     if scene.is_empty():
-        text = "I don't see anyone in the room."
+        prompt = "Your camera just scanned the room and detected nobody. React in character."
     else:
-        desc = scene.to_context_string().replace("[Room: ", "").rstrip("]")
-        text = f"I can see {desc} in the room."
+        prompt = f"Your camera just scanned the room. {scene.to_context_string()}. React in character."
+
+    ai = AIResponder()
+    text = await asyncio.to_thread(ai.respond, prompt)
 
     def _speak_in_background(t: str):
         try:
             wav = _tts.speak(t)
             try:
                 leds.set_talking()
-                audio.play(wav, on_done=leds.all_off)
+                audio.play_oneshot(wav, on_chunk=leds.set_level, on_done=leds.all_off)
             finally:
                 import os as _os
                 if _os.path.exists(wav):
@@ -957,9 +960,9 @@ async def vision_analyse(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_speak_in_background, text)
 
-    persons = [{"confidence": p.confidence, "bbox": list(p.bbox)}
-               for p in scene.persons]
-    return {"text": text, "persons": persons}
+    objects = [{"label": o.label, "confidence": round(o.confidence, 3), "bbox": list(o.bbox)}
+               for o in scene.objects]
+    return {"text": text, "objects": objects}
 
 
 # ── Static files (must be last — catches all unmatched routes) ──
