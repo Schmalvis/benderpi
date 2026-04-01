@@ -218,6 +218,73 @@ def play_oneshot(wav_path: str, on_chunk=None, on_done=None):
         on_done()
 
 
+def play_stream_oneshot(wav_iter, on_chunk=None, on_done=None):
+    """Open stream, play WAV clips from an iterator back-to-back, close stream.
+    For use outside a session (camera responses, passive vision). Thread-safe —
+    blocks behind _lock if a session is active. Unlinks each WAV after playing.
+    Closes the generator on abort to trigger cleanup of unconsumed futures.
+
+    Args:
+        wav_iter:  Iterator yielding WAV file paths (e.g. speak_streaming()).
+        on_chunk:  Optional callback(amplitude: float) per chunk, value in [0.0, 1.0].
+        on_done:   Optional callback called once after all clips finish (or abort).
+    """
+    gen = iter(wav_iter)
+    with _lock:
+        _abort.clear()
+        was_open = _stream is not None
+        if was_open:
+            try:
+                was_open = _stream.is_active()
+            except Exception:
+                was_open = False
+
+        if not was_open:
+            stream = _pa.open(
+                format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
+                output=True, output_device_index=OUTPUT_DEVICE,
+                frames_per_buffer=CHUNK,
+            )
+        else:
+            stream = _stream
+
+        try:
+            stream.write(_silence(SILENCE_PRE))
+            for wav_path in gen:
+                if _abort.is_set():
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
+                    if hasattr(gen, "close"):
+                        gen.close()  # triggers BaseException cleanup in speak_streaming
+                    break
+                try:
+                    with wave.open(wav_path, 'rb') as wf:
+                        sw = wf.getsampwidth()
+                        data = wf.readframes(CHUNK)
+                        while data:
+                            if _abort.is_set():
+                                break
+                            stream.write(data)
+                            if on_chunk:
+                                on_chunk(rms_to_ratio(rms(data, sw)))
+                            data = wf.readframes(CHUNK)
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
+            if not _abort.is_set():
+                stream.write(_silence(SILENCE_POST))
+        finally:
+            if not was_open:
+                stream.stop_stream()
+                stream.close()
+    if on_done:
+        on_done()
+
+
 def play_stream(wav_iter, on_chunk=None, on_done=None):
     """
     Play WAV files from an iterator, back-to-back with no gap between sentences.

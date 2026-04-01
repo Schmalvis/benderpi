@@ -245,3 +245,88 @@ class TestAbort:
             assert audio_mod.was_aborted() is True
         finally:
             os.unlink(wav)
+
+
+# ---------------------------------------------------------------------------
+# play_stream_oneshot tests
+# ---------------------------------------------------------------------------
+
+def _make_wav_bytes_stream(n_frames: int = 512) -> bytes:
+    """Return minimal WAV file bytes (44100Hz mono int16)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(b"\x00" * n_frames * 2)
+    return buf.getvalue()
+
+
+def _write_wav_stream(path: str, n_frames: int = 512):
+    with open(path, "wb") as f:
+        f.write(_make_wav_bytes_stream(n_frames))
+
+
+def test_play_stream_oneshot_plays_all_clips_and_unlinks(tmp_path):
+    """play_stream_oneshot plays each WAV and unlinks it."""
+    import audio
+
+    paths = []
+    for i in range(3):
+        p = str(tmp_path / f"clip{i}.wav")
+        _write_wav_stream(p)
+        paths.append(p)
+
+    mock_stream = MagicMock()
+    mock_stream.is_active.return_value = False
+    mock_pa = MagicMock()
+    mock_pa.open.return_value = mock_stream
+
+    with patch.object(audio, "_pa", mock_pa), \
+         patch.object(audio, "_stream", None):
+        audio.play_stream_oneshot(iter(paths))
+
+    for p in paths:
+        assert not os.path.exists(p), f"WAV not unlinked: {p}"
+
+    mock_pa.open.assert_called_once()
+    mock_stream.stop_stream.assert_called_once()
+    mock_stream.close.assert_called_once()
+
+
+def test_play_stream_oneshot_calls_on_done_once(tmp_path):
+    """on_done is called exactly once after all clips play."""
+    import audio
+
+    paths = [str(tmp_path / f"c{i}.wav") for i in range(2)]
+    for p in paths:
+        _write_wav_stream(p)
+
+    done_calls = []
+    mock_stream = MagicMock()
+    mock_stream.is_active.return_value = False
+    mock_pa = MagicMock()
+    mock_pa.open.return_value = mock_stream
+
+    with patch.object(audio, "_pa", mock_pa), \
+         patch.object(audio, "_stream", None):
+        audio.play_stream_oneshot(iter(paths), on_done=lambda: done_calls.append(1))
+
+    assert done_calls == [1], f"on_done called {len(done_calls)} times, expected 1"
+
+
+def test_play_stream_oneshot_empty_iterator(tmp_path):
+    """Empty iterator: completes cleanly, on_done still called."""
+    import audio
+
+    done = []
+    mock_stream = MagicMock()
+    mock_stream.is_active.return_value = False
+    mock_pa = MagicMock()
+    mock_pa.open.return_value = mock_stream
+
+    with patch.object(audio, "_pa", mock_pa), \
+         patch.object(audio, "_stream", None):
+        audio.play_stream_oneshot(iter([]), on_done=lambda: done.append(1))
+
+    assert done == [1]
