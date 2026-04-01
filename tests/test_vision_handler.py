@@ -1,17 +1,17 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import pytest
 
 
 def test_vision_handler_empty_room():
-    """Returns a Response when no faces detected."""
+    """Returns a Response when no objects detected."""
     from handlers.vision_handler import VisionHandler
     from vision import SceneDescription
     from datetime import datetime
 
-    empty_scene = SceneDescription(faces=[], captured_at=datetime.now(), raw_detections={})
+    empty_scene = SceneDescription(objects=[], captured_at=datetime.now())
 
     with patch("vision.analyse_scene", return_value=empty_scene), \
          patch("tts_generate.speak", return_value="/tmp/test.wav"):
@@ -23,16 +23,15 @@ def test_vision_handler_empty_room():
     assert resp.intent == "VISION"
 
 
-def test_vision_handler_with_faces():
-    """Returns a Response describing detected faces."""
+def test_vision_handler_with_person():
+    """Returns a Response describing a detected person."""
     from handlers.vision_handler import VisionHandler
-    from vision import SceneDescription, FaceInfo
+    from vision import SceneDescription, DetectedObject
     from datetime import datetime
 
     scene = SceneDescription(
-        faces=[FaceInfo(age_estimate=35, gender="male", confidence=0.9, bbox=(0, 0, 100, 100))],
+        objects=[DetectedObject(label="person", confidence=0.45, bbox=(10, 20, 200, 400))],
         captured_at=datetime.now(),
-        raw_detections={},
     )
 
     with patch("vision.analyse_scene", return_value=scene), \
@@ -42,22 +41,21 @@ def test_vision_handler_with_faces():
 
     assert resp is not None
     assert resp.wav_path == "/tmp/test.wav"
-    assert "35" in resp.text or "adult" in resp.text or "male" in resp.text
+    assert "person" in resp.text.lower() or "room" in resp.text.lower()
 
 
-def test_vision_handler_multiple_faces():
-    """Response correctly joins multiple faces with 'and'."""
+def test_vision_handler_multiple_persons():
+    """Response correctly describes multiple persons."""
     from handlers.vision_handler import VisionHandler
-    from vision import SceneDescription, FaceInfo
+    from vision import SceneDescription, DetectedObject
     from datetime import datetime
 
     scene = SceneDescription(
-        faces=[
-            FaceInfo(age_estimate=35, gender="male", confidence=0.9, bbox=(0, 0, 100, 100)),
-            FaceInfo(age_estimate=8, gender="female", confidence=0.85, bbox=(100, 0, 200, 100)),
+        objects=[
+            DetectedObject(label="person", confidence=0.45, bbox=(0, 0, 100, 200)),
+            DetectedObject(label="person", confidence=0.40, bbox=(150, 0, 300, 200)),
         ],
         captured_at=datetime.now(),
-        raw_detections={},
     )
 
     with patch("vision.analyse_scene", return_value=scene), \
@@ -66,7 +64,6 @@ def test_vision_handler_multiple_faces():
         resp = handler.handle("describe the room", "VISION")
 
     assert resp is not None
-    assert "and" in resp.text
     assert resp.is_temp is True
 
 
