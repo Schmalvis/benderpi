@@ -1,3 +1,16 @@
+def test_config_vision_defaults():
+    """Config exposes vision_model, threshold, and allowlist with sane defaults."""
+    import importlib, config as _cfg_mod
+    importlib.reload(_cfg_mod)
+    from config import Config
+    c = Config()
+    assert c.vision_model == "yolo11n"
+    assert c.vision_confidence_threshold == 0.20
+    assert isinstance(c.vision_allowlist, list)
+    assert "person" in c.vision_allowlist
+    assert "laptop" in c.vision_allowlist
+
+
 """Unit tests for IMX500-based person detection in vision.py.
 
 All camera/IMX500 interaction is mocked — these tests run offline.
