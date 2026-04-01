@@ -24,37 +24,66 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
 
 # ---------------------------------------------------------------------------
-# SceneDescription / PersonInfo tests (no mocking needed)
+# DetectedObject / SceneDescription tests (no mocking needed)
 # ---------------------------------------------------------------------------
 
-from vision import SceneDescription, PersonInfo
+def test_detected_object_fields():
+    """DetectedObject holds label, confidence, bbox."""
+    from vision import DetectedObject
+    obj = DetectedObject(label="person", confidence=0.85, bbox=(10, 20, 100, 200))
+    assert obj.label == "person"
+    assert obj.confidence == 0.85
+    assert obj.bbox == (10, 20, 100, 200)
 
 
-def test_scene_empty_context_string():
-    s = SceneDescription()
-    assert s.to_context_string() == "[Room: empty]"
-
-
-def test_scene_one_person_context_string():
-    s = SceneDescription(persons=[PersonInfo(confidence=0.9, bbox=(10, 20, 100, 200))])
-    assert s.to_context_string() == "[Room: 1 person]"
-
-
-def test_scene_two_people_context_string():
-    s = SceneDescription(persons=[
-        PersonInfo(confidence=0.9, bbox=(0, 0, 100, 200)),
-        PersonInfo(confidence=0.7, bbox=(150, 0, 300, 200)),
-    ])
-    assert s.to_context_string() == "[Room: 2 people]"
-
-
-def test_scene_is_empty_true():
+def test_scene_description_is_empty_when_no_objects():
+    from vision import SceneDescription
     assert SceneDescription().is_empty() is True
 
 
-def test_scene_is_empty_false():
-    s = SceneDescription(persons=[PersonInfo(confidence=0.8, bbox=(0, 0, 320, 480))])
-    assert s.is_empty() is False
+def test_scene_description_is_not_empty_with_object():
+    from vision import SceneDescription, DetectedObject
+    scene = SceneDescription(objects=[DetectedObject("person", 0.9, (0, 0, 100, 200))])
+    assert scene.is_empty() is False
+
+
+def test_persons_helper_filters_to_people_only():
+    from vision import SceneDescription, DetectedObject
+    scene = SceneDescription(objects=[
+        DetectedObject("person", 0.9, (0, 0, 100, 200)),
+        DetectedObject("laptop", 0.7, (200, 0, 400, 300)),
+        DetectedObject("person", 0.6, (400, 0, 640, 400)),
+    ])
+    persons = scene.persons()
+    assert len(persons) == 2
+    assert all(p.label == "person" for p in persons)
+
+
+def test_to_context_string_empty():
+    from vision import SceneDescription
+    assert SceneDescription().to_context_string() == "[Room: empty]"
+
+
+def test_to_context_string_single_person():
+    from vision import SceneDescription, DetectedObject
+    scene = SceneDescription(objects=[DetectedObject("person", 0.9, (0, 0, 100, 200))])
+    assert scene.to_context_string() == "[Room: 1 person]"
+
+
+def test_to_context_string_multi_class():
+    from vision import SceneDescription, DetectedObject
+    scene = SceneDescription(objects=[
+        DetectedObject("person", 0.9, (0, 0, 100, 200)),
+        DetectedObject("person", 0.7, (200, 0, 300, 400)),
+        DetectedObject("laptop", 0.6, (300, 0, 500, 300)),
+        DetectedObject("bottle", 0.5, (400, 0, 450, 200)),
+        DetectedObject("bottle", 0.4, (450, 0, 500, 200)),
+    ])
+    result = scene.to_context_string()
+    assert result.startswith("[Room:")
+    assert "2 people" in result
+    assert "1 laptop" in result
+    assert "2 bottles" in result
 
 
 # ---------------------------------------------------------------------------

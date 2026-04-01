@@ -93,25 +93,37 @@ def release_camera():
 # Data structures
 # ---------------------------------------------------------------------------
 @dataclass
-class PersonInfo:
+class DetectedObject:
+    label: str
     confidence: float
-    bbox: tuple  # pixel coords (y_min, x_min, y_max, x_max) in 640x480 space
+    bbox: tuple  # pixel coords (x_min, y_min, x_max, y_max)
 
 
 @dataclass
 class SceneDescription:
-    persons: list = field(default_factory=list)
-    captured_at: datetime = field(default_factory=datetime.now)
+    objects: list = field(default_factory=list)
+    captured_at: datetime | None = None
 
-    def to_context_string(self) -> str:
-        """Returns e.g. '[Room: 2 people]' or '[Room: empty]'."""
-        if not self.persons:
-            return "[Room: empty]"
-        n = len(self.persons)
-        return f"[Room: {n} {'person' if n == 1 else 'people'}]"
+    def persons(self) -> list:
+        """Return only person detections."""
+        return [o for o in self.objects if o.label == "person"]
 
     def is_empty(self) -> bool:
-        return len(self.persons) == 0
+        return len(self.objects) == 0
+
+    def to_context_string(self) -> str:
+        """Returns '[Room: 1 person, 2 bottles, 1 laptop]' or '[Room: empty]'."""
+        if not self.objects:
+            return "[Room: empty]"
+        from collections import Counter
+        counts = Counter(o.label for o in self.objects)
+        parts = []
+        for label, n in sorted(counts.items()):
+            if label == "person":
+                parts.insert(0, f"{n} {'person' if n == 1 else 'people'}")
+            else:
+                parts.append(f"{n} {label}{"s" if n != 1 else ""}")
+        return "[Room: " + ", ".join(parts) + "]" 
 
 
 # ---------------------------------------------------------------------------
