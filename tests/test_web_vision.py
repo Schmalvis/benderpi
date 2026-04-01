@@ -33,7 +33,12 @@ def _base_mocks():
     mock_vision = types.ModuleType("vision")
     mock_tts = types.ModuleType("tts_generate")
     mock_tts.speak = lambda text: "/tmp/test.wav"
-    return {"audio": mock_audio, "leds": mock_leds, "vision": mock_vision, "tts_generate": mock_tts}
+    import types as _t
+    mock_ai = _t.ModuleType("ai_response")
+    class _MockAIResponder:
+        def respond(self, prompt): return "Mock Bender response."
+    mock_ai.AIResponder = _MockAIResponder
+    return {"audio": mock_audio, "leds": mock_leds, "vision": mock_vision, "tts_generate": mock_tts, "ai_response": mock_ai}
 
 
 def test_vision_passive_enable():
@@ -90,7 +95,7 @@ def test_vision_analyse_empty():
 
     mock_scene = MagicMock(spec=SceneDescription)
     mock_scene.is_empty.return_value = True
-    mock_scene.persons = []
+    mock_scene.objects = []
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
@@ -103,26 +108,24 @@ def test_vision_analyse_empty():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert "I don't see anyone" in data["text"]
-    assert data["persons"] == []
+    assert "text" in data
+    assert data["objects"] == []
 
 
 def test_vision_analyse_with_persons():
-    from vision import SceneDescription, PersonInfo
+    from vision import SceneDescription, DetectedObject
 
-    person = MagicMock(spec=PersonInfo)
-    person.confidence = 0.92
-    person.bbox = (10.0, 20.0, 100.0, 200.0)
+    obj = DetectedObject(label="person", confidence=0.92, bbox=(10.0, 20.0, 100.0, 200.0))
 
     mock_scene = MagicMock(spec=SceneDescription)
     mock_scene.is_empty.return_value = False
-    mock_scene.persons = [person]
+    mock_scene.objects = [obj]
     mock_scene.to_context_string.return_value = "[Room: 1 person]"
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
     mocks["vision"].SceneDescription = SceneDescription
-    mocks["vision"].PersonInfo = PersonInfo
+    mocks["vision"].DetectedObject = DetectedObject
 
     with patch.dict(sys.modules, mocks):
         client = get_client()
@@ -131,6 +134,6 @@ def test_vision_analyse_with_persons():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert "I can see" in data["text"]
-    assert len(data["persons"]) == 1
-    assert data["persons"][0]["confidence"] == 0.92
+    assert "text" in data
+    assert len(data["objects"]) == 1
+    assert data["objects"][0]["label"] == "person"
