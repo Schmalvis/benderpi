@@ -1,50 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Rajdhani:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── Futurama Theme Tokens (Dark — default) ── */
+/* ── Planet Express Terminal — Dark Theme ── */
 :root {
-  --bg: #0a0e1a;
-  --bg-card: #12162a;
-  --bg-sidebar: #0d1020;
-  --bg-input: #1a1e30;
-  --accent: #4a9eff;
-  --accent-red: #e94560;
-  --text: #e0e0e0;
-  --text-muted: #6a6a9a;
+  --bg: #0c0a08;
+  --bg-card: #161210;
+  --bg-sidebar: #110e0c;
+  --bg-input: #1e1916;
+  --accent: #d4820a;
+  --accent-bright: #f0a030;
+  --accent-red: #e94540;
+  --text: #ede5d8;
+  --text-muted: #7a7060;
   --success: #4ecca3;
   --warning: #f0a500;
   --error: #e94560;
-  --border: #2a2a4a;
-  --glow: rgba(74,158,255,0.15);
-  --scanline: rgba(0,200,255,0.015);
-  --radius: 8px;
-  --radius-lg: 12px;
-  --shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --transition: 0.2s ease;
-  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --border: #2a2018;
+  --glow: rgba(212,130,10,0.18);
+  --glow-strong: rgba(212,130,10,0.4);
+  --scanline: rgba(240,160,48,0.022);
+  --radius: 4px;
+  --radius-lg: 6px;
+  --shadow: 0 2px 16px rgba(0,0,0,0.65);
+  --shadow-lg: 0 8px 40px rgba(0,0,0,0.85);
+  --transition: 0.15s ease;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Rajdhani', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Orbitron', 'JetBrains Mono', monospace;
 }
 
 /* ── Light Theme ── */
 [data-theme="light"] {
-  --bg: #f0f2f5;
+  --bg: #f5f0e8;
   --bg-card: #fff;
-  --bg-sidebar: #e8eaf0;
-  --bg-input: #f5f5f5;
-  --accent: #2a7cdb;
+  --bg-sidebar: #ede8df;
+  --bg-input: #f0ebe3;
+  --accent: #b86e08;
+  --accent-bright: #d4820a;
   --accent-red: #d63447;
-  --text: #1a1a2e;
-  --text-muted: #666680;
+  --text: #1a1208;
+  --text-muted: #6a5a48;
   --success: #2d8f6f;
   --warning: #c48200;
   --error: #d63447;
-  --border: #d0d0e0;
-  --glow: rgba(42,124,219,0.08);
+  --border: #d8cfc0;
+  --glow: rgba(180,110,8,0.1);
+  --glow-strong: rgba(180,110,8,0.2);
   --scanline: none;
-  --shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+  --shadow: 0 2px 12px rgba(0,0,0,0.12);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.18);
 }
 
 /* ── Global Reset ── */
@@ -56,10 +63,11 @@ body {
   color: var(--text);
   line-height: 1.6;
   min-height: 100vh;
+  letter-spacing: 0.01em;
   transition: background var(--transition), color var(--transition);
 }
 
-/* ── Scan Line Overlay ── */
+/* ── Scanline Overlay ── */
 body::before {
   content: '';
   position: fixed;
@@ -73,4 +81,34 @@ body::before {
   );
   pointer-events: none;
   z-index: 9999;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ── Display font utility ── */
+.font-display { font-family: var(--font-display); }
+
+/* ── Selection ── */
+::selection { background: rgba(212,130,10,0.3); color: var(--text); }
+
+/* ── Tailwind animations ── */
+@keyframes avatar-glow {
+  0%, 100% { box-shadow: 0 0 6px var(--glow); }
+  50% { box-shadow: 0 0 18px var(--glow-strong); }
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes timer-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@keyframes scan-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }

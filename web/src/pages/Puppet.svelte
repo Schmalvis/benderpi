@@ -262,6 +262,22 @@
     </div>
   </div>
 
+  <!-- Bender watching placeholder — shown when camera is off -->
+  {#if !cameraActive}
+    <div class="bg-bg-card border border-border rounded-lg p-6 flex items-center gap-5" style="border-style: dashed; opacity: 0.7;">
+      <img
+        src="/assets/bender-looking-down.png"
+        alt="Bender watching"
+        class="w-24 h-24 object-contain shrink-0"
+        style="filter: drop-shadow(0 0 12px rgba(212,130,10,0.2)); opacity: 0.8;"
+      />
+      <div>
+        <div class="font-display text-[11px] tracking-widest mb-1" style="color: var(--text-muted); letter-spacing: 0.15em;">ROOM VIEW</div>
+        <p class="text-sm" style="color: var(--text-muted);">Bender isn't watching yet.<br/>Enable camera to see the room.</p>
+      </div>
+    </div>
+  {/if}
+
   <!-- Camera feed -->
   {#if cameraActive && cameraSrc}
     <div class="bg-bg-card border border-border rounded-lg overflow-hidden">

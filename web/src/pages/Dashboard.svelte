@@ -81,13 +81,29 @@
 </script>
 
 <div class="space-y-6">
-  <div class="bg-bg-card border border-border rounded-lg p-6 flex items-center gap-6">
-    <img src="/assets/Bender_Rodriguez.png" alt="Bender" class="w-20 h-20 object-contain" />
-    <div>
-      <h2 class="text-2xl font-bold text-accent">Good news, everyone!</h2>
-      <p class="text-text-muted text-sm mt-1">
-        {$health.status === 'online' ? "Bender is online and ready to insult humanity." : "Bender appears to be offline."}
+  <div class="bg-bg-card border border-border rounded-lg p-6 flex flex-wrap sm:flex-nowrap items-center gap-4 sm:gap-6 relative overflow-hidden">
+    <!-- Decorative background glow -->
+    <div class="absolute right-0 top-0 bottom-0 w-48 pointer-events-none" style="background: radial-gradient(ellipse at right center, rgba(212,130,10,0.06) 0%, transparent 70%);"></div>
+    <img
+      src="/assets/bender-cigar.png"
+      alt="Bender"
+      class="w-24 h-24 sm:w-32 sm:h-32 object-contain shrink-0 relative z-10"
+      style="filter: drop-shadow(0 0 20px rgba(212,130,10,0.35));"
+    />
+    <div class="relative z-10">
+      <h2 class="font-display font-bold text-accent" style="font-size: 1.4rem; letter-spacing: 0.05em; text-shadow: 0 0 20px rgba(212,130,10,0.3);">
+        {$health.status === 'online' ? "Good news, everyone!" : "I'm 40% offline."}
+      </h2>
+      <p class="text-sm mt-1" style="color: var(--text-muted);">
+        {$health.status === 'online' ? "Bender is online and ready to insult humanity." : "Bender appears to be offline. This is unacceptable."}
       </p>
+      <div class="mt-3 flex items-center gap-2">
+        <span class="inline-block w-2 h-2 rounded-full {$health.status === 'online' ? 'animate-status-pulse' : ''}"
+          style="background: {$health.status === 'online' ? 'var(--success)' : 'var(--error)'};"></span>
+        <span class="font-display text-[10px] tracking-widest" style="color: var(--text-muted); letter-spacing: 0.15em;">
+          {$health.status === 'online' ? 'ALL SYSTEMS NOMINAL' : 'SYSTEM OFFLINE'}
+        </span>
+      </div>
     </div>
   </div>
 
