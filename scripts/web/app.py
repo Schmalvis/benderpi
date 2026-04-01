@@ -947,14 +947,12 @@ async def vision_analyse(background_tasks: BackgroundTasks):
 
     def _speak_in_background(t: str):
         try:
-            wav = _tts.speak(t)
-            try:
-                leds.set_talking()
-                audio.play_oneshot(wav, on_chunk=leds.set_level, on_done=leds.all_off)
-            finally:
-                import os as _os
-                if _os.path.exists(wav):
-                    _os.unlink(wav)
+            leds.set_talking()
+            audio.play_stream_oneshot(
+                _tts.speak_streaming(t),
+                on_chunk=leds.set_level,
+                on_done=leds.all_off,
+            )
         except Exception as exc:
             log.warning("vision_analyse TTS/audio failed: %s", exc)
 

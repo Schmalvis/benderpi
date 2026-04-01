@@ -198,12 +198,12 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                          response_text=os.path.basename(greeting_resp.wav_path))
         else:
             text = "Yo. What do you want?"
-            wav = tts_generate.speak(text)
-            try:
-                leds.set_talking()
-                audio.play(wav, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-            finally:
-                os.unlink(wav)
+            leds.set_talking()
+            audio.play_stream(
+                tts_generate.speak_streaming(text),
+                on_chunk=_check_abort_on_chunk,
+                on_done=leds.all_off,
+            )
             session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
 
     # Collect scene analysis result and inject into AI context
@@ -417,13 +417,11 @@ def _vision_watcher():
 
             description = scene.to_context_string().replace("[Room: ", "").rstrip("]")
             comment = f"Just so you know, I can see {description} in the room."
-            wav = tts_generate.speak(comment)
-            try:
-                leds.set_talking()
-                audio.play(wav, on_done=leds.all_off)
-            finally:
-                if os.path.exists(wav):
-                    os.unlink(wav)
+            leds.set_talking()
+            audio.play_stream_oneshot(
+                tts_generate.speak_streaming(comment),
+                on_done=leds.all_off,
+            )
             log.info("Vision passive: announced scene")
         except Exception as exc:
             log.warning("Vision passive watcher error: %s", exc)

@@ -302,6 +302,9 @@ def speak_streaming(text: str):
     Generate TTS audio sentence-by-sentence, yielding WAV paths as each is ready.
     Sentence 1 is yielded as soon as Piper finishes it; sentences 2+ run concurrently.
     Caller is responsible for playing and unlinking each yielded path.
+    
+    Properly cleans up temp files if the generator is closed early (GeneratorExit)
+    or if an exception occurs during synthesis.
     """
     from concurrent.futures import ThreadPoolExecutor
     text = _preprocess_text(text)
@@ -315,15 +318,19 @@ def speak_streaming(text: str):
     with ThreadPoolExecutor(max_workers=min(len(sentences), 3)) as pool:
         futures = [pool.submit(_speak_single, s) for s in sentences]
         try:
+            yielded_count = 0
             for future in futures:
-                yield future.result()  # preserves sentence order; blocks only until each is ready
-        except Exception:
-            # Clean up temp files from any futures that already completed
-            for f in futures:
-                if f.done() and not f.cancelled():
+                result = future.result()
+                yield result
+                yielded_count += 1
+        except BaseException:
+            # Clean up temp files from futures that were NOT yielded.
+            # Call f.result() unconditionally (blocks until done) — the thread pool
+            # is still running at this point so all futures will complete.
+            for f in futures[yielded_count:]:
+                if not f.cancelled():
                     try:
-                        result = f.result()
-                        os.unlink(result)
+                        os.unlink(f.result())
                     except Exception:
                         pass
             raise
