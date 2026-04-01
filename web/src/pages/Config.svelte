@@ -143,6 +143,14 @@
   const inputClass = 'bg-bg-input border border-border rounded px-3 py-2 text-text-default focus:outline-none focus:border-accent transition-colors w-full';
   const labelClass = 'block text-[11px] text-text-muted uppercase tracking-wider mb-1';
   const summaryClass = 'cursor-pointer text-[11px] text-text-muted uppercase tracking-wider font-semibold select-none py-2';
+
+  const VISION_COCO_CANDIDATES = [
+    "person", "bicycle", "bottle", "wine glass", "cup",
+    "chair", "couch", "dining table", "bed", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "book", "clock", "vase", "potted plant", "teddy bear",
+    "backpack", "sports ball", "toothbrush", "dog", "cat",
+  ];
 </script>
 
 <div class="max-w-2xl space-y-4 pb-24">
@@ -327,6 +335,49 @@
         {#if visionError}
           <p class="text-error text-[11px] mt-1">{visionError}</p>
         {/if}
+      </div>
+
+      <div>
+        <label class={labelClass} for="vision_confidence_threshold">
+          Confidence Threshold
+        </label>
+        <input
+          id="vision_confidence_threshold"
+          type="number"
+          min="0.05" max="0.50" step="0.05"
+          class={inputClass}
+          bind:value={$config.vision_confidence_threshold}
+        />
+        <p class="text-[11px] text-text-muted mt-1">
+          Minimum detection confidence (0.05–0.50). Lower = more detections, more noise.
+        </p>
+      </div>
+
+      <div>
+        <p class={labelClass}>Detection Allowlist</p>
+        <p class="text-[11px] text-text-muted mb-2">
+          Active classes are highlighted. Empty = detect all 80 COCO classes.
+        </p>
+        <div class="flex flex-wrap gap-2">
+          {#each VISION_COCO_CANDIDATES as label}
+            {@const active = ($config.vision_allowlist ?? []).includes(label)}
+            <button
+              type="button"
+              class="px-2 py-1 rounded text-xs border transition-colors {active
+                ? 'bg-accent border-accent text-bg-base'
+                : 'bg-bg-input border-border text-text-muted'}"
+              on:click={() => {
+                const list = [...($config.vision_allowlist ?? [])];
+                const idx = list.indexOf(label);
+                if (idx >= 0) list.splice(idx, 1);
+                else list.push(label);
+                $config.vision_allowlist = list;
+              }}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
       </div>
 
     </div>

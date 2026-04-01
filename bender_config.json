@@ -66,5 +66,34 @@
     "creative": "local_first"
   },
   "tts_noise_scale": 0.9,
-  "tts_noise_scale_w": 1.2
+  "tts_noise_scale_w": 1.2,
+  "vision_model": "yolo11n",
+  "vision_confidence_threshold": 0.2,
+  "vision_allowlist": [
+    "person",
+    "bicycle",
+    "bottle",
+    "wine glass",
+    "cup",
+    "chair",
+    "couch",
+    "dining table",
+    "bed",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "book",
+    "clock",
+    "vase",
+    "potted plant",
+    "teddy bear",
+    "backpack",
+    "sports ball",
+    "toothbrush",
+    "dog",
+    "cat"
+  ]
 }

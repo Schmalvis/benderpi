@@ -102,6 +102,9 @@ class Config:
     vision_passive_enabled: bool = False
     vision_passive_expires_at: str = ""   # ISO format datetime string, "" = indefinite
     vision_passive_interval_minutes: int = 10
+    vision_model: str = "yolo11n"
+    vision_confidence_threshold: float = 0.20
+    vision_allowlist: list = None  # set in __init__
 
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
@@ -123,6 +126,15 @@ class Config:
                 "knowledge": "cloud_first",
                 "creative": "cloud_first",
             }
+
+        if self.vision_allowlist is None:
+            self.vision_allowlist = [
+                "person", "bicycle", "bottle", "wine glass", "cup",
+                "chair", "couch", "dining table", "bed", "tv",
+                "laptop", "mouse", "remote", "keyboard", "cell phone",
+                "book", "clock", "vase", "potted plant", "teddy bear",
+                "backpack", "sports ball", "toothbrush", "dog", "cat",
+            ]
 
         # IPC paths
         self.session_file: str = os.path.join(_BASE_DIR, ".session_active.json")
