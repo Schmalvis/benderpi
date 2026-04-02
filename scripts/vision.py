@@ -17,6 +17,7 @@ from datetime import datetime
 import camera
 import vlm
 from logger import get_logger
+from config import cfg
 
 log = get_logger("vision")
 
@@ -60,7 +61,7 @@ def analyse_scene() -> SceneDescription:
     try:
         camera.acquire_camera()
         frame = camera.capture_frame()
-        description = vlm.describe_scene(frame)
+        description = vlm.describe_scene(frame, prompt=cfg.vlm_prompt)
         return SceneDescription(description=description, captured_at=datetime.now())
     except Exception:
         log.exception("analyse_scene failed")

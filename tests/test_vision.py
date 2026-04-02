@@ -142,7 +142,8 @@ def test_analyse_scene_passes_frame_to_vlm():
     vision, cam_mock, vlm_mock = _make_vision_module()
     frame = cam_mock["capture_frame"].return_value
     vision.analyse_scene()
-    vlm_mock["describe_scene"].assert_called_once_with(frame)
+    from config import cfg
+    vlm_mock["describe_scene"].assert_called_once_with(frame, prompt=cfg.vlm_prompt)
 
 
 def test_analyse_scene_returns_empty_on_camera_exception():
