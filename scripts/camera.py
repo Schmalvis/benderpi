@@ -123,7 +123,6 @@ def capture_frame():
     The caller is responsible for having already called acquire_camera().
     """
     with _cam_lock:
-        cam = _cam
-    if cam is None:
-        raise RuntimeError("Camera is not open. Call acquire_camera() first.")
-    return cam.capture_array("main")
+        if _cam is None:
+            raise RuntimeError("Camera is not open. Call acquire_camera() first.")
+        return _cam.capture_array("main")
