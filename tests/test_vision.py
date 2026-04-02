@@ -193,3 +193,13 @@ def test_release_camera_delegates_to_camera_module():
     vision, cam_mock, _ = _make_vision_module()
     vision.release_camera()
     cam_mock["release_camera"].assert_called_once()
+
+
+def test_analyse_scene_returns_empty_on_acquire_error():
+    cam_mock = _default_camera_mock()
+    cam_mock["acquire_camera"].side_effect = RuntimeError("camera unavailable")
+    vision, cam_mock, _ = _make_vision_module(camera_mock=cam_mock)
+    result = vision.analyse_scene()
+    assert result.is_empty()
+    # release_camera still called in finally (safe — guarded against refcount 0)
+    cam_mock["release_camera"].assert_called_once()
