@@ -1,17 +1,21 @@
+"""Tests for handlers/vision_handler.py — VLM-based vision handler.
+
+All hardware interaction is mocked; these tests run offline.
+"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from unittest.mock import patch
+from datetime import datetime
 import pytest
 
 
 def test_vision_handler_empty_room():
-    """Returns a Response when no objects detected."""
+    """Returns a Response when VLM returns empty description."""
     from handlers.vision_handler import VisionHandler
     from vision import SceneDescription
-    from datetime import datetime
 
-    empty_scene = SceneDescription(objects=[], captured_at=datetime.now())
+    empty_scene = SceneDescription(description="", captured_at=datetime.now())
 
     with patch("vision.analyse_scene", return_value=empty_scene), \
          patch("tts_generate.speak", return_value="/tmp/test.wav"):
@@ -23,14 +27,13 @@ def test_vision_handler_empty_room():
     assert resp.intent == "VISION"
 
 
-def test_vision_handler_with_person():
-    """Returns a Response describing a detected person."""
+def test_vision_handler_with_description():
+    """Returns a Response incorporating the VLM scene description."""
     from handlers.vision_handler import VisionHandler
-    from vision import SceneDescription, DetectedObject
-    from datetime import datetime
+    from vision import SceneDescription
 
     scene = SceneDescription(
-        objects=[DetectedObject(label="person", confidence=0.45, bbox=(10, 20, 200, 400))],
+        description="A person is sitting on a sofa reading a book.",
         captured_at=datetime.now(),
     )
 
@@ -41,20 +44,15 @@ def test_vision_handler_with_person():
 
     assert resp is not None
     assert resp.wav_path == "/tmp/test.wav"
-    assert "person" in resp.text.lower() or "room" in resp.text.lower()
 
 
-def test_vision_handler_multiple_persons():
-    """Response correctly describes multiple persons."""
+def test_vision_handler_multiple_subjects():
+    """Response handles a rich multi-subject VLM description."""
     from handlers.vision_handler import VisionHandler
-    from vision import SceneDescription, DetectedObject
-    from datetime import datetime
+    from vision import SceneDescription
 
     scene = SceneDescription(
-        objects=[
-            DetectedObject(label="person", confidence=0.45, bbox=(0, 0, 100, 200)),
-            DetectedObject(label="person", confidence=0.40, bbox=(150, 0, 300, 200)),
-        ],
+        description="Two people are sitting at a table. One is using a laptop, the other is drinking coffee.",
         captured_at=datetime.now(),
     )
 

@@ -64,7 +64,6 @@ def test_vision_passive_enable_indefinite():
 def test_vision_passive_disable():
     with patch.dict(sys.modules, _base_mocks()):
         client = get_client()
-        # Enable first
         client.post("/api/vision/passive", json={"duration_minutes": 10}, headers=auth())
         resp = client.delete("/api/vision/passive", headers=auth())
     assert resp.status_code == 200
@@ -93,8 +92,9 @@ def test_vision_passive_requires_pin():
 def test_vision_analyse_empty():
     from vision import SceneDescription
 
-    mock_scene = MagicMock(spec=SceneDescription)
+    mock_scene = MagicMock()
     mock_scene.is_empty.return_value = True
+    mock_scene.to_context_string.return_value = ""
     mock_scene.objects = []
 
     mocks = _base_mocks()
@@ -112,20 +112,18 @@ def test_vision_analyse_empty():
     assert data["objects"] == []
 
 
-def test_vision_analyse_with_persons():
-    from vision import SceneDescription, DetectedObject
+def test_vision_analyse_with_description():
+    """VLM-based scene description flows through the endpoint correctly."""
+    from vision import SceneDescription
 
-    obj = DetectedObject(label="person", confidence=0.92, bbox=(10.0, 20.0, 100.0, 200.0))
-
-    mock_scene = MagicMock(spec=SceneDescription)
+    mock_scene = MagicMock()
     mock_scene.is_empty.return_value = False
-    mock_scene.objects = [obj]
-    mock_scene.to_context_string.return_value = "[Room: 1 person]"
+    mock_scene.to_context_string.return_value = "A person is reading a book on the sofa."
+    mock_scene.objects = []
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
     mocks["vision"].SceneDescription = SceneDescription
-    mocks["vision"].DetectedObject = DetectedObject
 
     with patch.dict(sys.modules, mocks):
         client = get_client()
@@ -135,5 +133,4 @@ def test_vision_analyse_with_persons():
     assert resp.status_code == 200
     data = resp.json()
     assert "text" in data
-    assert len(data["objects"]) == 1
-    assert data["objects"][0]["label"] == "person"
+    assert data["text"] == "Mock Bender response."
