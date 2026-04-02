@@ -799,7 +799,7 @@ async def remote_ask(audio: UploadFile = File(...)):
 # ── Camera Stream ─────────────────────────────────────────────────────────────
 
 def _check_camera() -> bool:
-    """Returns True if the IMX500 camera can be initialised."""
+    """Returns True if the camera can be initialised."""
     try:
         _vision.acquire_camera()
     except Exception:
@@ -895,42 +895,6 @@ async def puppet_mic_ws(websocket: WebSocket):
 import vision as _vision
 
 
-@app.post("/api/vision/passive", dependencies=[Depends(require_pin)])
-async def vision_passive_enable(body: dict = Body(...)):
-    duration_minutes = body.get("duration_minutes")  # int or None
-    cfg.vision_passive_enabled = True
-    if duration_minutes is not None:
-        from datetime import datetime, timezone, timedelta
-        expires = datetime.now(tz=timezone.utc) + timedelta(minutes=int(duration_minutes))
-        cfg.vision_passive_expires_at = expires.isoformat()
-    else:
-        cfg.vision_passive_expires_at = ""  # indefinite
-    return {"enabled": True, "expires_at": cfg.vision_passive_expires_at}
-
-
-@app.delete("/api/vision/passive", dependencies=[Depends(require_pin)])
-async def vision_passive_disable():
-    cfg.vision_passive_enabled = False
-    cfg.vision_passive_expires_at = ""
-    return {"enabled": False}
-
-
-@app.get("/api/vision/passive", dependencies=[Depends(require_pin)])
-async def vision_passive_status():
-    enabled = cfg.vision_passive_enabled
-    expires_at = cfg.vision_passive_expires_at
-    minutes_remaining = None
-    if enabled and expires_at:
-        from datetime import datetime, timezone
-        try:
-            exp = datetime.fromisoformat(expires_at)
-            delta = (exp - datetime.now(tz=timezone.utc)).total_seconds()
-            minutes_remaining = max(0, int(delta / 60))
-        except ValueError:
-            pass
-    return {"enabled": enabled, "expires_at": expires_at, "minutes_remaining": minutes_remaining}
-
-
 @app.post("/api/vision/analyse", dependencies=[Depends(require_pin)])
 async def vision_analyse(background_tasks: BackgroundTasks):
     import tts_generate as _tts
@@ -958,9 +922,7 @@ async def vision_analyse(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_speak_in_background, text)
 
-    objects = [{"label": o.label, "confidence": round(o.confidence, 3), "bbox": list(o.bbox)}
-               for o in scene.objects]
-    return {"text": text, "objects": objects}
+    return {"text": text, "description": scene.to_context_string()}
 
 
 # ── Static files (must be last — catches all unmatched routes) ──

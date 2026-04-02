@@ -1,8 +1,14 @@
 """Handler for vision/scene-awareness responses."""
 from __future__ import annotations
 
+import os
+import random
+
+import anthropic
 import vision
 import tts_generate
+from ai_response import BENDER_SYSTEM_PROMPT
+from config import cfg
 from handler_base import Handler, Response
 from logger import get_logger
 
@@ -14,7 +20,24 @@ _EMPTY_ROOM_RESPONSES = [
     "Nobody home. Just me and my existential dread.",
 ]
 
-import random
+
+def _bender_scene_response(scene_description: str) -> str:
+    """Ask Bender to react to the scene via a one-shot LLM call (no history)."""
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return scene_description
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model=cfg.ai_model,
+            max_tokens=100,
+            system=BENDER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": f"Tell me what you see: {scene_description}"}],
+        )
+        return message.content[0].text.strip()
+    except Exception as exc:
+        log.warning("VisionHandler: LLM call failed (%s), using raw description", exc)
+        return scene_description
 
 
 class VisionHandler(Handler):
@@ -33,16 +56,7 @@ class VisionHandler(Handler):
         if scene.is_empty():
             description = random.choice(_EMPTY_ROOM_RESPONSES)
         else:
-            # Build description from SceneDescription without LLM
-            ctx = scene.to_context_string()
-            # ctx is e.g. "[Room: adult male ~35, child female ~8]"
-            inner = ctx.replace("[Room: ", "").rstrip("]")
-            parts = [p.strip() for p in inner.split(",")]
-            if len(parts) == 1:
-                description = f"I can see {parts[0]} in the room."
-            else:
-                joined = ", ".join(parts[:-1]) + " and " + parts[-1]
-                description = f"I can see {joined} in the room."
+            description = _bender_scene_response(scene.to_context_string())
 
         log.info("VisionHandler: %s", description)
         wav = tts_generate.speak(description)

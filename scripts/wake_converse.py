@@ -20,7 +20,6 @@ import sys
 import struct
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR   = os.path.dirname(SCRIPT_DIR)
@@ -208,12 +207,15 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
     # Collect scene analysis result and inject into AI context
     try:
-        scene = scene_future.result(timeout=10)
-        ctx = scene.to_context_string()
-        ai.inject_scene_context(ctx)
-        if ai_local:
-            ai_local.inject_scene_context(ctx)
-        log.info("Vision context: %s", ctx)
+        scene = scene_future.result(timeout=cfg.vlm_timeout)
+        if not scene.is_empty():
+            ctx = f"[Scene: {scene.to_context_string()}]"
+            ai.inject_scene_context(ctx)
+            if ai_local:
+                ai_local.inject_scene_context(ctx)
+            log.info("Vision context injected: %s", ctx)
+        else:
+            log.debug("Vision scene empty — no context injected")
     except Exception as exc:
         log.warning("Vision scene analysis failed: %s", exc)
 
@@ -379,55 +381,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
 
 # ---------------------------------------------------------------------------
-# Vision passive mode watcher
-# ---------------------------------------------------------------------------
-
-def _vision_watcher():
-    """Daemon thread: periodically analyse scene and speak if passive mode active."""
-    while True:
-        time.sleep(cfg.vision_passive_interval_minutes * 60)
-
-        # Check if passive mode enabled
-        if not cfg.vision_passive_enabled:
-            continue
-
-        # Check if expired
-        if cfg.vision_passive_expires_at:
-            try:
-                expires = datetime.fromisoformat(cfg.vision_passive_expires_at)
-                if datetime.now(tz=timezone.utc) > expires:
-                    cfg.vision_passive_enabled = False
-                    cfg.vision_passive_expires_at = ""
-                    log.info("Vision passive mode expired")
-                    continue
-            except ValueError:
-                pass
-
-        # Skip if session is active
-        if os.path.exists(cfg.session_file):
-            log.debug("Vision passive: skipping — session active")
-            continue
-
-        # Analyse and speak if not empty
-        try:
-            scene = vision.analyse_scene()
-            if scene.is_empty():
-                log.debug("Vision passive: empty scene, skipping")
-                continue
-
-            description = scene.to_context_string().replace("[Room: ", "").rstrip("]")
-            comment = f"Just so you know, I can see {description} in the room."
-            leds.set_talking()
-            audio.play_stream_oneshot(
-                tts_generate.speak_streaming(comment),
-                on_done=leds.all_off,
-            )
-            log.info("Vision passive: announced scene")
-        except Exception as exc:
-            log.warning("Vision passive watcher error: %s", exc)
-
-
-# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -443,7 +396,6 @@ def main():
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
-    threading.Thread(target=_vision_watcher, daemon=True, name="vision-watcher").start()
     # Warm up Piper TTS (pre-loads ONNX model)
     tts_generate.warm_up()
     # Load thinking clips from index
