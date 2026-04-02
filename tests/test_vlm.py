@@ -236,3 +236,22 @@ class TestTimeout:
         vlm_mod.describe_scene(frame)
         params = mock_vdevice_cls.create_params.return_value
         assert params.group_id == "SHARED"
+
+
+# ---------------------------------------------------------------------------
+# Tests: clear_context on exception path
+# ---------------------------------------------------------------------------
+
+class TestClearContextOnException:
+    def test_clear_context_called_even_when_generate_all_raises(self):
+        """clear_context() must be called even if generate_all() raises."""
+        vlm_mod, _, _, mock_vlm_instance = _load_vlm_module()
+        mock_vlm_instance.generate_all.side_effect = RuntimeError("inference exploded")
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        with pytest.raises(Exception):
+            # Drive _run_inference directly so the exception isn't swallowed
+            # by describe_scene's outer except block.
+            vlm_mod._run_inference(frame, "describe this")
+
+        mock_vlm_instance.clear_context.assert_called_once()

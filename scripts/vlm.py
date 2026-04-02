@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
@@ -30,6 +31,7 @@ _executor = ThreadPoolExecutor(max_workers=1)
 
 _vdevice = None
 _vlm = None
+_init_lock = threading.Lock()
 
 _DEFAULT_PROMPT = "Briefly describe what you see."
 _SYSTEM_PROMPT = (
@@ -49,26 +51,27 @@ def _default_timeout() -> float:
 def _ensure_init() -> None:
     """Initialise VDevice and VLM on first call; no-op thereafter."""
     global _vdevice, _vlm
-    if _vlm is not None:
-        return
+    with _init_lock:
+        if _vlm is not None:
+            return
 
-    from hailo_platform import VDevice
-    from hailo_platform.genai import VLM
-    from hailo_apps.python.core.common.defines import (
-        SHARED_VDEVICE_GROUP_ID,
-        VLM_CHAT_APP,
-        HAILO10H_ARCH,
-    )
-    from hailo_apps.python.core.common.core import resolve_hef_path
+        from hailo_platform import VDevice
+        from hailo_platform.genai import VLM
+        from hailo_apps.python.core.common.defines import (
+            SHARED_VDEVICE_GROUP_ID,
+            VLM_CHAT_APP,
+            HAILO10H_ARCH,
+        )
+        from hailo_apps.python.core.common.core import resolve_hef_path
 
-    log.info("Initialising Hailo VLM (lazy, first call)")
-    params = VDevice.create_params()
-    params.group_id = SHARED_VDEVICE_GROUP_ID
-    _vdevice = VDevice(params)
+        log.info("Initialising Hailo VLM (lazy, first call)")
+        params = VDevice.create_params()
+        params.group_id = SHARED_VDEVICE_GROUP_ID
+        _vdevice = VDevice(params)
 
-    hef_path = resolve_hef_path(None, app_name=VLM_CHAT_APP, arch=HAILO10H_ARCH)
-    _vlm = VLM(_vdevice, str(hef_path))
-    log.info("Hailo VLM ready — HEF: %s", hef_path)
+        hef_path = resolve_hef_path(None, app_name=VLM_CHAT_APP, arch=HAILO10H_ARCH)
+        _vlm = VLM(_vdevice, str(hef_path))
+        log.info("Hailo VLM ready — HEF: %s", hef_path)
 
 
 def _build_prompt(user_prompt: str) -> list:
@@ -97,16 +100,18 @@ def _run_inference(frame_resized: np.ndarray, user_prompt: str) -> str:
     """Run VLM inference synchronously (called from thread pool)."""
     _ensure_init()
     prompt = _build_prompt(user_prompt)
-    response = _vlm.generate_all(
-        prompt=prompt,
-        frames=[frame_resized],
-        temperature=0.1,
-        seed=42,
-        max_generated_tokens=200,
-    )
-    response = response.split("<|im_end|>")[0].strip()
-    _vlm.clear_context()
-    return response
+    try:
+        response = _vlm.generate_all(
+            prompt=prompt,
+            frames=[frame_resized],
+            temperature=0.1,
+            seed=42,
+            max_generated_tokens=200,
+        )
+        response = response.split("<|im_end|>")[0].strip()
+        return response
+    finally:
+        _vlm.clear_context()
 
 
 # ---------------------------------------------------------------------------
