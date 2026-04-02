@@ -258,7 +258,31 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         log.info("Heard: %r", text)
         _turn_start = time.monotonic()
 
-        response = responder.get_response(text, ai, ai_local=ai_local)
+        # Run inference concurrently with thinking sound.
+        # Fast responses (clips, handlers) finish in <100ms — thinking sound skipped.
+        # Slow responses (Hailo LLM ~3-8s) get thinking sound during inference.
+        _resp_holder: list = [None]
+        _exc_holder: list = [None]
+
+        def _infer():
+            try:
+                _resp_holder[0] = responder.get_response(text, ai, ai_local=ai_local)
+            except Exception as exc:
+                _exc_holder[0] = exc
+            finally:
+                audio.abort()  # stops thinking sound if still playing
+
+        _infer_thread = threading.Thread(target=_infer, daemon=True)
+        _infer_thread.start()
+        _infer_thread.join(timeout=0.1)  # wait briefly for fast-path responses
+
+        if _infer_thread.is_alive() and cfg.thinking_sound and _thinking_clips:
+            audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+
+        _infer_thread.join()
+        if _exc_holder[0] is not None:
+            raise _exc_holder[0]
+        response = _resp_holder[0]
 
         # DISMISSAL fast-path — skip farewell clip if configured
         if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
