@@ -33,7 +33,7 @@ Three well-bounded components replace the current `vision.py` monolith:
 
 ### `camera.py` (new)
 - Owns the Picamera2 singleton for Camera Module 3 (IMX708)
-- Thread-safe acquire/release with reference counting
+- Thread-safe acquire/release with reference counting — supports concurrent access from both `analyse_scene()` and the MJPEG stream endpoint
 - Returns raw numpy RGB frames on demand
 - No knowledge of VLM or inference
 
@@ -72,15 +72,17 @@ class SceneDescription:
 
 ### `wake_converse.py`
 - `_vision_executor.submit(vision.analyse_scene)` at wake-word — **unchanged**
-- Prompt construction changes from `scene.to_context_string()` to `scene.description`
-- If `scene.is_empty()`: omit scene context from prompt (same as current empty-room path)
+- **Timing constraint**: `inject_scene_context()` only fires on the first turn (`len(history) == 0`). Since VLM inference can take up to 4s, `scene_future` must be resolved **before** the first user utterance is submitted to the AI — not after. Implementation must block on `scene_future.result(timeout=cfg.vlm_timeout)` prior to the first turn, not lazily.
+- Scene description injected as `[Scene: {scene.description}]` — this framing keeps it clearly distinct from the user's speech in the LLM prompt.
+- If `scene.is_empty()`: omit scene context entirely (same as current empty-room path).
 
 ### `vision_handler.py`
-- On non-empty scene: passes `scene.description` to LLM as context for in-character response (rather than templating text directly)
-- On empty scene: keeps existing in-character quips (no change)
+- On non-empty scene: constructs a one-shot AI call using the same `ai` object used elsewhere. `scene.description` is injected as system-level context (`[Scene: ...]`); the user's original utterance is the user turn. This matches the pattern used for other handler-to-LLM calls in the codebase.
+- On empty scene: keeps existing in-character quips, no LLM call.
 
 ### `web/app.py`
-- `_check_camera()`: simplified — acquires/releases Camera Module 3 via `camera.py`, no IMX500 check
+- `_check_camera()`: simplified — acquires/releases Camera Module 3 via `camera.py`, no IMX500 check.
+- MJPEG stream (`puppet_camera_stream`): continues to use `vision.acquire_camera()` / `vision.release_camera()` unchanged. Concurrent access with `analyse_scene()` is safe — `camera.py`'s reference-counted singleton handles it.
 
 ---
 
@@ -108,12 +110,11 @@ vlm_prompt: str = "Briefly describe what you see in one or two sentences."
 
 Config fields removed:
 - `vision_model` (was `"yolo11n"`)
+- `vision_confidence_threshold`
 - `vision_allowlist`
 - `vision_passive_enabled`
 - `vision_passive_expires_at`
 - `vision_passive_interval_minutes`
-
-`vision_confidence_threshold` — removed (no confidence scores in VLM output).
 
 ---
 
@@ -124,9 +125,9 @@ Config fields removed:
 1. Write `camera.py` — Camera Module 3 singleton (Picamera2, no IMX500)
 2. Write `vlm.py` — Hailo VLM wrapper with timeout guard
 3. Rewrite `vision.py` — orchestrator using `camera.py` + `vlm.py`; delete all IMX500/YOLO/passive code
-4. Update `wake_converse.py` — use `scene.description` in LLM prompt
-5. Update `vision_handler.py` — route non-empty scenes through LLM
-6. Update `web/app.py` — simplify `_check_camera()`
+4. Update `wake_converse.py` — block on `scene_future` before first user turn; inject as `[Scene: ...]`
+5. Update `vision_handler.py` — route non-empty scenes through one-shot LLM call
+6. Update `web/app.py` — simplify `_check_camera()`; MJPEG stream unchanged
 7. Update `config.py` — add VLM config, remove YOLO/passive config
 8. Write/update tests
 
