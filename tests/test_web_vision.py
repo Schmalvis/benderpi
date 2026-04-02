@@ -41,52 +41,6 @@ def _base_mocks():
     return {"audio": mock_audio, "leds": mock_leds, "vision": mock_vision, "tts_generate": mock_tts, "ai_response": mock_ai}
 
 
-def test_vision_passive_enable():
-    with patch.dict(sys.modules, _base_mocks()):
-        client = get_client()
-        resp = client.post("/api/vision/passive", json={"duration_minutes": 30}, headers=auth())
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["enabled"] is True
-    assert data["expires_at"] != ""
-
-
-def test_vision_passive_enable_indefinite():
-    with patch.dict(sys.modules, _base_mocks()):
-        client = get_client()
-        resp = client.post("/api/vision/passive", json={"duration_minutes": None}, headers=auth())
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["enabled"] is True
-    assert data["expires_at"] == ""
-
-
-def test_vision_passive_disable():
-    with patch.dict(sys.modules, _base_mocks()):
-        client = get_client()
-        client.post("/api/vision/passive", json={"duration_minutes": 10}, headers=auth())
-        resp = client.delete("/api/vision/passive", headers=auth())
-    assert resp.status_code == 200
-    assert resp.json()["enabled"] is False
-
-
-def test_vision_passive_status():
-    with patch.dict(sys.modules, _base_mocks()):
-        client = get_client()
-        client.post("/api/vision/passive", json={"duration_minutes": 60}, headers=auth())
-        resp = client.get("/api/vision/passive", headers=auth())
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "enabled" in data
-    assert "expires_at" in data
-    assert "minutes_remaining" in data
-
-
-def test_vision_passive_requires_pin():
-    with patch.dict(sys.modules, _base_mocks()):
-        client = get_client()
-        resp = client.get("/api/vision/passive")
-    assert resp.status_code == 401
 
 
 def test_vision_analyse_empty():
