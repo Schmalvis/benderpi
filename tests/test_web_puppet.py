@@ -25,13 +25,18 @@ def auth():
 
 def test_speak_returns_ok():
     import types
-    # Create mock modules for hardware libs not available on dev machine
     mock_tts = types.ModuleType("tts_generate")
     mock_tts.speak = lambda text: "/tmp/test.wav"
     mock_audio = types.ModuleType("audio")
-    mock_audio.play_oneshot = lambda path: None
+    mock_audio.play_oneshot = lambda path, *args: None
+    mock_leds = types.ModuleType("leds")
+    mock_leds.set_talking = lambda: None
+    mock_leds.set_level = lambda level: None
+    mock_leds.all_off = lambda: None
     client = get_client()
-    with patch.dict(sys.modules, {"tts_generate": mock_tts, "audio": mock_audio}), \
+    with patch.dict(sys.modules, {"tts_generate": mock_tts}), \
+         patch("web.app.audio", mock_audio), \
+         patch("web.app.leds", mock_leds), \
          patch("os.unlink"):
         resp = client.post("/api/puppet/speak", json={"text": "hello"}, headers=auth())
         assert resp.status_code == 200

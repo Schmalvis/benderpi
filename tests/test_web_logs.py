@@ -34,7 +34,7 @@ def test_conversations_list_empty_dir():
     with patch("web.app._LOG_DIR", "/nonexistent/path"):
         resp = client.get("/api/logs/conversations", headers=auth())
     assert resp.status_code == 200
-    assert resp.json() == {"files": []}
+    assert resp.json() == {"dates": [], "files": []}
 
 
 def test_conversations_list_returns_jsonl_files():
@@ -105,7 +105,7 @@ def test_conversations_date_parses_events():
             resp = client.get(f"/api/logs/conversations/{date_str}", headers=auth())
 
     assert resp.status_code == 200
-    events = resp.json()["events"]
+    events = resp.json()["entries"]
     assert len(events) == 3
     # session_end should have duration_s
     end_event = next(e for e in events if e["type"] == "session_end")
@@ -128,7 +128,7 @@ def test_conversations_date_skips_invalid_json():
             resp = client.get(f"/api/logs/conversations/{date_str}", headers=auth())
 
     assert resp.status_code == 200
-    events = resp.json()["events"]
+    events = resp.json()["entries"]
     assert len(events) == 2  # only 2 valid lines
 
 
@@ -146,7 +146,7 @@ def test_system_log_returns_lines():
         with patch("web.app._BENDER_LOG", fname):
             resp = client.get("/api/logs/system?lines=50", headers=auth())
         assert resp.status_code == 200
-        lines = resp.json()["lines"]
+        lines = resp.json()["log"].splitlines()
         assert any("INFO" in ln for ln in lines)
         assert any("ERROR" in ln for ln in lines)
     finally:
@@ -164,7 +164,7 @@ def test_system_log_filters_by_level():
         with patch("web.app._BENDER_LOG", fname):
             resp = client.get("/api/logs/system?lines=50&level=ERROR", headers=auth())
         assert resp.status_code == 200
-        lines = resp.json()["lines"]
+        lines = resp.json()["log"].splitlines()
         assert all("ERROR" in ln for ln in lines)
         assert not any("INFO" in ln for ln in lines)
     finally:
@@ -182,7 +182,7 @@ def test_system_log_missing_file_returns_empty():
     with patch("web.app._BENDER_LOG", "/nonexistent/bender.log"):
         resp = client.get("/api/logs/system", headers=auth())
     assert resp.status_code == 200
-    assert resp.json()["lines"] == []
+    assert resp.json()["log"] == ""
 
 
 # ── /api/logs/metrics ───────────────────────────────────────────────
@@ -204,7 +204,7 @@ def test_metrics_returns_events():
         with patch("web.app._METRICS_LOG", fname):
             resp = client.get("/api/logs/metrics?hours=24", headers=auth())
         assert resp.status_code == 200
-        data = resp.json()["events"]
+        data = resp.json()["entries"]
         assert len(data) == 2
     finally:
         os.unlink(fname)
@@ -226,7 +226,7 @@ def test_metrics_filters_by_name():
         with patch("web.app._METRICS_LOG", fname):
             resp = client.get("/api/logs/metrics?name=stt_transcribe&hours=24", headers=auth())
         assert resp.status_code == 200
-        data = resp.json()["events"]
+        data = resp.json()["entries"]
         assert all(e["name"] == "stt_transcribe" for e in data)
         assert len(data) == 1
     finally:
@@ -251,7 +251,7 @@ def test_metrics_filters_by_time():
         with patch("web.app._METRICS_LOG", fname):
             resp = client.get("/api/logs/metrics?hours=24", headers=auth())
         assert resp.status_code == 200
-        data = resp.json()["events"]
+        data = resp.json()["entries"]
         # Only the recent one should be returned
         assert len(data) == 1
         assert data[0]["duration_ms"] == 200
@@ -264,7 +264,7 @@ def test_metrics_missing_file():
     with patch("web.app._METRICS_LOG", "/nonexistent/metrics.jsonl"):
         resp = client.get("/api/logs/metrics", headers=auth())
     assert resp.status_code == 200
-    assert resp.json()["events"] == []
+    assert resp.json()["entries"] == []
 
 
 # ── /api/logs/download ──────────────────────────────────────────────
