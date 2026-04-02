@@ -12,6 +12,23 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 
 ---
 
+## Design Philosophy
+
+**Offline-first.** BenderPi is designed to run entirely locally — internet access is not required for core functionality. The Hailo AI HAT+ (Hailo-10H, 40 TOPS NPU) provides dedicated hardware acceleration for STT (Whisper) and LLM (Qwen2.5-1.5B) inference on-device. Cloud APIs are a last resort, used only when local quality checks fail.
+
+**AI response priority order:**
+1. Static WAV clips — instant, zero compute
+2. Pre-generated TTS — instant playback
+3. Hailo NPU LLM — Qwen2.5-1.5B-Instruct via HailoRT GenAI (on-chip, ~3-8s)
+4. Ollama CPU fallback — only if Hailo unavailable
+5. Claude API (cloud) — only if local quality check fails (hedge phrases, too short)
+
+**Routing config (`bender_config.json`):**
+- `ai_backend: "hybrid"` + `ai_routing.*: "local_first"` — NPU first, cloud fallback on quality fail
+- `ai_backend: "local_only"` — never touch cloud
+- `ai_backend: "cloud_only"` — always use Claude API (avoid unless debugging)
+
+
 ## Device
 
 | Field | Value |
@@ -31,6 +48,8 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 | Component | Detail |
 |---|---|
 | Board | Raspberry Pi 5 |
+| AI Accelerator | Hailo AI HAT+ (Hailo-10H, 40 TOPS NPU) — LLM + STT + vision inference |
+| Camera | Raspberry Pi AI Camera (IMX500) — used for VLM / scene analysis |
 | Audio HAT | Adafruit Voice Bonnet (WM8960 codec) — I2S, 2x MEMS mics |
 | Speaker | 3W passive, connected to Voice Bonnet |
 | LEDs | 12x WS2812B addressable RGB |
