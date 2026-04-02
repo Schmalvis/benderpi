@@ -1,55 +1,70 @@
 {
   "greeting": [
     {
-      "file": "speech/wav/hello.wav"
+      "file": "speech/wav/hello.wav",
+      "label": "Hello"
     },
     {
-      "file": "speech/wav/hellopeasants.wav"
+      "file": "speech/wav/hellopeasants.wav",
+      "label": "Hello, peasants!"
     },
     {
-      "file": "speech/wav/imbender.wav"
+      "file": "speech/wav/imbender.wav",
+      "label": "I'm Bender!"
     },
     {
-      "file": "speech/wav/yo.wav"
+      "file": "speech/wav/yo.wav",
+      "label": "Yo!"
     }
   ],
   "affirmation": [
     {
-      "file": "speech/wav/gotit.wav"
+      "file": "speech/wav/gotit.wav",
+      "label": "Got it"
     },
     {
-      "file": "speech/wav/yougotitgenius.wav"
+      "file": "speech/wav/yougotitgenius.wav",
+      "label": "You got it, genius"
     },
     {
-      "file": "speech/wav/yessir.wav"
+      "file": "speech/wav/yessir.wav",
+      "label": "Yes sir"
     },
     {
-      "file": "speech/wav/yup.wav"
+      "file": "speech/wav/yup.wav",
+      "label": "Yup"
     },
     {
-      "file": "speech/wav/thankyou.wav"
+      "file": "speech/wav/thankyou.wav",
+      "label": "Thank you"
     }
   ],
   "dismissal": [
     {
-      "file": "speech/wav/itwasapleasuremeetingyou.wav"
+      "file": "speech/wav/itwasapleasuremeetingyou.wav",
+      "label": "It was a pleasure meeting you"
     },
     {
-      "file": "speech/wav/solongcoffinstuffers.wav"
+      "file": "speech/wav/solongcoffinstuffers.wav",
+      "label": "So long, coffin stuffers!"
     },
     {
-      "file": "speech/wav/yesss.wav"
+      "file": "speech/wav/yesss.wav",
+      "label": "Yesss!"
     }
   ],
   "joke": [
     {
-      "file": "speech/wav/hahohwaityoureseriousletmelaughevenharder.wav"
+      "file": "speech/wav/hahohwaityoureseriousletmelaughevenharder.wav",
+      "label": "Wait, you're serious? Let me laugh even harder!"
     },
     {
-      "file": "speech/wav/compareyourlivestomineandthenkillyourselves.wav"
+      "file": "speech/wav/compareyourlivestomineandthenkillyourselves.wav",
+      "label": "Compare your lives to mine and then kill yourselves"
     },
     {
-      "file": "speech/wav/imgonnagobuildmyownthemepark.wav"
+      "file": "speech/wav/imgonnagobuildmyownthemepark.wav",
+      "label": "I'm gonna go build my own theme park!"
     },
     {
       "file": "speech/responses/joke/joke_001.wav",
@@ -74,7 +89,8 @@
   ],
   "personal": {
     "job": {
-      "file": "speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav"
+      "file": "speech/wav/imabender-ibendgirders-thatsallimprogrammedtodo.wav",
+      "label": "I'm Bender \u2014 I bend girders, that's all I'm programmed to do"
     },
     "age": {
       "file": "speech/responses/personal/age.wav",
@@ -148,6 +164,26 @@
     {
       "file": "speech/responses/thinking/thinking_004.wav",
       "label": "One sec."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_005.wav",
+      "label": "Processing. Unlike you lot, I actually use my brain."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_006.wav",
+      "label": "Working on it. I'd think faster, but I refuse to."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_007.wav",
+      "label": "Don't rush me. Genius can't be hurried."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_008.wav",
+      "label": "Hmm... let me sift through my galaxy-sized brain."
+    },
+    {
+      "file": "speech/responses/thinking/thinking_009.wav",
+      "label": "I'm thinking. Which, for a robot of my stature, is practically an art form."
     }
   ],
   "timer_alerts": [

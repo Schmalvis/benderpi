@@ -72,6 +72,11 @@ THINKING_SOUNDS = [
     "Let me think.",
     "Hang on.",
     "One sec.",
+    "Processing. Unlike you lot, I actually use my brain.",
+    "Working on it. I'd think faster, but I refuse to.",
+    "Don't rush me. Genius can't be hurried.",
+    "Hmm... let me sift through my galaxy-sized brain.",
+    "I'm thinking. Which, for a robot of my stature, is practically an art form.",
 ]
 
 TIMER_ALERT_RESPONSES = [
