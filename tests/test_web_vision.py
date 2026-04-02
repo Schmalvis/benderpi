@@ -49,7 +49,6 @@ def test_vision_analyse_empty():
     mock_scene = MagicMock()
     mock_scene.is_empty.return_value = True
     mock_scene.to_context_string.return_value = ""
-    mock_scene.objects = []
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
@@ -63,7 +62,7 @@ def test_vision_analyse_empty():
     assert resp.status_code == 200
     data = resp.json()
     assert "text" in data
-    assert data["objects"] == []
+    assert data["description"] == ""
 
 
 def test_vision_analyse_with_description():
@@ -73,7 +72,6 @@ def test_vision_analyse_with_description():
     mock_scene = MagicMock()
     mock_scene.is_empty.return_value = False
     mock_scene.to_context_string.return_value = "A person is reading a book on the sofa."
-    mock_scene.objects = []
 
     mocks = _base_mocks()
     mocks["vision"].analyse_scene = lambda: mock_scene
