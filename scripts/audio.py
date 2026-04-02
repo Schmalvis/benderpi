@@ -30,7 +30,7 @@ CHUNK        = 512
 SAMPLE_RATE  = 44100
 CHANNELS     = 1
 FORMAT       = pyaudio.paInt16
-OUTPUT_DEVICE = 0       # ALSA default device (routes to seeed-2mic-voicecard via plughw, supports 44100Hz)
+OUTPUT_DEVICE = 2       # ALSA default/plug device (index 2) — supports 44100Hz via SRC; hw:2,0 (index 0) only supports 16000Hz natively
 
 RMS_FLOOR    = 200
 RMS_CEILING  = 8000
