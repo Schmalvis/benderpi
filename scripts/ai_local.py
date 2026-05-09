@@ -186,6 +186,23 @@ class _OllamaResponder:
         self.history = []
         self._scene_context = ""
 
+    def warm_up(self) -> None:
+        """Pre-load the Ollama model so first real request doesn't cold-start."""
+        try:
+            requests.post(
+                f"{cfg.local_llm_url}/api/chat",
+                json={
+                    "model": cfg.local_llm_model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                    "options": {"num_predict": 1},
+                },
+                timeout=30,
+            )
+            log.info("Ollama model pre-loaded (%s)", cfg.local_llm_model)
+        except Exception as e:
+            log.warning("Ollama warm-up failed (non-fatal): %s", e)
+
 
 class LocalAIResponder:
     """Local LLM — Hailo on-chip primary, Ollama CPU fallback."""
@@ -219,3 +236,7 @@ class LocalAIResponder:
     def clear_history(self):
         self._hailo.clear_history()
         self._ollama.clear_history()
+
+    def warm_up(self) -> None:
+        """Pre-load Ollama model in background at startup."""
+        self._ollama.warm_up()

@@ -184,3 +184,19 @@ class TestLocalAIResponder:
         responder.clear_history()
         assert responder._hailo._scene_context == ""
         assert responder._ollama._scene_context == ""
+
+    def test_warm_up_fires_chat_request(self):
+        """warm_up() should POST to /api/chat with num_predict=1."""
+        responder = LocalAIResponder()
+        with patch("ai_local.requests.post") as mock_post:
+            mock_post.return_value.raise_for_status = MagicMock()
+            responder.warm_up()
+        mock_post.assert_called_once()
+        call_json = mock_post.call_args.kwargs["json"]
+        assert call_json["options"]["num_predict"] == 1
+
+    def test_warm_up_swallows_exception(self):
+        """warm_up() must not raise even if Ollama is down."""
+        responder = LocalAIResponder()
+        with patch("ai_local.requests.post", side_effect=Exception("connection refused")):
+            responder.warm_up()  # should not raise

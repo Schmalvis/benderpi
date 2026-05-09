@@ -59,7 +59,7 @@
   "ai_backend": "hybrid",
   "local_llm_model": "qwen2.5:1.5b",
   "local_llm_url": "http://localhost:11434",
-  "local_llm_timeout": 3,
+  "local_llm_timeout": 25,
   "ai_routing": {
     "conversation": "local_first",
     "knowledge": "local_first",
