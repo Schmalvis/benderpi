@@ -204,3 +204,42 @@ def test_analyse_scene_returns_empty_on_acquire_error():
     assert result.is_empty()
     # release_camera still called in finally (safe — guarded against refcount 0)
     cam_mock["release_camera"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Camera-busy log-level tests
+# ---------------------------------------------------------------------------
+
+def test_camera_busy_logs_warning_not_error(caplog):
+    """Camera-busy RuntimeError should log at WARNING, not ERROR with traceback."""
+    import logging
+    cam_mock = _default_camera_mock()
+    cam_mock["acquire_camera"].side_effect = RuntimeError(
+        "Failed to acquire camera: Device or resource busy"
+    )
+    vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+
+    with caplog.at_level(logging.DEBUG, logger="bender.vision"):
+        result = vision.analyse_scene()
+
+    assert result.is_empty()
+    warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
+    error_msgs   = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("busy" in r.message.lower() for r in warning_msgs), \
+        "Expected a WARNING about camera being busy"
+    assert len(error_msgs) == 0, "Should not log at ERROR for camera-busy condition"
+
+
+def test_real_error_still_logs_exception(caplog):
+    """Non-busy RuntimeErrors should still be logged at ERROR with traceback."""
+    import logging
+    cam_mock = _default_camera_mock()
+    cam_mock["acquire_camera"].side_effect = RuntimeError("unexpected sensor failure")
+    vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+
+    with caplog.at_level(logging.DEBUG, logger="bender.vision"):
+        result = vision.analyse_scene()
+
+    assert result.is_empty()
+    error_msgs = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(error_msgs) > 0, "Unexpected errors should still be logged at ERROR"

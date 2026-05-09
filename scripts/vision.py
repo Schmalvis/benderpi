@@ -63,6 +63,12 @@ def analyse_scene() -> SceneDescription:
         frame = camera.capture_frame()
         description = vlm.describe_scene(frame, prompt=cfg.vlm_prompt)
         return SceneDescription(description=description, captured_at=datetime.now())
+    except RuntimeError as e:
+        if "busy" in str(e).lower():
+            log.warning("Camera busy (held by another process) — vision skipped this session")
+        else:
+            log.exception("analyse_scene failed (capture)")
+        return SceneDescription()
     except Exception:
         log.exception("analyse_scene failed")
         return SceneDescription()
