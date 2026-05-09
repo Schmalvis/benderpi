@@ -416,6 +416,7 @@ def main():
             ai_local = LocalAIResponder()
             log.info("Local AI responder initialised (model: %s at %s)",
                      cfg.local_llm_model, cfg.local_llm_url)
+            threading.Thread(target=ai_local.warm_up, daemon=True, name="ollama-warmup").start()
         except Exception as e:
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
