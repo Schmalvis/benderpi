@@ -420,7 +420,7 @@ def main():
                      cfg.local_llm_model, cfg.local_llm_url)
             threading.Thread(target=ai_local.warm_up, daemon=True, name="ollama-warmup").start()
             atexit.register(ai_local.close)
-            signal.signal(signal.SIGTERM, lambda *_: (ai_local.close(), sys.exit(0)))
+            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         except Exception as e:
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
