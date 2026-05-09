@@ -1,6 +1,7 @@
 """Local LLM responder — Hailo on-chip primary, Ollama CPU fallback."""
 
 import os
+import time
 
 import requests
 
@@ -18,6 +19,7 @@ HEDGE_PHRASES = {
 }
 
 _HAILO_HEF = "/usr/local/hailo/resources/models/hailo10h/Qwen2.5-1.5B-Instruct.hef"
+_HAILO_RETRY_COOLDOWN = 60  # seconds before retrying after init failure
 
 
 class QualityCheckFailed(Exception):
@@ -47,6 +49,7 @@ class _HailoLLMResponder:
         self._vdevice = None
         self._llm = None
         self._available = None  # None = not yet attempted
+        self._last_failed_at: float | None = None
         self.history: list[dict] = []
         self._scene_context: str = ""
 
@@ -55,11 +58,19 @@ class _HailoLLMResponder:
         self._scene_context = text
 
     def _load(self) -> bool:
-        if self._available is not None:
-            return self._available
+        if self._available is True:
+            return True
+        if self._available is False:
+            elapsed = time.monotonic() - (self._last_failed_at or 0.0)
+            if elapsed < _HAILO_RETRY_COOLDOWN:
+                return False
+            log.info("Hailo LLM init cooldown elapsed — retrying")
+            self._available = None
+
         if not os.path.exists(_HAILO_HEF):
             log.warning("Hailo LLM HEF not found: %s", _HAILO_HEF)
             self._available = False
+            self._last_failed_at = time.monotonic()
             return False
         try:
             from hailo_platform import VDevice
@@ -74,6 +85,7 @@ class _HailoLLMResponder:
         except Exception as e:
             log.warning("Hailo LLM init failed (%s) — will use Ollama fallback", e)
             self._available = False
+            self._last_failed_at = time.monotonic()
         return self._available
 
     def _trim_history(self):
@@ -131,6 +143,24 @@ class _HailoLLMResponder:
                 log.info("Hailo LLM context cache cleared")
             except Exception as e:
                 log.warning("Failed to clear Hailo context cache: %s", e)
+
+    def close(self) -> None:
+        """Release Hailo VDevice and LLM, freeing the on-chip KV-Cache."""
+        if self._llm is not None:
+            try:
+                self._llm.clear_context()
+            except Exception:
+                pass
+            self._llm = None
+        if self._vdevice is not None:
+            try:
+                del self._vdevice
+            except Exception:
+                pass
+            self._vdevice = None
+        self._available = None
+        self._last_failed_at = None
+        log.info("Hailo LLM closed and KV-Cache released")
 
 
 class _OllamaResponder:
@@ -236,6 +266,10 @@ class LocalAIResponder:
     def clear_history(self):
         self._hailo.clear_history()
         self._ollama.clear_history()
+
+    def close(self) -> None:
+        """Release all hardware resources. Call on shutdown."""
+        self._hailo.close()
 
     def warm_up(self) -> None:
         """Pre-load Ollama model in background at startup."""

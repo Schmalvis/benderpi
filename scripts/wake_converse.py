@@ -12,9 +12,11 @@ Flow:
 Response priority chain lives in responder.py.
 """
 
+import atexit
 import json
 import os
 import random
+import signal
 import time
 import sys
 import struct
@@ -417,6 +419,8 @@ def main():
             log.info("Local AI responder initialised (model: %s at %s)",
                      cfg.local_llm_model, cfg.local_llm_url)
             threading.Thread(target=ai_local.warm_up, daemon=True, name="ollama-warmup").start()
+            atexit.register(ai_local.close)
+            signal.signal(signal.SIGTERM, lambda *_: (ai_local.close(), sys.exit(0)))
         except Exception as e:
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()

@@ -200,3 +200,38 @@ class TestLocalAIResponder:
         responder = LocalAIResponder()
         with patch("ai_local.requests.post", side_effect=Exception("connection refused")):
             responder.warm_up()  # should not raise
+
+
+class TestHailoLLMResponder:
+    def test_hailo_load_retries_after_cooldown(self):
+        """_HailoLLMResponder should retry init after _HAILO_RETRY_COOLDOWN seconds."""
+        from ai_local import _HailoLLMResponder, _HAILO_RETRY_COOLDOWN
+        h = _HailoLLMResponder()
+        # Simulate a prior failure
+        h._available = False
+        h._last_failed_at = 0.0  # far in the past
+        # Should reset _available to None and attempt _load again
+        with patch("os.path.exists", return_value=False):
+            result = h._load()
+        # HEF not found → still False, but it retried (no permanent block)
+        assert result is False
+        assert h._last_failed_at is not None
+        assert h._last_failed_at > 0.0  # timestamp was refreshed
+
+    def test_hailo_load_skips_retry_during_cooldown(self):
+        """_HailoLLMResponder should not retry within the cooldown window."""
+        from ai_local import _HailoLLMResponder
+        import time
+        h = _HailoLLMResponder()
+        h._available = False
+        h._last_failed_at = time.monotonic()  # just now
+        with patch("os.path.exists", return_value=True):
+            result = h._load()
+        assert result is False  # didn't retry
+
+    def test_local_ai_responder_has_close(self):
+        """LocalAIResponder must expose a close() method."""
+        from ai_local import LocalAIResponder
+        r = LocalAIResponder()
+        assert callable(getattr(r, "close", None))
+        r.close()  # must not raise
