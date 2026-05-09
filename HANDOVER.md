@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-03-22
+Last updated: 2026-05-09
 
 ---
 
@@ -83,15 +83,18 @@ sudo systemctl restart bender-converse
 ---
 
 ## Current Priorities
-- Test local LLM: verify hybrid routing, quality check escalation, UI config controls
+- **Investigate Weather 401 Unauthorized** — briefings failing at startup (`HTTP Error 401`). Check `HA_TOKEN` in `.env` on Pi — may have expired.
+- Monitor Ollama escalation rates with new 25s timeout — should be dramatically lower now
+- Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs
 - Test timers: "Hey Bender, set a timer for pasta for 5 minutes"
-- Test UI redesign on phone (mobile FAB/bottom sheet)
-- Tune scan-line opacity and glow intensity on real device
-- Collect Hailo STT metrics baseline and compare against previous faster-whisper CPU baseline
-- Monitor STT hallucination rate (Whisper-Base may behave differently to tiny.en)
 - Monitor local LLM escalation rates — collect data for future ML classifier training (~500+ queries needed)
 
 ## Recent Decisions
+- **Diagnosis fixes (2026-05-09):** bender-converse was inactive for 3.5 weeks. Three bugs fixed:
+  - `local_llm_timeout` raised 3 → 25s; `LocalAIResponder.warm_up()` pre-loads Ollama in background thread at startup (`scripts/ai_local.py`, `scripts/wake_converse.py`)
+  - Hailo LLM `_load()` now retries after 60s cooldown instead of permanently caching failure; `close()` + atexit handler releases VDevice/KV-Cache on SIGTERM (`scripts/ai_local.py`)
+  - Camera-busy `RuntimeError` in `analyse_scene()` now logs at WARNING (not ERROR+traceback) (`scripts/vision.py`)
+  - Service verified running: `Ollama model pre-loaded`, `Listening for 'Hey Bender'` confirmed in logs
 - Architecture refactor (2026-03-21): handler registry replaces if/elif dispatch in responder.py
   - New handlers: `handlers/clip_handler.py`, `pregen_handler.py`, `promoted_handler.py`, `weather_handler.py`, `news_handler.py`, `ha_handler.py`, `timer_alert.py`
   - To add a new handler: create class extending `Handler` from `handler_base.py`, declare `intents`, implement `handle()`, add to handler list in `Responder.__init__`
@@ -126,6 +129,11 @@ sudo systemctl restart bender-converse
   - Bundle: ~75 KB JS + ~18 KB CSS (gzipped: ~27 KB total)
 
 ## Known Issues
+- **Weather briefing 401 Unauthorized** — HA token likely expired. Check `HA_TOKEN` in `/home/pi/bender/.env`.
+- **Hailo LLM KV-Cache conflict** — if KV-Cache is still locked after restart (e.g. from bender-web YOLO pipeline holding Hailo), bender-converse retries every 60s. Should self-heal; if not, `sudo systemctl restart bender-web` to release.
+- **`del self._vdevice` may not fully release Hailo VDevice** — `del` decrements Python refcount but Hailo SDK may hold internal refs. If KV-Cache lock recurs, check Hailo SDK for an explicit `release()`/`close()` API.
+- **Camera-busy check uses substring match** — `"busy" in str(e).lower()` works for today's libcamera EBUSY message. If future SDK versions change the wording it silently regresses. Deferred `CameraBusyError` typed exception in `scripts/camera.py` would fix this cleanly.
+- **New hardware: ReSpeaker XVF3800 4-Mic Array** — appeared as ALSA card 3 as of 2026-05-09. seeed-2mic (card 2) still correct. If intentional, no action needed; if not, check what plugged in.
 - Piper --json-input mode needs verification on Pi (using warm-up fallback)
 - Intent false positives reduced but not eliminated
 - Thinking sound timing: plays after get_response() returns, not during generation
