@@ -182,9 +182,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
     if ai_local:
         ai_local.clear_history()
 
-    # Submit scene analysis concurrently — will complete while greeting plays
-    scene_future = _vision_executor.submit(vision.analyse_scene)
-
     # Greeting — skip audio if silent_wakeword is enabled (LED-only notification)
     if cfg.silent_wakeword and cfg.led_listening_enabled:
         log.info("Silent wake word mode — skipping audio greeting")
@@ -206,6 +203,10 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 on_done=leds.all_off,
             )
             session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
+
+    # Submit scene analysis after greeting — overlaps with STT listening instead of audio playback.
+    # libcamera init on Pi 5 is CPU-intensive enough to stutter the audio stream if run concurrently.
+    scene_future = _vision_executor.submit(vision.analyse_scene)
 
     # Collect scene analysis result and inject into AI context
     try:
