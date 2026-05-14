@@ -1,0 +1,19 @@
+[Unit]
+Description=BenderPi voice assistant (converse mode)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+Restart=on-failure
+RestartSec=5
+User=pi
+WorkingDirectory=/home/pi/bender
+EnvironmentFile=/home/pi/bender/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/bender/venv/bin/python /home/pi/bender/scripts/wake_converse.py
+
+[Install]
+WantedBy=multi-user.target

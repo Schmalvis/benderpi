@@ -35,6 +35,9 @@ python-multipart==0.0.20
 # ── Hub (asset download via setup.sh) ───────────────────────────────────────
 huggingface_hub==1.7.1
 
+# ── Systemd integration ──────────────────────────────────────────────────────
+systemd-python>=235  # requires apt: libsystemd-dev pkg-config
+
 # ── Utilities ────────────────────────────────────────────────────────────────
 python-dotenv==1.2.2
 requests==2.32.3

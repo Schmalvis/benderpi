@@ -462,6 +462,12 @@ def main():
     _cleanup_abort_files()
     _remove_session_file()
     log.info("Listening for 'Hey Bender'...")
+    try:
+        from systemd import daemon as _sd_daemon
+        _sd_daemon.notify("READY=1")
+        log.info("systemd READY=1 sent (Type=notify)")
+    except Exception as exc:
+        log.debug("sd_notify not available: %s", exc)
     while True:
         try:
             # Check for fired timers before listening for wake word
