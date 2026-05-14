@@ -125,7 +125,7 @@ def _get_forecast(ha_url: str, token: str, entity: str) -> list:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as resp:
             result = json.loads(resp.read())
         return result.get("service_response", {}).get(entity, {}).get("forecast", [])
     except Exception as e:
@@ -141,7 +141,7 @@ def get_weather_text() -> str:
         f"{ha_url}/api/states/{entity}",
         headers={"Authorization": f"Bearer {token}"}
     )
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as resp:
         state = json.loads(resp.read())
 
     condition_raw = state.get("state", "unknown")
@@ -191,7 +191,7 @@ NEWS_OUTROS = [
 
 def _fetch_headlines(url: str, count: int) -> list[str]:
     req = urllib.request.Request(url, headers={"User-Agent": "BenderPi/1.0"})
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as resp:
         data = resp.read().decode("utf-8", errors="replace")
     # BBC uses CDATA for titles
     titles = re.findall(r'<title><!\[CDATA\[(.*?)\]\]></title>', data)
@@ -321,7 +321,7 @@ def _geocode(location: str) -> tuple[float, float, str, str] | None:
     params = urllib.parse.urlencode({"name": location, "count": 10, "language": "en", "format": "json"})
     req = urllib.request.Request(f"{_OPEN_METEO_GEOCODE}?{params}")
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as r:
             data = json.loads(r.read())
         results = data.get("results", [])
         if not results:
@@ -354,7 +354,7 @@ def get_weather_text_for_location(location: str) -> str:
         "forecast_days": 1,
     })
     req = urllib.request.Request(f"{_OPEN_METEO_WEATHER}?{params}")
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as r:
         w = json.loads(r.read())
 
     cur = w["current"]

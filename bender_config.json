@@ -76,6 +76,7 @@
   "vlm_yolo_timeout_s": 8,
   "vlm_lazy_poll_s": 0.05,
   "response_hard_timeout_s": 20,
+  "http_timeout_s": 10,
   "vision_allowlist": [
     "person",
     "bicycle",

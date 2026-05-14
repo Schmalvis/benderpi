@@ -13,6 +13,7 @@ import os
 import sys
 
 import anthropic
+import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from logger import get_logger
@@ -43,7 +44,10 @@ class AIResponder:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set in environment")
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+        )
         self.history: list[dict] = []  # rolling conversation history
         self._scene_context: str = ""
 
