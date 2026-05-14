@@ -37,6 +37,9 @@ class Config:
     output_device: int = 0  # PyAudio device index for hw:2,0
     input_device_name: str = "mic_shared"   # substring hint for PortAudio input discovery
     output_device_name: str = "seeed"       # substring hint for PortAudio output discovery
+    audio_chunk: int = 512
+    audio_rms_floor: int = 200
+    audio_rms_ceiling: int = 8000
 
     # STT
     whisper_model: str = "tiny.en"
@@ -75,6 +78,8 @@ class Config:
     ha_weather_entity: str = "weather.forecast_home"
     location: str = "your location"  # shown in Bender persona + weather responses
     ha_room_synonyms: dict = {}
+    ha_entity_cache_ttl_s: float = 60.0
+    ha_exclude_keywords: list = None  # set in __init__ to avoid mutable default
 
     # Secrets (from .env only, never in config JSON)
     anthropic_api_key: str = ""
@@ -83,6 +88,9 @@ class Config:
     # Briefings
     weather_ttl: int = 1800
     news_ttl: int = 7200
+    briefings_weather_ttl_s: int = 1800
+    briefings_news_ttl_s: int = 7200
+    briefings_news_feeds: list = None  # set in __init__ to avoid mutable default
 
     # Logging
     log_level: str = "INFO"
@@ -140,6 +148,14 @@ class Config:
                 "creative": "cloud_first",
             }
 
+        if self.briefings_news_feeds is None:
+            self.briefings_news_feeds = [
+                ["UK",      "https://feeds.bbci.co.uk/news/uk/rss.xml",      2],
+                ["England", "https://feeds.bbci.co.uk/news/england/rss.xml", 2],
+            ]
+
+        if self.ha_exclude_keywords is None:
+            self.ha_exclude_keywords = []
 
         # IPC paths
         self.session_file: str = os.path.join(_BASE_DIR, ".session_active.json")

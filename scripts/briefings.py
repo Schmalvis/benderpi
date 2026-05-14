@@ -38,13 +38,10 @@ WEATHER_WAV  = os.path.join(DAILY_DIR, "weather_briefing.wav")
 NEWS_WAV     = os.path.join(DAILY_DIR, "news_briefing.wav")
 META_PATH    = os.path.join(DAILY_DIR, "briefings_meta.json")
 
-WEATHER_TTL  = 30 * 60    # 30 minutes
-NEWS_TTL     = 2 * 60 * 60  # 2 hours
+WEATHER_TTL  = int(_cfg.briefings_weather_ttl_s)
+NEWS_TTL     = int(_cfg.briefings_news_ttl_s)
 
-NEWS_FEEDS = [
-    ("UK",      "https://feeds.bbci.co.uk/news/uk/rss.xml",      2),
-    ("England", "https://feeds.bbci.co.uk/news/england/rss.xml", 2),
-]
+NEWS_FEEDS = [tuple(f) for f in _cfg.briefings_news_feeds]
 
 os.makedirs(DAILY_DIR, exist_ok=True)
 

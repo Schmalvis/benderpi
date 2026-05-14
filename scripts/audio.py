@@ -26,13 +26,13 @@ from metrics import metrics
 
 log = get_logger("audio")
 
-CHUNK        = 512
+CHUNK        = int(cfg.audio_chunk)
 SAMPLE_RATE  = 44100
 CHANNELS     = 1
 FORMAT       = pyaudio.paInt16
 
-RMS_FLOOR    = 200
-RMS_CEILING  = 8000
+RMS_FLOOR    = int(cfg.audio_rms_floor)
+RMS_CEILING  = int(cfg.audio_rms_ceiling)
 
 # ---------------------------------------------------------------------------
 # Device discovery — single source of truth for input/output indices.

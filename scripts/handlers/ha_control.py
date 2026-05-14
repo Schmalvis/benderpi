@@ -30,21 +30,7 @@ log = get_logger("ha_control")
 # Entity noise filter — sub-components and non-lighting switches to exclude
 # ---------------------------------------------------------------------------
 
-EXCLUDE_KEYWORDS = {
-    "nightlight", "sync_send", "sync_receive", "reverse", "crossfade",
-    "loudness", "surround", "subwoofer", "speech_enhancement", "night_sound",
-    "snooze", "ding_sound", "motion_detection", "live_stream", "event_stream",
-    "siren", "permit_join", "report_state", "do_not_disturb", "screensaver",
-    "maintenance_mode", "kiosk_lock", "auto_off_enabled", "auto_update_enabled",
-    "child_lock", "open_window", "smart_temperature_control", "flip_indicator",
-    "power_outage_memory", "led_disabled_night", "schedule_", "powerwall",
-    "dishwasher", "storm_watch", "cloud_", "fire_tablet", "turbo_mode",
-    "network_indicator", "delayed_power_on", "detach_relay", "weather_card",
-    "keypad_chirps", "radiator_plug", "assist_microphone", "dishcare",
-    "extractor_fan", "fly_zapper", "heated_airer", "lightswitches",
-    "alarm_siren", "motion_warning", "upstairs_snooze", "downstairs_snooze",
-    "motion_sound", "do_not",  # catches all do_not_disturb sub-entities
-}
+EXCLUDE_KEYWORDS = set(cfg.ha_exclude_keywords)
 
 # Entity IDs to always exclude — configured in bender_config.json under
 # "ha_exclude_entities". Add any sub-component or duplicate entities specific
@@ -65,7 +51,7 @@ _PRONOUNS = {"them", "it", "those", "that", "these"}
 
 _cache: list[dict] = []
 _cache_ts: float   = 0.0
-CACHE_TTL = 60.0   # seconds
+CACHE_TTL = float(cfg.ha_entity_cache_ttl_s)
 
 
 def _fetch_entities() -> list[dict]:
