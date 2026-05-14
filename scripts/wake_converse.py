@@ -139,6 +139,16 @@ def _check_abort_on_chunk(level):
 # Wake word detection
 # ---------------------------------------------------------------------------
 
+
+def _find_mic_device(pa):
+    # Prefer reSpeaker (xvf_dsnoop) when plugged in, fall back to seeed Voice Bonnet
+    for fragment in ("xvf_dsnoop", "seeed"):
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if fragment in info["name"] and info["maxInputChannels"] > 0:
+                return i
+    return None
+
 def wait_for_wakeword():
     porcupine = pvporcupine.create(
         access_key=os.environ["PORCUPINE_ACCESS_KEY"],
@@ -146,18 +156,30 @@ def wait_for_wakeword():
     )
     # Use the shared PyAudio instance — creating a second one crashes PortAudio
     pa = audio.get_pa()
+    input_device_index = _find_mic_device(pa)
+    if input_device_index is not None:
+        log.info("Using mic: %s", pa.get_device_info_by_index(input_device_index)["name"])
+    # xvf_dsnoop (reSpeaker) only supports stereo; detect and downmix later
+    device_name = pa.get_device_info_by_index(input_device_index)["name"] if input_device_index is not None else ""
+    capture_channels = 2 if "xvf_dsnoop" in device_name else 1
     stream = pa.open(
         rate=porcupine.sample_rate,
-        channels=1,
+        channels=capture_channels,
         format=pyaudio.paInt16,
         input=True,
+        input_device_index=input_device_index,
         frames_per_buffer=porcupine.frame_length,
     )
     log.info("Listening for 'Hey Bender'...")
     try:
         while True:
             pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
-            pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
+            if capture_channels == 2:
+                # Stereo interleaved — take left channel only
+                all_samples = struct.unpack_from("h" * porcupine.frame_length * 2, pcm)
+                pcm_unpacked = all_samples[::2]
+            else:
+                pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
             if porcupine.process(pcm_unpacked) >= 0:
                 log.info("Wake word detected")
                 return

@@ -13,6 +13,7 @@ Returns the transcribed text to stdout, or '' on timeout/silence.
 """
 
 import os
+import re
 import wave
 import tempfile
 import collections
@@ -36,7 +37,15 @@ SAMPLE_RATE    = 16000    # Hz — required by webrtcvad and whisper
 CHANNELS       = 1
 FRAME_MS       = 30       # VAD frame size in ms (10/20/30 supported)
 FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
-AUDIO_DEVICE   = None     # None = system default
+def _find_stt_device(pa) -> int:
+    """Find mic_shared (reSpeaker mono) or fall back to seeed."""
+    for fragment in ("mic_shared", "seeed"):
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if fragment in info["name"] and info["maxInputChannels"] > 0:
+                return i
+    return None
+
 
 # Hailo NPU backend (Whisper-Small HEF — primary)
 WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Small.hef"
@@ -46,6 +55,7 @@ WHISPER_HALLUCINATIONS = {
     "like and subscribe", "thanks for listening",
     "please subscribe", "thank you for watching",
     "you", "the", "i", "a", "so", "okay",
+    "um", "uh", "hmm", "hm",
 }
 
 # ---------------------------------------------------------------------------
@@ -66,7 +76,7 @@ def _load_model():
         return
 
     # Hailo primary
-    if os.path.exists(WHISPER_HEF):
+    if getattr(cfg, "hailo_stt_enabled", True) and os.path.exists(WHISPER_HEF):
         try:
             from hailo_platform import VDevice
             from hailo_platform.genai import Speech2Text, Speech2TextTask  # noqa: F401
@@ -132,6 +142,14 @@ def _wav_to_array(wav_path: str) -> np.ndarray:
 
 
 def _filter_hallucination(text: str, source: str = "") -> str:
+    # Catch repetitive-character garbage (ZZZZZZ, aaaaaaa, etc.)
+    if re.search(r"(.)\1{5,}", text.lower().replace(" ", "")):
+        log.warning("Whisper hallucination filtered (repetition): %r", text[:60])
+        return ""
+    # Catch implausibly long transcriptions from silence
+    if len(text) > 200:
+        log.warning("Whisper hallucination filtered (too long): %r", text[:60])
+        return ""
     """Return '' if text looks like a Whisper hallucination."""
     cleaned = text.lower().strip().rstrip(".!?,")
     if cleaned in WHISPER_HALLUCINATIONS:
@@ -153,14 +171,22 @@ def _record_utterance() -> bytes:
     vad = webrtcvad.Vad(cfg.vad_aggressiveness)
     pa  = audio_mod.get_pa()  # shared instance — DO NOT terminate
 
+    stt_device = _find_stt_device(pa)
+    if stt_device is not None:
+        log.debug("STT mic: %s (index %s)", pa.get_device_info_by_index(stt_device)["name"], stt_device)
     stream = pa.open(
         format=pyaudio.paInt16,
         channels=CHANNELS,
         rate=SAMPLE_RATE,
         input=True,
         frames_per_buffer=int(SAMPLE_RATE * FRAME_MS / 1000),
-        input_device_index=AUDIO_DEVICE,
+        input_device_index=stt_device,
     )
+
+    # Flush mic buffer — discard post-playback reverb before VAD starts
+    _flush_frames = max(1, round(cfg.post_play_flush_ms / FRAME_MS))
+    for _ in range(_flush_frames):
+        stream.read(int(SAMPLE_RATE * FRAME_MS / 1000), exception_on_overflow=False)
 
     frames       = []
     started      = False

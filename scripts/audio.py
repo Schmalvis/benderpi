@@ -30,7 +30,13 @@ CHUNK        = 512
 SAMPLE_RATE  = 44100
 CHANNELS     = 1
 FORMAT       = pyaudio.paInt16
-OUTPUT_DEVICE = 2       # ALSA default/plug device (index 2) — supports 44100Hz via SRC; hw:2,0 (index 0) only supports 16000Hz natively
+def _find_output_device(pa: pyaudio.PyAudio):
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if "seeed" in info["name"] and info["maxOutputChannels"] > 0:
+            return i
+    return None
+
 
 RMS_FLOOR    = 200
 RMS_CEILING  = 8000
@@ -42,6 +48,8 @@ log.debug("Audio config: silence_pre=%.3fs, silence_post=%.3fs", SILENCE_PRE, SI
 
 # Single shared PyAudio instance — never re-created to avoid PortAudio crashes
 _pa    = pyaudio.PyAudio()
+OUTPUT_DEVICE = _find_output_device(_pa)
+log.debug("Output device: %s (index %s)", _pa.get_device_info_by_index(OUTPUT_DEVICE)["name"] if OUTPUT_DEVICE is not None else "default", OUTPUT_DEVICE)
 _stream = None
 _lock  = threading.Lock()
 _abort = threading.Event()
