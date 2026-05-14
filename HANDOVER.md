@@ -109,8 +109,24 @@ Verify: `systemctl show bender-converse -p WatchdogUSec,Type,NotifyAccess` → `
 
 ---
 
+## 2026-05-14 — vlm.py Qwen2-VL-2B rewrite + reSpeaker stereo + web fixes (complete)
+
+Deployed alongside the audio-resilience plan.
+
+**What changed:**
+- `vlm.py`: replaced YOLO+LLM two-step pipeline with Qwen2-VL-2B direct VLM
+  (`hailo_platform.genai.VLM`, 336×336 RGB input, single HEF)
+- `audio.py`: added `xvf_dsnoop` to `find_input_device` fallback hint chain
+- `wake_converse.py`: xvf_dsnoop stereo detection + left-channel downmix for Porcupine
+- `web/app.py`: `_check_camera()` TTL cache (10s); `vision_analyse` stops/starts
+  `bender-converse` around TTS to prevent mic-bleed feedback loop
+
+**Pi deploy status (2026-05-14 16:42):** deployed, service running cleanly.
+Verified: `WatchdogUSec=2min`, `Type=notify`, `READY=1 sent`, mic=`mic_shared idx=11 ch=1`.
+
+---
+
 ## Current Priorities
-- **Deploy the 2026-05-14 plan** — run the Pi deploy steps above; verify watchdog wiring
 - **Investigate Weather 401 Unauthorized** — briefings failing at startup (`HTTP Error 401`). Check `HA_TOKEN` in `.env` on Pi — may have expired.
 - Monitor Ollama escalation rates
 - Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs
