@@ -110,6 +110,9 @@ class Config:
     wake_stall_seconds: float = 30.0    # raise RuntimeError if no PCM frames for this long
     wake_heartbeat_frames: int = 250    # emit heartbeat metric every N frames
 
+    # Inference hard timeout
+    response_hard_timeout_s: float = 20.0  # max seconds to wait for responder inference thread
+
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
         path = config_path or _DEFAULT_CONFIG_PATH

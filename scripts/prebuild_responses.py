@@ -100,6 +100,11 @@ PROMOTED_RESPONSES = [
     #     "pattern": r"meaning of life",
     #     "text":    "Forty. Wait, no. It's bending. Everything is bending. You're welcome.",
     # },
+    {
+        "slug": "error_timeout",
+        "pattern": r"^__never_match_user_input__$",
+        "text": "My brain just timed out. Try again, meatbag.",
+    },
 ]
 
 # ---------------------------------------------------------------------------

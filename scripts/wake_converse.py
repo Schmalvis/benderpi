@@ -332,7 +332,18 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         if _infer_thread.is_alive() and cfg.thinking_sound and _thinking_clips:
             audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
 
-        _infer_thread.join()
+        hard_timeout = float(cfg.response_hard_timeout_s)
+        _infer_thread.join(timeout=hard_timeout)
+        if _infer_thread.is_alive():
+            log.error("Inference exceeded %.1fs hard timeout — aborting", hard_timeout)
+            audio.abort()
+            metrics.count("inference_hard_timeout")
+            err_wav = os.path.join(BASE_DIR, "speech", "responses", "error_timeout.wav")
+            if os.path.exists(err_wav):
+                audio.play(err_wav, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
+            session_log.log_turn(text, "TIMEOUT", None, "error_fallback",
+                                response_text="(inference timeout)")
+            continue
         if _exc_holder[0] is not None:
             raise _exc_holder[0]
         response = _resp_holder[0]
