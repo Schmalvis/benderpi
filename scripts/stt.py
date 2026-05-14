@@ -37,15 +37,6 @@ SAMPLE_RATE    = 16000    # Hz — required by webrtcvad and whisper
 CHANNELS       = 1
 FRAME_MS       = 30       # VAD frame size in ms (10/20/30 supported)
 FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
-def _find_stt_device(pa) -> int:
-    """Find mic_shared (reSpeaker mono) or fall back to seeed."""
-    for fragment in ("mic_shared", "seeed"):
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
-            if fragment in info["name"] and info["maxInputChannels"] > 0:
-                return i
-    return None
-
 
 # Hailo NPU backend (Whisper-Small HEF — primary)
 WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Small.hef"
@@ -171,16 +162,13 @@ def _record_utterance() -> bytes:
     vad = webrtcvad.Vad(cfg.vad_aggressiveness)
     pa  = audio_mod.get_pa()  # shared instance — DO NOT terminate
 
-    stt_device = _find_stt_device(pa)
-    if stt_device is not None:
-        log.debug("STT mic: %s (index %s)", pa.get_device_info_by_index(stt_device)["name"], stt_device)
     stream = pa.open(
         format=pyaudio.paInt16,
         channels=CHANNELS,
         rate=SAMPLE_RATE,
         input=True,
         frames_per_buffer=int(SAMPLE_RATE * FRAME_MS / 1000),
-        input_device_index=stt_device,
+        input_device_index=audio_mod.get_input_device_index(),
     )
 
     # Flush mic buffer — discard post-playback reverb before VAD starts
