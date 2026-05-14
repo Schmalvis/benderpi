@@ -156,16 +156,42 @@ def wait_for_wakeword():
         input_device_index=audio.get_input_device_index(),
     )
     log.info("Listening for 'Hey Bender'...")
+
+    stall_s = float(cfg.wake_stall_seconds)
+    hb_every = int(cfg.wake_heartbeat_frames)
+    last_read_ts = time.monotonic()
+    frames_since_hb = 0
+
     try:
         while True:
             pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
+            now = time.monotonic()
+            if not pcm or len(pcm) == 0:
+                if now - last_read_ts > stall_s:
+                    log.error("Wake loop stalled: %.1fs since last PCM frame", now - last_read_ts)
+                    raise RuntimeError("wake loop stalled")
+                continue
+            last_read_ts = now
+            frames_since_hb += 1
+            if frames_since_hb >= hb_every:
+                metrics.count("wake_loop_heartbeat")
+                try:
+                    from systemd import daemon as _sd_daemon  # optional dep
+                    _sd_daemon.notify("WATCHDOG=1")
+                except Exception:
+                    pass
+                frames_since_hb = 0
+
             pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
             if porcupine.process(pcm_unpacked) >= 0:
                 log.info("Wake word detected")
                 return
     finally:
-        stream.stop_stream()
-        stream.close()
+        try:
+            stream.stop_stream()
+            stream.close()
+        except Exception:
+            pass
         porcupine.delete()
 
 
@@ -453,6 +479,14 @@ def main():
         except KeyboardInterrupt:
             log.info("Stopped.")
             break
+        except RuntimeError as exc:
+            if "stalled" in str(exc):
+                log.error("Wake loop reinit after stall: %s", exc)
+                metrics.count("wake_loop_stall_reinit")
+                time.sleep(1.0)
+                continue
+            log.exception("Unhandled RuntimeError in wake/session loop — continuing")
+            time.sleep(2.0)
         except Exception as e:
             log.error("Error: %s", e)
             time.sleep(2)

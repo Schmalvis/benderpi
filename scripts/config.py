@@ -104,6 +104,10 @@ class Config:
     vlm_timeout: float = 4.0          # seconds to wait for VLM inference
     vlm_prompt: str = "Briefly describe what you see."
 
+    # Wake loop liveness
+    wake_stall_seconds: float = 30.0    # raise RuntimeError if no PCM frames for this long
+    wake_heartbeat_frames: int = 250    # emit heartbeat metric every N frames
+
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
         path = config_path or _DEFAULT_CONFIG_PATH
