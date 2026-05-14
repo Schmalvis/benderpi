@@ -127,6 +127,37 @@ bender/
 
 ---
 
+## Runtime Config (`bender_config.json`)
+
+Key tunables added by the 2026-05-14 audio resilience plan:
+
+| Key | Default | Description |
+|---|---|---|
+| `input_device_name` | `"mic_shared"` | ALSA device name hint for mic input |
+| `output_device_name` | `"seeed"` | ALSA device name hint for audio output |
+| `wake_stall_seconds` | `30` | Seconds of zero PCM reads before wake loop reinits |
+| `wake_heartbeat_frames` | `250` | Frames between sd_notify WATCHDOG=1 pings |
+| `vlm_yolo_timeout_s` | `8` | Max seconds for YOLO/LLM inference in vlm.py |
+| `vlm_lazy_poll_s` | `0.05` | Non-blocking poll interval for lazy scene injection |
+| `response_hard_timeout_s` | `20` | Hard kill timeout for inference thread |
+| `http_timeout_s` | `10` | urlopen timeout for briefings + HA fetches |
+| `audio_chunk` | `512` | PyAudio buffer size (frames) |
+| `audio_rms_floor` | `200` | RMS floor for LED amplitude normalisation |
+| `audio_rms_ceiling` | `8000` | RMS ceiling for LED amplitude normalisation |
+| `briefings_weather_ttl_s` | `1800` | Weather briefing cache TTL (seconds) |
+| `briefings_news_ttl_s` | `7200` | News briefing cache TTL (seconds) |
+| `briefings_news_feeds` | BBC UK + England | List of `[label, url, count]` RSS feeds |
+| `ha_entity_cache_ttl_s` | `60` | HA entity list cache TTL (seconds) |
+| `ha_exclude_keywords` | (list) | Entity name substrings to exclude from HA control |
+| `ha_exclude_entities` | (list) | Specific entity IDs to exclude from HA control |
+| `whisper_hallucinations` | (list) | Phrases Whisper hallucinates — filtered from STT output |
+
+`watchdog_config.json` key: `max_hours_without_session` (default `6`) — alerts if no conversation session detected in N hours.
+
+**systemd:** Service uses `Type=notify` + `WatchdogSec=120`. Requires `libsystemd-dev pkg-config` (apt) and `systemd-python` (pip). After updating the service file: `sudo cp systemd/bender-converse.service /etc/systemd/system/ && sudo systemctl daemon-reload`.
+
+---
+
 ## Python Environment
 
 ```bash

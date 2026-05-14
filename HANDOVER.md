@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-05-09
+Last updated: 2026-05-14
 
 ---
 
@@ -82,9 +82,37 @@ sudo systemctl restart bender-converse
 
 ---
 
+## 2026-05-14 — Audio resilience + decoupling (complete)
+
+Implemented `docs/superpowers/plans/2026-05-14-audio-resilience.md` (12 tasks). All committed to main.
+
+**What changed:**
+- Central device discovery (`audio.find_input_device` / `find_output_device`) — no more hardcoded ALSA indices
+- Wake-loop stall detection (30s zero-read → reinit) + sd_notify watchdog (`WatchdogSec=120`)
+- `watchdog.check_session_liveness` — alerts if no conversation in 6h (would have caught the 1.5-day freeze)
+- Lazy vision injection — STT starts immediately after greeting; VLM result injected when the AI call fires
+- `response_hard_timeout_s=20` — inference thread bounded; plays `error_timeout.wav` on breach
+- HTTP timeouts on briefings + Anthropic client (`http_timeout_s=10`, httpx.Timeout)
+- 18 magic constants migrated to `bender_config.json`; `WHISPER_HALLUCINATIONS` to JSON
+
+**Pi deploy required** (one-time steps for this plan):
+```bash
+cd /home/pi/bender && git pull origin main
+sudo apt-get install -y libsystemd-dev pkg-config
+venv/bin/pip install -r requirements.txt
+venv/bin/python scripts/prebuild_responses.py  # generates error_timeout.wav
+sudo cp systemd/bender-converse.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart bender-converse
+```
+Verify: `systemctl show bender-converse -p WatchdogUSec,Type,NotifyAccess` → `WatchdogUSec=2min`, `Type=notify`, `NotifyAccess=main`.
+
+---
+
 ## Current Priorities
+- **Deploy the 2026-05-14 plan** — run the Pi deploy steps above; verify watchdog wiring
 - **Investigate Weather 401 Unauthorized** — briefings failing at startup (`HTTP Error 401`). Check `HA_TOKEN` in `.env` on Pi — may have expired.
-- Monitor Ollama escalation rates with new 25s timeout — should be dramatically lower now
+- Monitor Ollama escalation rates
 - Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs
 - Test timers: "Hey Bender, set a timer for pasta for 5 minutes"
 - Monitor local LLM escalation rates — collect data for future ML classifier training (~500+ queries needed)
@@ -133,7 +161,7 @@ sudo systemctl restart bender-converse
 - **Hailo LLM KV-Cache conflict** — if KV-Cache is still locked after restart (e.g. from bender-web YOLO pipeline holding Hailo), bender-converse retries every 60s. Should self-heal; if not, `sudo systemctl restart bender-web` to release.
 - **`del self._vdevice` may not fully release Hailo VDevice** — `del` decrements Python refcount but Hailo SDK may hold internal refs. If KV-Cache lock recurs, check Hailo SDK for an explicit `release()`/`close()` API.
 - **Camera-busy check uses substring match** — `"busy" in str(e).lower()` works for today's libcamera EBUSY message. If future SDK versions change the wording it silently regresses. Deferred `CameraBusyError` typed exception in `scripts/camera.py` would fix this cleanly.
-- **New hardware: ReSpeaker XVF3800 4-Mic Array** — appeared as ALSA card 3 as of 2026-05-09. seeed-2mic (card 2) still correct. If intentional, no action needed; if not, check what plugged in.
+- **ReSpeaker XVF3800 4-Mic Array** — now primary mic. Device discovery is by name (`mic_shared`/`seeed`), not hardcoded index — USB hotplug no longer breaks audio.
 - Piper --json-input mode needs verification on Pi (using warm-up fallback)
 - Intent false positives reduced but not eliminated
 - Thinking sound timing: plays after get_response() returns, not during generation
