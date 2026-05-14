@@ -245,12 +245,15 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             return
         try:
             if force_wait:
-                scene = scene_future.result(timeout=float(cfg.vlm_lazy_poll_s))
+                scene = scene_future.result(timeout=float(cfg.vlm_yolo_timeout_s))
             else:
                 if not scene_future.done():
                     return
                 scene = scene_future.result(timeout=0)
-        except Exception:
+        except Exception as exc:
+            log.debug("Vision still pending or failed: %s", exc)
+            if force_wait:
+                _scene_injected = True  # prevent late injection after AI history starts
             return
         if not scene.is_empty():
             ctx = f"[Scene: {scene.to_context_string()}]"
