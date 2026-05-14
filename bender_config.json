@@ -73,6 +73,8 @@
   "tts_noise_scale_w": 1.2,
   "vision_model": "yolo11n",
   "vision_confidence_threshold": 0.2,
+  "vlm_yolo_timeout_s": 8,
+  "vlm_lazy_poll_s": 0.05,
   "vision_allowlist": [
     "person",
     "bicycle",

@@ -101,7 +101,9 @@ class Config:
     dismissal_ends_session: bool = True
 
     # Vision
-    vlm_timeout: float = 4.0          # seconds to wait for VLM inference
+    vlm_timeout: float = 4.0          # seconds to wait for VLM inference (legacy, kept for compat)
+    vlm_yolo_timeout_s: float = 8.0   # max seconds for YOLO inference inside vlm.py
+    vlm_lazy_poll_s: float = 0.05     # how long to block at AI-call time waiting for scene
     vlm_prompt: str = "Briefly describe what you see."
 
     # Wake loop liveness

@@ -232,13 +232,26 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             )
             session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
 
-    # Submit scene analysis after greeting — overlaps with STT listening instead of audio playback.
+    # Submit scene analysis after greeting — overlaps with STT listening instead of blocking.
     # libcamera init on Pi 5 is CPU-intensive enough to stutter the audio stream if run concurrently.
     scene_future = _vision_executor.submit(vision.analyse_scene)
 
-    # Collect scene analysis result and inject into AI context
-    try:
-        scene = scene_future.result(timeout=cfg.vlm_timeout)
+    # Lazy scene injection — poll non-blocking each loop iteration; force-wait just before AI call.
+    _scene_injected = False
+
+    def _try_inject_scene(force_wait: bool = False) -> None:
+        nonlocal _scene_injected
+        if _scene_injected or scene_future is None:
+            return
+        try:
+            if force_wait:
+                scene = scene_future.result(timeout=float(cfg.vlm_lazy_poll_s))
+            else:
+                if not scene_future.done():
+                    return
+                scene = scene_future.result(timeout=0)
+        except Exception:
+            return
         if not scene.is_empty():
             ctx = f"[Scene: {scene.to_context_string()}]"
             ai.inject_scene_context(ctx)
@@ -247,12 +260,14 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             log.info("Vision context injected: %s", ctx)
         else:
             log.debug("Vision scene empty — no context injected")
-    except Exception as exc:
-        log.warning("Vision scene analysis failed: %s", exc)
+        _scene_injected = True
 
     last_heard = time.time()
 
     while True:
+        # Poll scene future non-blocking — picks it up as soon as it's ready.
+        _try_inject_scene()
+
         # Check for remote end-session request
         if os.path.exists(cfg.end_session_file):
             _cleanup_abort_files()
@@ -302,6 +317,10 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 _exc_holder[0] = exc
             finally:
                 audio.abort()  # stops thinking sound if still playing
+
+        # Ensure scene context is injected before AI call. If vision is still
+        # running, wait up to vlm_lazy_poll_s (50 ms) — then give up.
+        _try_inject_scene(force_wait=True)
 
         _infer_thread = threading.Thread(target=_infer, daemon=True)
         _infer_thread.start()

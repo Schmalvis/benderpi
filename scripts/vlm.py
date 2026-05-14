@@ -14,6 +14,8 @@ from typing import List
 import cv2
 import numpy as np
 
+from config import cfg
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -113,9 +115,10 @@ def _run_yolo(frame: np.ndarray) -> List[str]:
             done_event.set()
 
     job = _yolo.run([resized], _callback)
-    done_event.wait(timeout=15.0)
+    _yolo_timeout = float(cfg.vlm_yolo_timeout_s)
+    done_event.wait(timeout=_yolo_timeout)
     if not done_event.is_set() and job is not None:
-        job.wait(timeout_ms=15000)
+        job.wait(timeout_ms=int(_yolo_timeout * 1000))
 
     if not result_holder:
         log.warning("YOLO inference did not complete within timeout")
