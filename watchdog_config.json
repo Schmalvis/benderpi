@@ -10,5 +10,6 @@
   "briefing_stale_news_s": 21600,
   "min_avg_session_turns": 1.5,
   "log_gap_threshold_s": 86400,
-  "lookback_hours": 168
+  "lookback_hours": 168,
+  "max_hours_without_session": 6
 }

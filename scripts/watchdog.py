@@ -55,6 +55,59 @@ def _load_metrics(path: str, lookback_hours: int) -> list[dict]:
     return events
 
 
+def _find_latest_session_start(logs_dir: str):
+    """Scan the 3 most recent YYYY-MM-DD.jsonl files for the latest session_start timestamp."""
+    from glob import glob
+    latest = None
+    for path in sorted(glob(os.path.join(logs_dir, "*.jsonl")))[-3:]:
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or '"session_start"' not in line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    if ev.get("event") != "session_start":
+                        continue
+                    ts = ev.get("ts")
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        if latest is None or dt > latest:
+                            latest = dt
+                    except Exception:
+                        continue
+        except FileNotFoundError:
+            continue
+    return latest
+
+
+def check_session_liveness(cfg: dict, logs_dir: str | None = None) -> list:
+    """Return alerts if no session_start event in the last max_hours_without_session hours."""
+    max_h = float(cfg.get("max_hours_without_session", 6))
+    logs_dir = logs_dir or os.path.join(_BASE_DIR, "logs")
+    latest = _find_latest_session_start(logs_dir)
+    now = datetime.now(timezone.utc)
+    if latest is None:
+        return [Alert(
+            severity="warning", check="session_liveness",
+            message=f"No session_start events found in {logs_dir}",
+            data={"logs_dir": logs_dir},
+        )]
+    age_h = (now - latest).total_seconds() / 3600.0
+    if age_h > max_h:
+        return [Alert(
+            severity="warning", check="session_liveness",
+            message=f"No session in {age_h:.1f}h (threshold {max_h:.1f}h)",
+            data={"latest_session_start": latest.isoformat(),
+                  "age_hours": round(age_h, 2),
+                  "threshold_hours": max_h},
+        )]
+    return []
+
+
 def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
     """Run all health checks, return list of alerts."""
     cfg = config or _load_config()
@@ -118,5 +171,7 @@ def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
                     message=f"{label} avg latency {avg_ms:.0f}ms exceeds {threshold}ms",
                     data={"avg_ms": avg_ms, "samples": len(timers)},
                 ))
+
+    alerts.extend(check_session_liveness(cfg))
 
     return alerts
