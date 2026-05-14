@@ -327,22 +327,23 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         _infer_thread = threading.Thread(target=_infer, daemon=True)
         _infer_thread.start()
+        _infer_start = time.monotonic()
         _infer_thread.join(timeout=0.1)  # wait briefly for fast-path responses
 
         if _infer_thread.is_alive() and cfg.thinking_sound and _thinking_clips:
             audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
 
-        hard_timeout = float(cfg.response_hard_timeout_s)
+        hard_timeout = max(0.0, float(cfg.response_hard_timeout_s) - (time.monotonic() - _infer_start))
         _infer_thread.join(timeout=hard_timeout)
         if _infer_thread.is_alive():
-            log.error("Inference exceeded %.1fs hard timeout — aborting", hard_timeout)
+            log.error("Inference exceeded %.1fs hard timeout — aborting", float(cfg.response_hard_timeout_s))
             audio.abort()
             metrics.count("inference_hard_timeout")
             err_wav = os.path.join(BASE_DIR, "speech", "responses", "error_timeout.wav")
             if os.path.exists(err_wav):
                 audio.play(err_wav, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
             session_log.log_turn(text, "TIMEOUT", None, "error_fallback",
-                                response_text="(inference timeout)")
+                                response_text="(inference timeout)", ai_routing=None)
             continue
         if _exc_holder[0] is not None:
             raise _exc_holder[0]
