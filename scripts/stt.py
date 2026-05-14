@@ -41,13 +41,7 @@ FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
 # Hailo NPU backend (Whisper-Small HEF — primary)
 WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Small.hef"
 
-WHISPER_HALLUCINATIONS = {
-    "thank you", "thanks for watching", "subscribe",
-    "like and subscribe", "thanks for listening",
-    "please subscribe", "thank you for watching",
-    "you", "the", "i", "a", "so", "okay",
-    "um", "uh", "hmm", "hm",
-}
+WHISPER_HALLUCINATIONS = set(cfg.whisper_hallucinations)
 
 # ---------------------------------------------------------------------------
 # Backend init

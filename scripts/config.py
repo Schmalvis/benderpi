@@ -100,6 +100,9 @@ class Config:
     # Stop behaviour
     dismissal_ends_session: bool = True
 
+    # STT hallucination filter
+    whisper_hallucinations: list = None  # set in __init__ to avoid mutable default
+
     # Vision
     vlm_timeout: float = 4.0          # seconds to wait for VLM inference (legacy, kept for compat)
     vlm_yolo_timeout_s: float = 8.0   # max seconds for YOLO inference inside vlm.py
@@ -145,6 +148,7 @@ class Config:
 
         # HA exclude entities (loaded from bender_config.json)
         self.ha_exclude_entities: list = overrides.get("ha_exclude_entities", [])
+        self.whisper_hallucinations: list = overrides.get("whisper_hallucinations", [])
         self.ha_room_synonyms: dict = overrides.get("ha_room_synonyms", {})
 
         # 2. Load .env for secrets

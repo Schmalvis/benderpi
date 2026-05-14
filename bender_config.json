@@ -77,6 +77,25 @@
   "vlm_lazy_poll_s": 0.05,
   "response_hard_timeout_s": 20,
   "http_timeout_s": 10,
+  "whisper_hallucinations": [
+    "a",
+    "hm",
+    "hmm",
+    "i",
+    "like and subscribe",
+    "okay",
+    "please subscribe",
+    "so",
+    "subscribe",
+    "thank you",
+    "thank you for watching",
+    "thanks for listening",
+    "thanks for watching",
+    "the",
+    "uh",
+    "um",
+    "you"
+  ],
   "vision_allowlist": [
     "person",
     "bicycle",
@@ -103,5 +122,30 @@
     "toothbrush",
     "dog",
     "cat"
+  ],
+  "audio_chunk": 512,
+  "audio_rms_floor": 200,
+  "audio_rms_ceiling": 8000,
+  "briefings_weather_ttl_s": 1800,
+  "briefings_news_ttl_s": 7200,
+  "briefings_news_feeds": [
+    ["UK",      "https://feeds.bbci.co.uk/news/uk/rss.xml",      2],
+    ["England", "https://feeds.bbci.co.uk/news/england/rss.xml", 2]
+  ],
+  "ha_entity_cache_ttl_s": 60.0,
+  "ha_exclude_keywords": [
+    "nightlight", "sync_send", "sync_receive", "reverse", "crossfade",
+    "loudness", "surround", "subwoofer", "speech_enhancement", "night_sound",
+    "snooze", "ding_sound", "motion_detection", "live_stream", "event_stream",
+    "siren", "permit_join", "report_state", "do_not_disturb", "screensaver",
+    "maintenance_mode", "kiosk_lock", "auto_off_enabled", "auto_update_enabled",
+    "child_lock", "open_window", "smart_temperature_control", "flip_indicator",
+    "power_outage_memory", "led_disabled_night", "schedule_", "powerwall",
+    "dishwasher", "storm_watch", "cloud_", "fire_tablet", "turbo_mode",
+    "network_indicator", "delayed_power_on", "detach_relay", "weather_card",
+    "keypad_chirps", "radiator_plug", "assist_microphone", "dishcare",
+    "extractor_fan", "fly_zapper", "heated_airer", "lightswitches",
+    "alarm_siren", "motion_warning", "upstairs_snooze", "downstairs_snooze",
+    "motion_sound", "do_not"
   ]
 }
