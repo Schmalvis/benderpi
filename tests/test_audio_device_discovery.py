@@ -1,7 +1,6 @@
 """Offline tests for audio.find_input_device / find_output_device."""
 import sys
 import types
-from unittest import mock
 
 sys.path.insert(0, "scripts")
 

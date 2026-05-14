@@ -100,7 +100,7 @@ def find_output_device(pa: "pyaudio.PyAudio", name_hints: list[str] | None = Non
     return None
 
 
-# Cached at import — single discovery per process. Re-discovery requires service restart.
+# Lazy cache — discovered on first call. Re-discovery requires service restart.
 _INPUT_DEVICE: int | None = None
 _OUTPUT_DEVICE: int | None = None
 
