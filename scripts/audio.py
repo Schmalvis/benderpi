@@ -30,16 +30,96 @@ CHUNK        = 512
 SAMPLE_RATE  = 44100
 CHANNELS     = 1
 FORMAT       = pyaudio.paInt16
-def _find_output_device(pa: pyaudio.PyAudio):
-    for i in range(pa.get_device_count()):
-        info = pa.get_device_info_by_index(i)
-        if "seeed" in info["name"] and info["maxOutputChannels"] > 0:
-            return i
-    return None
-
 
 RMS_FLOOR    = 200
 RMS_CEILING  = 8000
+
+# ---------------------------------------------------------------------------
+# Device discovery — single source of truth for input/output indices.
+# ---------------------------------------------------------------------------
+
+def _list_devices(pa: "pyaudio.PyAudio") -> list[dict]:
+    out = []
+    for i in range(pa.get_device_count()):
+        try:
+            out.append(pa.get_device_info_by_index(i))
+        except Exception:
+            continue
+    return out
+
+
+def find_input_device(pa: "pyaudio.PyAudio", name_hints: list[str] | None = None) -> int | None:
+    """Return the PortAudio index of the preferred input device, or None.
+
+    Search order:
+      1. Each hint in `name_hints` (case-insensitive substring match on device name)
+         — first hit with maxInputChannels > 0 wins.
+      2. Config key `input_device_name` (default 'mic_shared').
+      3. Fallback substring 'seeed'.
+    """
+    hints = list(name_hints or [])
+    hints.append(getattr(cfg, "input_device_name", "mic_shared"))
+    hints.append("seeed")
+    seen = set()
+    for h in hints:
+        if not h or h in seen:
+            continue
+        seen.add(h)
+        for d in _list_devices(pa):
+            if d.get("maxInputChannels", 0) <= 0:
+                continue
+            if h.lower() in str(d.get("name", "")).lower():
+                log.info("find_input_device: matched '%s' -> idx=%d (%s)",
+                         h, d["index"], d["name"])
+                return int(d["index"])
+    log.warning("find_input_device: no match for hints=%s — falling back to default", hints)
+    return None
+
+
+def find_output_device(pa: "pyaudio.PyAudio", name_hints: list[str] | None = None) -> int | None:
+    """Return the PortAudio index of the preferred output device, or None.
+
+    Same precedence as find_input_device but for output devices.
+    """
+    hints = list(name_hints or [])
+    hints.append(getattr(cfg, "output_device_name", "seeed"))
+    hints.append("default")
+    seen = set()
+    for h in hints:
+        if not h or h in seen:
+            continue
+        seen.add(h)
+        for d in _list_devices(pa):
+            if d.get("maxOutputChannels", 0) <= 0:
+                continue
+            if h.lower() in str(d.get("name", "")).lower():
+                log.info("find_output_device: matched '%s' -> idx=%d (%s)",
+                         h, d["index"], d["name"])
+                return int(d["index"])
+    log.warning("find_output_device: no match for hints=%s — using PyAudio default", hints)
+    return None
+
+
+# Cached at import — single discovery per process. Re-discovery requires service restart.
+_INPUT_DEVICE: int | None = None
+_OUTPUT_DEVICE: int | None = None
+
+
+def get_input_device_index() -> int | None:
+    """Return cached input device index, discovering on first call."""
+    global _INPUT_DEVICE
+    if _INPUT_DEVICE is None:
+        _INPUT_DEVICE = find_input_device(_pa)
+    return _INPUT_DEVICE
+
+
+def get_output_device_index() -> int | None:
+    """Return cached output device index, discovering on first call."""
+    global _OUTPUT_DEVICE
+    if _OUTPUT_DEVICE is None:
+        _OUTPUT_DEVICE = find_output_device(_pa)
+    return _OUTPUT_DEVICE
+
 
 SILENCE_PRE  = cfg.silence_pre    # 0.02 from bender_config.json
 SILENCE_POST = cfg.silence_post   # 0.08 from bender_config.json
@@ -48,8 +128,6 @@ log.debug("Audio config: silence_pre=%.3fs, silence_post=%.3fs", SILENCE_PRE, SI
 
 # Single shared PyAudio instance — never re-created to avoid PortAudio crashes
 _pa    = pyaudio.PyAudio()
-OUTPUT_DEVICE = _find_output_device(_pa)
-log.debug("Output device: %s (index %s)", _pa.get_device_info_by_index(OUTPUT_DEVICE)["name"] if OUTPUT_DEVICE is not None else "default", OUTPUT_DEVICE)
 _stream = None
 _lock  = threading.Lock()
 _abort = threading.Event()
@@ -94,7 +172,7 @@ def open_session():
             channels=CHANNELS,
             rate=SAMPLE_RATE,
             output=True,
-            output_device_index=OUTPUT_DEVICE,
+            output_device_index=get_output_device_index(),
             frames_per_buffer=CHUNK,
         )
         # Warm up the DAC with a brief silence burst
@@ -197,7 +275,7 @@ def play_oneshot(wav_path: str, on_chunk=None, on_done=None):
         if not was_open:
             stream = _pa.open(
                 format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
-                output=True, output_device_index=OUTPUT_DEVICE,
+                output=True, output_device_index=get_output_device_index(),
                 frames_per_buffer=CHUNK,
             )
         else:
@@ -250,7 +328,7 @@ def play_stream_oneshot(wav_iter, on_chunk=None, on_done=None):
         if not was_open:
             stream = _pa.open(
                 format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE,
-                output=True, output_device_index=OUTPUT_DEVICE,
+                output=True, output_device_index=get_output_device_index(),
                 frames_per_buffer=CHUNK,
             )
         else:

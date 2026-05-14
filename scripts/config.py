@@ -35,6 +35,8 @@ class Config:
     silence_pre: float = 0.02
     silence_post: float = 0.08
     output_device: int = 0  # PyAudio device index for hw:2,0
+    input_device_name: str = "mic_shared"   # substring hint for PortAudio input discovery
+    output_device_name: str = "seeed"       # substring hint for PortAudio output discovery
 
     # STT
     whisper_model: str = "tiny.en"
