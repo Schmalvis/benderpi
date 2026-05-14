@@ -147,15 +147,22 @@ def wait_for_wakeword():
     )
     # Use the shared PyAudio instance — creating a second one crashes PortAudio
     pa = audio.get_pa()
+    input_device_index = audio.get_input_device_index()
+    device_name = (
+        pa.get_device_info_by_index(input_device_index)["name"]
+        if input_device_index is not None else ""
+    )
+    # xvf_dsnoop (reSpeaker 4-mic) only supports stereo — downmix to mono for Porcupine
+    capture_channels = 2 if "xvf_dsnoop" in device_name else 1
     stream = pa.open(
         rate=porcupine.sample_rate,
-        channels=1,
+        channels=capture_channels,
         format=pyaudio.paInt16,
         input=True,
         frames_per_buffer=porcupine.frame_length,
-        input_device_index=audio.get_input_device_index(),
+        input_device_index=input_device_index,
     )
-    log.info("Listening for 'Hey Bender'...")
+    log.info("Listening for 'Hey Bender'... (mic: %s, ch=%d)", device_name or "default", capture_channels)
 
     stall_s = float(cfg.wake_stall_seconds)
     hb_every = int(cfg.wake_heartbeat_frames)
@@ -182,7 +189,11 @@ def wait_for_wakeword():
                     pass
                 frames_since_hb = 0
 
-            pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
+            if capture_channels == 2:
+                all_samples = struct.unpack_from("h" * porcupine.frame_length * 2, pcm)
+                pcm_unpacked = all_samples[::2]  # left channel only
+            else:
+                pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
             if porcupine.process(pcm_unpacked) >= 0:
                 log.info("Wake word detected")
                 return

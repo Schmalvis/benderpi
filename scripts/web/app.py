@@ -798,13 +798,27 @@ async def remote_ask(audio: UploadFile = File(...)):
 
 # ── Camera Stream ─────────────────────────────────────────────────────────────
 
+import time as _time
+
+_camera_available_cache: tuple | None = None  # (bool, monotonic_ts)
+_CAMERA_CACHE_TTL = 10.0  # seconds
+
+
 def _check_camera() -> bool:
-    """Returns True if the camera can be initialised."""
+    """Returns True if the camera can be initialised. Result cached for 10s."""
+    global _camera_available_cache
+    now = _time.monotonic()
+    if _camera_available_cache is not None:
+        cached_result, cached_ts = _camera_available_cache
+        if now - cached_ts < _CAMERA_CACHE_TTL:
+            return cached_result
     try:
         _vision.acquire_camera()
     except Exception:
+        _camera_available_cache = (False, now)
         return False
     try:
+        _camera_available_cache = (True, now)
         return True
     finally:
         _vision.release_camera()
@@ -910,7 +924,22 @@ async def vision_analyse(background_tasks: BackgroundTasks):
     text = await asyncio.to_thread(ai.respond, prompt)
 
     def _speak_in_background(t: str):
+        # Stop bender-converse before speaking to prevent speaker→mic bleed
+        # triggering a second AI response (same pattern as _puppet_play).
+        was_running = False
         try:
+            if _IS_LINUX:
+                result = subprocess.run(
+                    ["systemctl", "is-active", "bender-converse"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                was_running = result.stdout.strip() == "active"
+                if was_running:
+                    subprocess.run(
+                        ["sudo", "systemctl", "stop", "bender-converse"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    _time.sleep(0.5)
             leds.set_talking()
             audio.play_stream_oneshot(
                 _tts.speak_streaming(t),
@@ -919,6 +948,12 @@ async def vision_analyse(background_tasks: BackgroundTasks):
             )
         except Exception as exc:
             log.warning("vision_analyse TTS/audio failed: %s", exc)
+        finally:
+            if was_running:
+                subprocess.run(
+                    ["sudo", "systemctl", "start", "bender-converse"],
+                    capture_output=True, text=True, timeout=15,
+                )
 
     background_tasks.add_task(_speak_in_background, text)
 

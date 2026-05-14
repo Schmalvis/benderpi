@@ -59,6 +59,7 @@ def find_input_device(pa: "pyaudio.PyAudio", name_hints: list[str] | None = None
     """
     hints = list(name_hints or [])
     hints.append(getattr(cfg, "input_device_name", "mic_shared"))
+    hints.append("xvf_dsnoop")  # reSpeaker XVF3800 4-mic array
     hints.append("seeed")
     seen = set()
     for h in hints:
