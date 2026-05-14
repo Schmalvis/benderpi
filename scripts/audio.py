@@ -155,7 +155,7 @@ def _silence(duration_s: float) -> bytes:
 
 def open_session():
     """Open the output stream. Call once after wake word is detected."""
-    global _stream
+    global _stream, _OUTPUT_DEVICE
     with _lock:
         if _stream is not None:
             try:
@@ -167,14 +167,27 @@ def open_session():
                 _stream.close()
             except Exception:
                 pass
-        _stream = _pa.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            output=True,
-            output_device_index=get_output_device_index(),
-            frames_per_buffer=CHUNK,
-        )
+        try:
+            _stream = _pa.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                output=True,
+                output_device_index=get_output_device_index(),
+                frames_per_buffer=CHUNK,
+            )
+        except Exception as exc:
+            log.error("open_session failed (%s) — re-discovering output device", exc)
+            _OUTPUT_DEVICE = None  # force re-scan
+            metrics.count("audio_open_retry")
+            _stream = _pa.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                output=True,
+                output_device_index=get_output_device_index(),
+                frames_per_buffer=CHUNK,
+            )
         # Warm up the DAC with a brief silence burst
         _stream.write(_silence(0.1))
 
