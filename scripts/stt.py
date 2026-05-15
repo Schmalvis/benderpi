@@ -208,6 +208,11 @@ def transcribe(audio_path: str) -> str:
     return _transcribe_array(audio_array)
 
 
+def warm_up() -> None:
+    """Pre-load STT model at startup to avoid ~5s init delay on first wake word."""
+    _load_model()
+
+
 def listen_and_transcribe() -> str:
     """Record one utterance and return the transcribed text."""
     _load_model()

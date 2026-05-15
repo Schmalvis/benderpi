@@ -501,6 +501,8 @@ def main():
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
     # Warm up Piper TTS (pre-loads ONNX model)
     tts_generate.warm_up()
+    # Pre-load STT model so first wake word has no init delay
+    threading.Thread(target=stt.warm_up, daemon=True, name="stt-warmup").start()
     # Load thinking clips from index
     _load_thinking_clips()
     # Clean up stale IPC files from previous crashes
