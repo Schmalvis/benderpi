@@ -317,6 +317,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         last_heard = time.time()
         log.info("Heard: %r", text)
         _turn_start = time.monotonic()
+        stt.release()  # free Hailo KV-Cache so LLM can acquire it
 
         # Run inference concurrently with thinking sound.
         # Fast responses (clips, handlers) finish in <100ms — thinking sound skipped.
@@ -359,6 +360,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         if _exc_holder[0] is not None:
             raise _exc_holder[0]
         response = _resp_holder[0]
+        # Re-warm STT on Hailo now LLM is done, ready for next wake word
+        threading.Thread(target=stt.warm_up, daemon=True, name="stt-rewarm").start()
 
         # DISMISSAL fast-path — skip farewell clip if configured
         if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:

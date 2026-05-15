@@ -213,6 +213,27 @@ def warm_up() -> None:
     _load_model()
 
 
+def release() -> None:
+    """Release Hailo VDevice after transcription, freeing KV-Cache for the LLM."""
+    global _backend, _vdevice, _s2t
+    if _backend != "hailo":
+        return
+    try:
+        if _s2t is not None:
+            _s2t.__exit__(None, None, None)
+    except Exception:
+        pass
+    try:
+        if _vdevice is not None:
+            _vdevice.__exit__(None, None, None)
+    except Exception:
+        pass
+    _s2t = None
+    _vdevice = None
+    _backend = None
+    log.debug("STT: Hailo VDevice released")
+
+
 def listen_and_transcribe() -> str:
     """Record one utterance and return the transcribed text."""
     _load_model()
