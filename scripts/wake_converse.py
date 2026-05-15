@@ -318,6 +318,8 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         log.info("Heard: %r", text)
         _turn_start = time.monotonic()
         stt.release()  # free Hailo KV-Cache so LLM can acquire it
+        if ai_local:
+            ai_local.reset_hailo()  # clear cooldown so LLM retries Hailo immediately
 
         # Run inference concurrently with thinking sound.
         # Fast responses (clips, handlers) finish in <100ms — thinking sound skipped.

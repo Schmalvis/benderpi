@@ -271,6 +271,12 @@ class LocalAIResponder:
         """Release all hardware resources. Call on shutdown."""
         self._hailo.close()
 
+    def reset_hailo(self) -> None:
+        """Clear Hailo init-failure state so next generate() retries immediately."""
+        if self._hailo is not None:
+            self._hailo._available = None
+            self._hailo._last_failed_at = None
+
     def warm_up(self) -> None:
         """Pre-load Ollama model in background at startup."""
         self._ollama.warm_up()

@@ -215,23 +215,28 @@ def warm_up() -> None:
 
 def release() -> None:
     """Release Hailo VDevice after transcription, freeing KV-Cache for the LLM."""
+    import gc
     global _backend, _vdevice, _s2t
     if _backend != "hailo":
         return
-    try:
-        if _s2t is not None:
-            _s2t.__exit__(None, None, None)
-    except Exception:
-        pass
-    try:
-        if _vdevice is not None:
-            _vdevice.__exit__(None, None, None)
-    except Exception:
-        pass
-    _s2t = None
-    _vdevice = None
+    # Exit context managers, then delete objects so __del__ frees Hailo hardware
+    s2t_ref, vdev_ref = _s2t, _vdevice
+    _s2t = _vdevice = None
     _backend = None
-    log.debug("STT: Hailo VDevice released")
+    try:
+        if s2t_ref is not None:
+            s2t_ref.__exit__(None, None, None)
+    except Exception:
+        pass
+    del s2t_ref
+    try:
+        if vdev_ref is not None:
+            vdev_ref.__exit__(None, None, None)
+    except Exception:
+        pass
+    del vdev_ref
+    gc.collect()
+    log.info("STT: Hailo VDevice released (KV-Cache free)")
 
 
 def listen_and_transcribe() -> str:
