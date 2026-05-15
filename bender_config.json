@@ -2,7 +2,7 @@
   "input_device_name": "mic_shared",
   "output_device_name": "seeed",
   "whisper_model": "base.en",
-  "vad_aggressiveness": 3,
+  "vad_aggressiveness": 1,
   "silence_timeout": 8.0,
   "silence_pre": 0.02,
   "silence_post": 0.08,
