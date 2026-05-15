@@ -17,6 +17,7 @@ import re
 import wave
 import tempfile
 import collections
+import threading
 import time
 
 import numpy as np
@@ -51,50 +52,51 @@ _backend   = None   # "hailo" | "cpu"
 _vdevice   = None   # Hailo VDevice (held open for lifetime of process)
 _s2t       = None   # Hailo Speech2Text instance
 _cpu_model = None   # faster-whisper fallback
+_model_lock = threading.Lock()  # guards _backend/_vdevice/_s2t mutations
 
 
 def _load_model():
     """Initialise Hailo Whisper-Small as primary STT, falling back to CPU on failure."""
     global _backend, _vdevice, _s2t, _cpu_model
+    with _model_lock:
+        if _backend is not None:
+            return
 
-    if _backend is not None:
-        return
+        # Hailo primary
+        if getattr(cfg, "hailo_stt_enabled", True) and os.path.exists(WHISPER_HEF):
+            try:
+                from hailo_platform import VDevice
+                from hailo_platform.genai import Speech2Text, Speech2TextTask  # noqa: F401
+                _params = VDevice.create_params()
+                _params.group_id = "SHARED"
+                _vdevice = VDevice(_params)
+                _vdevice.__enter__()
+                _s2t = Speech2Text(_vdevice, WHISPER_HEF)
+                _s2t.__enter__()
+                _backend = "hailo"
+                log.info("STT backend: Hailo Speech2Text (Whisper-Small on Hailo-10H)")
+                return
+            except Exception as e:
+                log.warning("Hailo STT init failed (%s) — falling back to CPU", e)
+                if _vdevice is not None:
+                    try:
+                        _vdevice.__exit__(None, None, None)
+                    except Exception:
+                        pass
+                    _vdevice = None
+                _s2t = None
 
-    # Hailo primary
-    if getattr(cfg, "hailo_stt_enabled", True) and os.path.exists(WHISPER_HEF):
+        # CPU fallback
         try:
-            from hailo_platform import VDevice
-            from hailo_platform.genai import Speech2Text, Speech2TextTask  # noqa: F401
-            _params = VDevice.create_params()
-            _params.group_id = "SHARED"
-            _vdevice = VDevice(_params)
-            _vdevice.__enter__()
-            _s2t = Speech2Text(_vdevice, WHISPER_HEF)
-            _s2t.__enter__()
-            _backend = "hailo"
-            log.info("STT backend: Hailo Speech2Text (Whisper-Small on Hailo-10H)")
+            from faster_whisper import WhisperModel
+            _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
+            _backend = "cpu"
+            log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
             return
         except Exception as e:
-            log.warning("Hailo STT init failed (%s) — falling back to CPU", e)
-            if _vdevice is not None:
-                try:
-                    _vdevice.__exit__(None, None, None)
-                except Exception:
-                    pass
-                _vdevice = None
-            _s2t = None
+            log.warning("faster-whisper init failed (%s)", e)
 
-    # CPU fallback
-    try:
-        from faster_whisper import WhisperModel
-        _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
-        _backend = "cpu"
-        log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
-        return
-    except Exception as e:
-        log.warning("faster-whisper init failed (%s)", e)
-
-    raise RuntimeError("No STT backend available")
+        raise RuntimeError("No STT backend available")
 
 
 def _active_model_name() -> str:
@@ -226,14 +228,14 @@ def release() -> None:
     try:
         if s2t_ref is not None:
             s2t_ref.__exit__(None, None, None)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("STT s2t exit error: %s", e)
     del s2t_ref
     try:
         if vdev_ref is not None:
             vdev_ref.__exit__(None, None, None)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("STT vdevice exit error: %s", e)
     del vdev_ref
     gc.collect()
     log.info("STT: Hailo VDevice released (KV-Cache free)")

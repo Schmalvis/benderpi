@@ -144,6 +144,31 @@ class _HailoLLMResponder:
             except Exception as e:
                 log.warning("Failed to clear Hailo context cache: %s", e)
 
+    def reset_state(self) -> None:
+        """Clear init-failure cooldown so next _load() retries Hailo immediately."""
+        self._available = None
+        self._last_failed_at = None
+
+    def release_chip(self) -> None:
+        """Release Hailo VDevice between sessions, freeing KV-Cache for STT."""
+        import gc
+        if self._llm is not None:
+            try:
+                self._llm.clear_context()
+            except Exception as e:
+                log.debug("Hailo LLM clear_context error: %s", e)
+            self._llm = None
+        if self._vdevice is not None:
+            try:
+                self._vdevice.__exit__(None, None, None)
+            except Exception as e:
+                log.debug("Hailo LLM vdevice exit error: %s", e)
+            del self._vdevice
+            self._vdevice = None
+        self._available = None
+        gc.collect()
+        log.debug("Hailo LLM chip released (will re-acquire on next generate)")
+
     def close(self) -> None:
         """Release Hailo VDevice and LLM, freeing the on-chip KV-Cache."""
         if self._llm is not None:
@@ -274,8 +299,12 @@ class LocalAIResponder:
     def reset_hailo(self) -> None:
         """Clear Hailo init-failure state so next generate() retries immediately."""
         if self._hailo is not None:
-            self._hailo._available = None
-            self._hailo._last_failed_at = None
+            self._hailo.reset_state()
+
+    def release_chip(self) -> None:
+        """Release Hailo VDevice so STT can acquire the KV-Cache."""
+        if self._hailo is not None:
+            self._hailo.release_chip()
 
     def warm_up(self) -> None:
         """Pre-load Ollama model in background at startup."""

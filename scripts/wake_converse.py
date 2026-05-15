@@ -62,7 +62,6 @@ _vision_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision"
 # ---------------------------------------------------------------------------
 
 KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
-SILENCE_TIMEOUT = 8.0   # seconds of silence before session ends
 
 
 def _write_session_file(session_id: str, turns: int):
@@ -292,6 +291,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             _remove_session_file()
             audio.close_session()
             if ai_local:
+                ai_local.release_chip()
                 ai_local.clear_history()
             return
 
@@ -302,7 +302,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         text = stt.listen_and_transcribe()
 
         if not text:
-            if time.time() - last_heard > SILENCE_TIMEOUT:
+            if time.time() - last_heard > cfg.silence_timeout:
                 log.info("Silence timeout -- ending session")
                 leds.all_off()
                 session_log.session_end("timeout")
@@ -310,6 +310,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 _remove_session_file()
                 audio.close_session()
                 if ai_local:
+                    ai_local.release_chip()
                     ai_local.clear_history()
                 return
             continue
@@ -362,8 +363,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         if _exc_holder[0] is not None:
             raise _exc_holder[0]
         response = _resp_holder[0]
-        # Re-warm STT on Hailo now LLM is done, ready for next wake word
-        threading.Thread(target=stt.warm_up, daemon=True, name="stt-rewarm").start()
 
         # DISMISSAL fast-path — skip farewell clip if configured
         if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
@@ -381,6 +380,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             _remove_session_file()
             audio.close_session()
             if ai_local:
+                ai_local.release_chip()
                 ai_local.clear_history()
             return
 
@@ -448,6 +448,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             _remove_session_file()
             audio.close_session()
             if ai_local:
+                ai_local.release_chip()
                 ai_local.clear_history()
             return
 
@@ -471,6 +472,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 _remove_session_file()
                 audio.close_session()
                 if ai_local:
+                    ai_local.release_chip()
                     ai_local.clear_history()
                 return
             else:
@@ -481,6 +483,9 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 last_heard = time.time()
                 continue
 
+        # Release Hailo chip so STT can re-acquire for next turn
+        if ai_local:
+            ai_local.release_chip()
         # Reset timer after Bender finishes -- gives user full window to respond
         last_heard = time.time()
 
