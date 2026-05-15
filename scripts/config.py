@@ -40,6 +40,7 @@ class Config:
     audio_chunk: int = 512
     audio_rms_floor: int = 200
     audio_rms_ceiling: int = 8000
+    post_play_flush_ms: int = 200  # ms of mic buffer to discard after playback (reverb flush)
 
     # STT
     whisper_model: str = "tiny.en"
