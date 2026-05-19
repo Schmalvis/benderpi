@@ -338,12 +338,14 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
         # running, wait up to vlm_lazy_poll_s (50 ms) — then give up.
         _try_inject_scene(force_wait=True)
 
+        _thinking_played = False
         _infer_thread = threading.Thread(target=_infer, daemon=True)
         _infer_thread.start()
         _infer_start = time.monotonic()
         _infer_thread.join(timeout=0.1)  # wait briefly for fast-path responses
 
         if _infer_thread.is_alive() and cfg.thinking_sound and _thinking_clips:
+            _thinking_played = True
             audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
 
         hard_timeout = max(0.0, float(cfg.response_hard_timeout_s) - (time.monotonic() - _infer_start))
@@ -417,7 +419,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
         else:
             # Pre-generated clip or handler response
-            if response.needs_thinking and cfg.thinking_sound and _thinking_clips:
+            if response.needs_thinking and cfg.thinking_sound and _thinking_clips and not _thinking_played:
                 audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
             leds.set_talking()
             audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
