@@ -291,7 +291,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             _remove_session_file()
             audio.close_session()
             if ai_local:
-                ai_local.release_chip()
                 ai_local.clear_history()
             return
 
@@ -310,7 +309,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 _remove_session_file()
                 audio.close_session()
                 if ai_local:
-                    ai_local.release_chip()
                     ai_local.clear_history()
                 return
             continue
@@ -380,7 +378,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             _remove_session_file()
             audio.close_session()
             if ai_local:
-                ai_local.release_chip()
                 ai_local.clear_history()
             return
 
@@ -448,7 +445,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
             _remove_session_file()
             audio.close_session()
             if ai_local:
-                ai_local.release_chip()
                 ai_local.clear_history()
             return
 
@@ -472,7 +468,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 _remove_session_file()
                 audio.close_session()
                 if ai_local:
-                    ai_local.release_chip()
                     ai_local.clear_history()
                 return
             else:
@@ -483,9 +478,6 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
                 last_heard = time.time()
                 continue
 
-        # Release Hailo chip so STT can re-acquire for next turn
-        if ai_local:
-            ai_local.release_chip()
         # Reset timer after Bender finishes -- gives user full window to respond
         last_heard = time.time()
 

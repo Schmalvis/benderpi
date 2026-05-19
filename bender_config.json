@@ -198,5 +198,6 @@
     "motion_sound",
     "do_not"
   ],
-  "silence_frames": 25
+  "silence_frames": 25,
+  "hailo_stt_enabled": false
 }

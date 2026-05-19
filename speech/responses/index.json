@@ -147,7 +147,13 @@
       "label": "Executed. Feel free to thank me anytime. Go on."
     }
   ],
-  "promoted": [],
+  "promoted": [
+    {
+      "pattern": "^__never_match_user_input__$",
+      "file": "speech/responses/promoted/error_timeout.wav",
+      "label": "My brain just timed out. Try again, meatbag."
+    }
+  ],
   "thinking": [
     {
       "file": "speech/responses/thinking/thinking_001.wav",
