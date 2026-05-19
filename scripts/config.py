@@ -47,6 +47,7 @@ class Config:
     vad_aggressiveness: int = 3  # 0–3 scale; 3 = most aggressive non-speech filtering → faster silence detection
     silence_frames: int = 15  # 15×30ms = 450ms — was 50 (1.5s); tune via BENDER_VAD_SILENCE_FRAMES
     max_record_seconds: int = 15
+    hailo_stt_enabled: bool = True  # set False to use faster-whisper CPU only
 
     # TTS
     piper_bin: str = os.path.join(_BASE_DIR, "piper", "piper")
