@@ -199,5 +199,6 @@
     "do_not"
   ],
   "silence_frames": 25,
-  "hailo_stt_enabled": false
+  "hailo_stt_enabled": false,
+  "vlm_enabled": false
 }

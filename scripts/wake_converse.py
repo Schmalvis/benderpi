@@ -244,7 +244,7 @@ def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responde
 
     # Submit scene analysis after greeting — overlaps with STT listening instead of blocking.
     # libcamera init on Pi 5 is CPU-intensive enough to stutter the audio stream if run concurrently.
-    scene_future = _vision_executor.submit(vision.analyse_scene)
+    scene_future = _vision_executor.submit(vision.analyse_scene) if cfg.vlm_enabled else None
 
     # Lazy scene injection — poll non-blocking each loop iteration; force-wait just before AI call.
     _scene_injected = False
