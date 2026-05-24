@@ -13,15 +13,12 @@ Response priority chain lives in responder.py.
 """
 
 import atexit
-import json
 import os
-import random
 import signal
 import time
 import sys
 import struct
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR   = os.path.dirname(SCRIPT_DIR)
@@ -45,36 +42,19 @@ from ai_response import AIResponder
 from ai_local import LocalAIResponder
 from conversation_log import SessionLogger
 from responder import Responder
-from handlers.clip_handler import RealClipHandler
 from handlers.timer_alert import TimerAlertRunner
-from handler_base import load_clips_from_index, ResponseStream
 from logger import get_logger
 from config import cfg
 from metrics import metrics
+from session import ConversationSession, FutureVisionProvider
 
 log = get_logger("converse")
-
-# Module-level executor for vision scene analysis (one session at a time)
-_vision_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-KEYWORD_PATH    = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
-
-
-def _write_session_file(session_id: str, turns: int):
-    try:
-        with open(cfg.session_file, "w") as f:
-            json.dump({
-                "active": True,
-                "session_id": session_id,
-                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "turns": turns,
-            }, f)
-    except OSError as e:
-        log.warning("Failed to write session file: %s", e)
+KEYWORD_PATH = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
 
 
 def _remove_session_file():
@@ -95,30 +75,10 @@ def _cleanup_abort_files():
             pass
 
 # ---------------------------------------------------------------------------
-# Thinking clips
-# ---------------------------------------------------------------------------
-
-_thinking_clips = []
-
-
-def _load_thinking_clips():
-    global _thinking_clips
-    _idx = os.path.join(BASE_DIR, "speech", "responses", "index.json")
-    _thinking_clips = load_clips_from_index("thinking", _idx, BASE_DIR)
-
-
-# ---------------------------------------------------------------------------
 # Timer alert runner
 # ---------------------------------------------------------------------------
 
 _alert_runner = TimerAlertRunner()
-
-
-# ---------------------------------------------------------------------------
-# Greeting handler (used outside the responder chain)
-# ---------------------------------------------------------------------------
-
-_greeting_handler = RealClipHandler()
 
 _last_abort_check = 0.0
 
@@ -205,283 +165,6 @@ def wait_for_wakeword():
         porcupine.delete()
 
 
-# ---------------------------------------------------------------------------
-# Conversation session
-# ---------------------------------------------------------------------------
-
-def run_session(ai: AIResponder, session_log: SessionLogger, responder: Responder, ai_local=None):
-    metrics.count("session", event="start")
-    session_log.session_start()
-    _write_session_file(session_log.session_id, 0)
-    audio.open_session()
-
-    # Clear state from previous session before this session begins
-    ai.clear_history()
-    if ai_local:
-        ai_local.clear_history()
-
-    # Greeting — skip audio if silent_wakeword is enabled (LED-only notification)
-    if cfg.silent_wakeword and cfg.led_listening_enabled:
-        log.info("Silent wake word mode — skipping audio greeting")
-        session_log.log_turn("(wake word)", "GREETING", None, "silent",
-                     response_text="(silent — LED only)")
-    else:
-        greeting_resp = _greeting_handler.handle("(wake word)", "GREETING")
-        if greeting_resp:
-            leds.set_talking()
-            audio.play(greeting_resp.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-            session_log.log_turn("(wake word)", "GREETING", None, greeting_resp.method,
-                         response_text=os.path.basename(greeting_resp.wav_path))
-        else:
-            text = "Yo. What do you want?"
-            leds.set_talking()
-            audio.play_stream(
-                tts_generate.speak_streaming(text),
-                on_chunk=_check_abort_on_chunk,
-                on_done=leds.all_off,
-            )
-            session_log.log_turn("(wake word)", "GREETING", None, "pre_gen_tts", response_text=text)
-
-    # Submit scene analysis after greeting — overlaps with STT listening instead of blocking.
-    # libcamera init on Pi 5 is CPU-intensive enough to stutter the audio stream if run concurrently.
-    scene_future = _vision_executor.submit(vision.analyse_scene) if cfg.vlm_enabled else None
-
-    # Lazy scene injection — poll non-blocking each loop iteration; force-wait just before AI call.
-    _scene_injected = False
-
-    def _try_inject_scene(force_wait: bool = False) -> None:
-        nonlocal _scene_injected
-        if _scene_injected or scene_future is None:
-            return
-        try:
-            if force_wait:
-                scene = scene_future.result(timeout=float(cfg.vlm_yolo_timeout_s))
-            else:
-                if not scene_future.done():
-                    return
-                scene = scene_future.result(timeout=0)
-        except Exception as exc:
-            log.debug("Vision still pending or failed: %s", exc)
-            if force_wait:
-                _scene_injected = True  # prevent late injection after AI history starts
-            return
-        if not scene.is_empty():
-            ctx = f"[Scene: {scene.to_context_string()}]"
-            ai.inject_scene_context(ctx)
-            if ai_local:
-                ai_local.inject_scene_context(ctx)
-            log.info("Vision context injected: %s", ctx)
-        else:
-            log.debug("Vision scene empty — no context injected")
-        _scene_injected = True
-
-    last_heard = time.time()
-
-    while True:
-        # Poll scene future non-blocking — picks it up as soon as it's ready.
-        _try_inject_scene()
-
-        # Check for remote end-session request
-        if os.path.exists(cfg.end_session_file):
-            _cleanup_abort_files()
-            log.info("Remote end-session: abrupt exit")
-            leds.all_off()
-            session_log.session_end("remote_abrupt")
-            metrics.count("session", event="end", turns=session_log.turn, reason="remote_abrupt")
-            _remove_session_file()
-            audio.close_session()
-            if ai_local:
-                ai_local.clear_history()
-            return
-
-        # Show listening LEDs
-        leds.set_listening(True)
-
-        # Listen
-        text = stt.listen_and_transcribe()
-
-        if not text:
-            if time.time() - last_heard > cfg.silence_timeout:
-                log.info("Silence timeout -- ending session")
-                leds.all_off()
-                session_log.session_end("timeout")
-                metrics.count("session", event="end", turns=session_log.turn, reason="timeout")
-                _remove_session_file()
-                audio.close_session()
-                if ai_local:
-                    ai_local.clear_history()
-                return
-            continue
-
-        last_heard = time.time()
-        log.info("Heard: %r", text)
-        _turn_start = time.monotonic()
-        stt.release()  # free Hailo KV-Cache so LLM can acquire it
-        if ai_local:
-            ai_local.reset_hailo()  # clear cooldown so LLM retries Hailo immediately
-
-        # Run inference concurrently with thinking sound.
-        # Fast responses (clips, handlers) finish in <100ms — thinking sound skipped.
-        # Slow responses (Hailo LLM ~3-8s) get thinking sound during inference.
-        _resp_holder: list = [None]
-        _exc_holder: list = [None]
-
-        def _infer():
-            try:
-                _resp_holder[0] = responder.get_response(text, ai, ai_local=ai_local)
-            except Exception as exc:
-                _exc_holder[0] = exc
-            finally:
-                audio.abort()  # stops thinking sound if still playing
-
-        # Ensure scene context is injected before AI call. If vision is still
-        # running, wait up to vlm_lazy_poll_s (50 ms) — then give up.
-        _try_inject_scene(force_wait=True)
-
-        _thinking_played = False
-        _infer_thread = threading.Thread(target=_infer, daemon=True)
-        _infer_thread.start()
-        _infer_start = time.monotonic()
-        _infer_thread.join(timeout=0.1)  # wait briefly for fast-path responses
-
-        if _infer_thread.is_alive() and cfg.thinking_sound and _thinking_clips:
-            _thinking_played = True
-            audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-
-        hard_timeout = max(0.0, float(cfg.response_hard_timeout_s) - (time.monotonic() - _infer_start))
-        _infer_thread.join(timeout=hard_timeout)
-        if _infer_thread.is_alive():
-            log.error("Inference exceeded %.1fs hard timeout — aborting", float(cfg.response_hard_timeout_s))
-            audio.abort()
-            metrics.count("inference_hard_timeout")
-            err_wav = os.path.join(BASE_DIR, "speech", "responses", "error_timeout.wav")
-            if os.path.exists(err_wav):
-                audio.play(err_wav, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-            session_log.log_turn(text, "TIMEOUT", None, "error_fallback",
-                                response_text="(inference timeout)", ai_routing=None)
-            continue
-        if _exc_holder[0] is not None:
-            raise _exc_holder[0]
-        response = _resp_holder[0]
-
-        # DISMISSAL fast-path — skip farewell clip if configured
-        if response.intent == "DISMISSAL" and cfg.dismissal_ends_session:
-            log.info("DISMISSAL: abrupt session end")
-            if not isinstance(response, ResponseStream) and response.is_temp and response.wav_path is not None:
-                try:
-                    os.unlink(response.wav_path)
-                except OSError:
-                    pass
-            leds.all_off()
-            session_log.log_turn(text, "DISMISSAL", response.sub_key,
-                            "abrupt_stop", response.text)
-            session_log.session_end("dismissal_abrupt")
-            metrics.count("session", event="end", turns=session_log.turn, reason="dismissal_abrupt")
-            _remove_session_file()
-            audio.close_session()
-            if ai_local:
-                ai_local.clear_history()
-            return
-
-        # Play response — three cases: streaming cloud AI, sync AI, pre-generated clip
-        if isinstance(response, ResponseStream):
-            # Streaming cloud AI: LLM tokens → TTS → play concurrently
-            _collected: list[str] = []
-
-            def _collecting_iter(it):
-                for s in it:
-                    _collected.append(s)
-                    yield s
-
-            leds.set_talking()
-            audio.play_stream(
-                tts_generate.speak_from_iter(_collecting_iter(response.sentence_iter)),
-                on_chunk=_check_abort_on_chunk,
-                on_done=leds.all_off,
-            )
-            _response_text = " ".join(_collected)
-            _response_model = response.model
-            _response_method = response.method
-            _response_routing = response.routing_log
-
-        elif response.wav_path is None:
-            # Local/synchronous AI response (Phase 2 path)
-            leds.set_talking()
-            audio.play_stream(
-                tts_generate.speak_streaming(response.text),
-                on_chunk=_check_abort_on_chunk,
-                on_done=leds.all_off,
-            )
-            _response_text = response.text
-            _response_model = response.model
-            _response_method = response.method
-            _response_routing = response.routing_log
-
-        else:
-            # Pre-generated clip or handler response
-            if response.needs_thinking and cfg.thinking_sound and _thinking_clips and not _thinking_played:
-                audio.play(random.choice(_thinking_clips), on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-            leds.set_talking()
-            audio.play(response.wav_path, on_chunk=_check_abort_on_chunk, on_done=leds.all_off)
-            _response_text = response.text
-            _response_model = getattr(response, 'model', None)
-            _response_method = response.method
-            _response_routing = getattr(response, 'routing_log', None)
-
-        metrics._write({"type": "timer", "name": "turn_total",
-                        "duration_ms": round((time.monotonic() - _turn_start) * 1000, 1),
-                        "intent": response.intent, "method": _response_method})
-
-        # Check if playback was aborted (UI stop button pressed during response)
-        if audio.was_aborted() or os.path.exists(cfg.end_session_file):
-            _cleanup_abort_files()
-            log.info("Session aborted during playback")
-            if not isinstance(response, ResponseStream) and response.is_temp and response.wav_path is not None:
-                try:
-                    os.unlink(response.wav_path)
-                except OSError:
-                    pass
-            leds.all_off()
-            session_log.session_end("aborted")
-            metrics.count("session", event="end", turns=session_log.turn, reason="aborted")
-            _remove_session_file()
-            audio.close_session()
-            if ai_local:
-                ai_local.clear_history()
-            return
-
-        if not isinstance(response, ResponseStream) and response.is_temp and response.wav_path is not None:
-            try:
-                os.unlink(response.wav_path)
-            except OSError:
-                pass
-
-        session_log.log_turn(text, response.intent, response.sub_key,
-                        _response_method, _response_text, _response_model,
-                        ai_routing=_response_routing)
-        _write_session_file(session_log.session_id, session_log.turn)
-
-        if response.intent == "DISMISSAL":
-            if cfg.dismissal_ends_session:
-                # Should have been caught by fast-path above, but handle as fallback
-                leds.all_off()
-                session_log.session_end("dismissal")
-                metrics.count("session", event="end", turns=session_log.turn, reason="dismissal")
-                _remove_session_file()
-                audio.close_session()
-                if ai_local:
-                    ai_local.clear_history()
-                return
-            else:
-                # Soft stop — session continues
-                log.info("DISMISSAL: soft stop, session continues")
-                session_log.log_turn(text, "DISMISSAL", response.sub_key,
-                                "soft_stop", response.text)
-                last_heard = time.time()
-                continue
-
-        # Reset timer after Bender finishes -- gives user full window to respond
-        last_heard = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -507,8 +190,6 @@ def main():
     tts_generate.warm_up()
     # Pre-load STT model so first wake word has no init delay
     threading.Thread(target=stt.warm_up, daemon=True, name="stt-warmup").start()
-    # Load thinking clips from index
-    _load_thinking_clips()
     # Clean up stale IPC files from previous crashes
     _cleanup_abort_files()
     _remove_session_file()
@@ -531,8 +212,33 @@ def main():
                 continue
 
             wait_for_wakeword()
-            session_log = SessionLogger()
-            run_session(ai, session_log, responder, ai_local)
+            session = ConversationSession(
+                ai=ai,
+                ai_local=ai_local,
+                responder=responder,
+                session_log=SessionLogger(),
+                vision=FutureVisionProvider() if cfg.vlm_enabled else None,
+                on_audio_chunk=_check_abort_on_chunk,
+            )
+            session.start()
+            last_heard = time.time()
+            while True:
+                leds.set_listening(True)
+                text = stt.listen_and_transcribe()
+                if not text:
+                    if time.time() - last_heard > cfg.silence_timeout:
+                        session.end("timeout")
+                        break
+                    continue
+                last_heard = time.time()
+                log.info("Heard: %r", text)
+                stt.release()
+                if ai_local:
+                    ai_local.reset_hailo()
+                result = session.handle_turn(text)
+                if result.should_end:
+                    session.end(result.end_reason or "end")
+                    break
         except KeyboardInterrupt:
             log.info("Stopped.")
             break
