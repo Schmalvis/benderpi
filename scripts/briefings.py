@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-briefings.py — Pre-generated TTS briefings for weather and news.
+briefings.py — Pre-generated TTS briefings for weather, news, and time.
 
-Briefings are cached as WAV files and refreshed when stale:
-  weather: every 30 minutes
-  news:    every 2 hours
+Briefings are cached as WAV files and refreshed when stale.
+Default TTLs (overridable via bender_config.json):
+  weather: 30 minutes
+  news:    2 hours
+  time:    60 seconds
 
 Usage:
-    from briefings import get_weather_wav, get_news_wav
-    wav_path = get_weather_wav()   # caller must NOT delete (it's a cache file)
-    wav_path = get_news_wav()
+    from briefings import get_weather_wav, get_news_wav, get_time_wav
+    wav = get_weather_wav()                        # home weather
+    wav = get_weather_wav_for_location("Tokyo")    # any location (cached)
+    wav = get_time_wav()                           # local time
+    wav = get_time_wav("America/New_York")         # remote timezone
 """
 
 import os
@@ -22,7 +26,8 @@ import shutil
 import threading
 import urllib.request
 import urllib.error
-import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_generate
@@ -32,16 +37,17 @@ from metrics import metrics
 
 log = get_logger("briefings")
 
-BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DAILY_DIR    = os.path.join(BASE_DIR, "speech", "responses", "daily")
-WEATHER_WAV  = os.path.join(DAILY_DIR, "weather_briefing.wav")
-NEWS_WAV     = os.path.join(DAILY_DIR, "news_briefing.wav")
-META_PATH    = os.path.join(DAILY_DIR, "briefings_meta.json")
+BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DAILY_DIR   = os.path.join(BASE_DIR, "speech", "responses", "daily")
+WEATHER_WAV = os.path.join(DAILY_DIR, "weather_briefing.wav")
+NEWS_WAV    = os.path.join(DAILY_DIR, "news_briefing.wav")
+META_PATH   = os.path.join(DAILY_DIR, "briefings_meta.json")
 
-WEATHER_TTL  = int(_cfg.briefings_weather_ttl_s)
-NEWS_TTL     = int(_cfg.briefings_news_ttl_s)
+WEATHER_TTL = int(_cfg.briefings_weather_ttl_s)
+NEWS_TTL    = int(_cfg.briefings_news_ttl_s)
+TIME_TTL    = 60
 
-NEWS_FEEDS = [tuple(f) for f in _cfg.briefings_news_feeds]
+NEWS_FEEDS  = [tuple(f) for f in _cfg.briefings_news_feeds]
 
 os.makedirs(DAILY_DIR, exist_ok=True)
 
@@ -51,6 +57,7 @@ os.makedirs(DAILY_DIR, exist_ok=True)
 
 _meta_lock = threading.Lock()
 
+
 def _load_meta() -> dict:
     with _meta_lock:
         try:
@@ -59,23 +66,69 @@ def _load_meta() -> dict:
         except Exception:
             return {}
 
-def _save_meta(meta: dict):
+
+def _save_meta(meta: dict) -> None:
     with _meta_lock:
         with open(META_PATH, "w") as f:
             json.dump(meta, f)
 
+
 def _is_fresh(key: str, ttl: int) -> bool:
     meta = _load_meta()
-    last = meta.get(key, 0)
-    return (time.time() - last) < ttl
+    return (time.time() - meta.get(key, 0)) < ttl
 
-def _mark_fresh(key: str):
+
+def _mark_fresh(key: str) -> None:
     meta = _load_meta()
     meta[key] = time.time()
     _save_meta(meta)
 
+
+def _invalidate(key: str) -> None:
+    meta = _load_meta()
+    meta[key] = 0
+    _save_meta(meta)
+
+
 # ---------------------------------------------------------------------------
-# Weather briefing
+# Core cache + TTS pattern
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BriefingSource:
+    key: str
+    ttl: int
+    wav_path: str
+    generate_text: Callable[[], str]
+    fallback_text: str
+
+
+def _get_briefing_wav(
+    key: str,
+    ttl: int,
+    wav_path: str,
+    generate_text: Callable[[], str],
+    fallback_text: str,
+) -> str:
+    """Check TTL + existence, regenerate if stale, return wav_path."""
+    if not _is_fresh(key, ttl) or not os.path.exists(wav_path):
+        try:
+            text = generate_text()
+            with metrics.timer("briefing_generate", briefing=key):
+                wav = tts_generate.speak(text)
+            shutil.move(wav, wav_path)
+            _mark_fresh(key)
+            log.info("[briefing] %s refreshed", key)
+        except Exception as e:
+            log.error("[briefing] %s generation failed: %s", key, e)
+            if not os.path.exists(wav_path):
+                wav = tts_generate.speak(fallback_text)
+                shutil.move(wav, wav_path)
+    return wav_path
+
+
+# ---------------------------------------------------------------------------
+# Weather briefing — home location (HA)
 # ---------------------------------------------------------------------------
 
 WEATHER_TEMPLATES = [
@@ -102,6 +155,7 @@ WEATHER_COMMENTS = {
     "clear-night":  "Clear night. Romantic, if you're into that sort of thing.",
 }
 
+
 def _format_condition(raw: str) -> str:
     mapping = {
         "sunny": "sunny", "partlycloudy": "partly cloudy", "cloudy": "cloudy",
@@ -110,6 +164,7 @@ def _format_condition(raw: str) -> str:
         "snowy-rainy": "sleeting", "clear-night": "clear", "overcast": "overcast",
     }
     return mapping.get(raw.lower(), raw.replace("-", " ").replace("_", " "))
+
 
 def _get_forecast(ha_url: str, token: str, entity: str) -> list:
     """Fetch daily forecast via weather.get_forecasts service (HA 2023.9+)."""
@@ -129,14 +184,15 @@ def _get_forecast(ha_url: str, token: str, entity: str) -> list:
         log.warning("[briefing] Forecast service call failed: %s", e)
         return []
 
+
 def get_weather_text() -> str:
-    ha_url  = _cfg.ha_url
-    token   = _cfg.ha_token
-    entity  = _cfg.ha_weather_entity
+    ha_url = _cfg.ha_url
+    token  = _cfg.ha_token
+    entity = _cfg.ha_weather_entity
 
     req = urllib.request.Request(
         f"{ha_url}/api/states/{entity}",
-        headers={"Authorization": f"Bearer {token}"}
+        headers={"Authorization": f"Bearer {token}"},
     )
     with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as resp:
         state = json.loads(resp.read())
@@ -148,25 +204,28 @@ def get_weather_text() -> str:
     humidity      = round(attrs.get("humidity", 0))
     wind_speed    = round(attrs.get("wind_speed", 0))
 
-    # Fetch daily forecast via service call (attrs["forecast"] is empty in modern HA)
-    forecast      = _get_forecast(ha_url, token, entity)
-    high          = round(forecast[0].get("temperature", temp)) if forecast else temp
-    precip        = forecast[0].get("precipitation_probability", None) if forecast else None
+    forecast  = _get_forecast(ha_url, token, entity)
+    high      = round(forecast[0].get("temperature", temp)) if forecast else temp
+    precip    = forecast[0].get("precipitation_probability", None) if forecast else None
 
     wind_line = f"Wind {wind_speed} kilometres per hour." if wind_speed > 10 else ""
     if precip and precip > 40:
         wind_line += f" {round(precip)} percent chance of rain."
 
-    comment = WEATHER_COMMENTS.get(
-        condition_raw.lower(),
-        "Typical. Just absolutely typical."
+    comment = WEATHER_COMMENTS.get(condition_raw.lower(), "Typical. Just absolutely typical.")
+    return random.choice(WEATHER_TEMPLATES).format(
+        temp=temp, condition=condition, high=high,
+        humidity=humidity, wind_line=wind_line, comment=comment,
     )
 
-    template = random.choice(WEATHER_TEMPLATES)
-    return template.format(
-        temp=temp, condition=condition, high=high,
-        humidity=humidity, wind_line=wind_line, comment=comment
+
+def get_weather_wav() -> str:
+    """Return path to cached home weather WAV, refreshing if stale."""
+    return _get_briefing_wav(
+        "weather", WEATHER_TTL, WEATHER_WAV, get_weather_text,
+        "Weather data unavailable. Assume it's miserable. It usually is.",
     )
+
 
 # ---------------------------------------------------------------------------
 # News briefing
@@ -186,17 +245,16 @@ NEWS_OUTROS = [
     "That's your lot. The planet's still here. Barely.",
 ]
 
+
 def _fetch_headlines(url: str, count: int) -> list[str]:
     req = urllib.request.Request(url, headers={"User-Agent": "BenderPi/1.0"})
     with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as resp:
         data = resp.read().decode("utf-8", errors="replace")
-    # BBC uses CDATA for titles
     titles = re.findall(r'<title><!\[CDATA\[(.*?)\]\]></title>', data)
     if not titles:
-        # fallback: plain <title> tags
         titles = re.findall(r'<title>(.*?)</title>', data, re.DOTALL)
-    # Skip first (feed title)
     return [t.strip() for t in titles[1:count+1] if t.strip()]
+
 
 def get_news_text() -> str:
     sections = []
@@ -215,60 +273,48 @@ def get_news_text() -> str:
     for label, headlines in sections:
         lines.append(f"{label} news.")
         for h in headlines:
-            # Clean up any HTML entities
             h = h.replace("&amp;", "and").replace("&quot;", '"').replace("&#39;", "'")
             lines.append(h + ".")
     lines.append(random.choice(NEWS_OUTROS))
     return " ".join(lines)
 
-# ---------------------------------------------------------------------------
-# Public API — lazy refresh
-# ---------------------------------------------------------------------------
-
-def get_weather_wav() -> str:
-    """Return path to cached weather briefing WAV, refreshing if stale."""
-    if not _is_fresh("weather", WEATHER_TTL) or not os.path.exists(WEATHER_WAV):
-        try:
-            text = get_weather_text()
-            with metrics.timer("briefing_generate", briefing="weather"):
-                wav = tts_generate.speak(text)
-            shutil.move(wav, WEATHER_WAV)
-            _mark_fresh("weather")
-            log.info("[briefing] Weather refreshed")
-        except Exception as e:
-            log.error("[briefing] Weather generation failed: %s", e)
-            if not os.path.exists(WEATHER_WAV):
-                fallback = "Weather data unavailable. Assume it's miserable. It usually is."
-                wav = tts_generate.speak(fallback)
-                shutil.move(wav, WEATHER_WAV)
-    return WEATHER_WAV
 
 def get_news_wav() -> str:
-    """Return path to cached news briefing WAV, refreshing if stale."""
-    if not _is_fresh("news", NEWS_TTL) or not os.path.exists(NEWS_WAV):
-        try:
-            text = get_news_text()
-            with metrics.timer("briefing_generate", briefing="news"):
-                wav = tts_generate.speak(text)
-            shutil.move(wav, NEWS_WAV)
-            _mark_fresh("news")
-            log.info("[briefing] News refreshed")
-        except Exception as e:
-            log.error("[briefing] News generation failed: %s", e)
-            if not os.path.exists(NEWS_WAV):
-                fallback = "My news feed exploded. Try again later."
-                wav = tts_generate.speak(fallback)
-                shutil.move(wav, NEWS_WAV)
-    return NEWS_WAV
+    """Return path to cached news WAV, refreshing if stale."""
+    return _get_briefing_wav(
+        "news", NEWS_TTL, NEWS_WAV, get_news_text,
+        "My news feed exploded. Try again later.",
+    )
 
-def refresh_all():
-    """Force-refresh both briefings regardless of TTL. Call at service start."""
-    meta = _load_meta()
-    meta["weather"] = 0
-    meta["news"]    = 0
-    _save_meta(meta)
-    get_weather_wav()
-    get_news_wav()
+
+# ---------------------------------------------------------------------------
+# Time briefing — any timezone
+# ---------------------------------------------------------------------------
+
+def get_time_text(timezone: str | None = None) -> str:
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    tz_name = timezone or getattr(_cfg, "timezone", "Europe/London")
+    now = datetime.now(ZoneInfo(tz_name))
+    hour = now.strftime("%I").lstrip("0") or "12"
+    minute = now.strftime("%M")
+    ampm = now.strftime("%p").lower()
+    time_str = f"{hour} {ampm}" if minute == "00" else f"{hour} {minute} {ampm}"
+    if timezone:
+        return f"It's {time_str} in {timezone.replace('_', ' ')}."
+    return f"It's {time_str}."
+
+
+def get_time_wav(timezone: str | None = None) -> str:
+    """Return cached WAV for current time. 60s TTL — always nearly fresh."""
+    key = "time_" + re.sub(r"[^a-z0-9]", "_", (timezone or "local").lower())
+    wav_path = os.path.join(DAILY_DIR, f"{key}.wav")
+    return _get_briefing_wav(
+        key, TIME_TTL, wav_path,
+        lambda: get_time_text(timezone),
+        "I have no idea what time it is. Ask a clock.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Location-specific weather (Open-Meteo, no API key required)
@@ -305,15 +351,10 @@ _WMO_COMMENT = {
     95: "Thunderstorms. Dramatic. I approve.",
 }
 
-
-# Feature codes ranked by preference: country > state/region > city > town
 _FEATURE_RANK = {"PCLI": 4, "PCLP": 4, "PCLS": 4, "ADM1": 3, "ADM2": 2, "PPLA": 1, "PPL": 0}
 
-def _geocode(location: str) -> tuple[float, float, str, str] | None:
-    """Return (lat, lon, resolved_name, country) or None if not found.
 
-    Fetches multiple candidates and prefers countries/regions over small towns.
-    """
+def _geocode(location: str) -> tuple[float, float, str, str] | None:
     import urllib.parse
     params = urllib.parse.urlencode({"name": location, "count": 10, "language": "en", "format": "json"})
     req = urllib.request.Request(f"{_OPEN_METEO_GEOCODE}?{params}")
@@ -323,12 +364,7 @@ def _geocode(location: str) -> tuple[float, float, str, str] | None:
         results = data.get("results", [])
         if not results:
             return None
-        # Score each result: prefer higher feature rank, then higher population
-        def _score(r):
-            rank = _FEATURE_RANK.get(r.get("feature_code", ""), 0)
-            pop  = r.get("population") or 0
-            return (rank, pop)
-        best = max(results, key=_score)
+        best = max(results, key=lambda r: (_FEATURE_RANK.get(r.get("feature_code", ""), 0), r.get("population") or 0))
         return best["latitude"], best["longitude"], best["name"], best.get("country", "")
     except Exception as e:
         log.warning("[briefing] Geocode failed for %r: %s", location, e)
@@ -336,7 +372,6 @@ def _geocode(location: str) -> tuple[float, float, str, str] | None:
 
 
 def get_weather_text_for_location(location: str) -> str:
-    """Fetch current weather + daily forecast for any location via Open-Meteo."""
     geo = _geocode(location)
     if not geo:
         return f"I have no idea where {location} is. Sounds made up."
@@ -354,15 +389,15 @@ def get_weather_text_for_location(location: str) -> str:
     with urllib.request.urlopen(req, timeout=float(_cfg.http_timeout_s)) as r:
         w = json.loads(r.read())
 
-    cur = w["current"]
+    cur   = w["current"]
     daily = w["daily"]
 
-    wmo         = int(cur["weathercode"])
-    temp        = round(cur["temperature_2m"])
-    wind_speed  = round(cur.get("windspeed_10m", 0))
-    condition   = _WMO_CONDITION.get(wmo, "doing something unusual")
-    high        = round(daily["temperature_2m_max"][0])
-    precip_pct  = daily.get("precipitation_probability_max", [None])[0]
+    wmo        = int(cur["weathercode"])
+    temp       = round(cur["temperature_2m"])
+    wind_speed = round(cur.get("windspeed_10m", 0))
+    condition  = _WMO_CONDITION.get(wmo, "doing something unusual")
+    high       = round(daily["temperature_2m_max"][0])
+    precip_pct = daily.get("precipitation_probability_max", [None])[0]
 
     location_label = place_name if not country else f"{place_name}, {country}"
     wind_line = f"Wind at {wind_speed} kilometres per hour." if wind_speed > 10 else ""
@@ -370,7 +405,6 @@ def get_weather_text_for_location(location: str) -> str:
         wind_line += f" {round(precip_pct)} percent chance of rain."
 
     comment = _WMO_COMMENT.get(wmo, "Typical. Just absolutely typical.")
-
     templates = [
         f"In {location_label}: {temp} degrees and {condition}. High of {high} today. {wind_line} {comment}",
         f"Weather in {location_label}: {temp} degrees, {condition}. Today's high: {high}. {wind_line} {comment}",
@@ -379,9 +413,43 @@ def get_weather_text_for_location(location: str) -> str:
 
 
 def get_weather_wav_for_location(location: str) -> str:
-    """Generate and return a temp WAV for location-specific weather. Caller must delete."""
-    text = get_weather_text_for_location(location)
-    return tts_generate.speak(text)
+    """Return cached WAV for location-specific weather. Caller must NOT delete."""
+    key = "weather_" + re.sub(r"[^a-z0-9]", "_", location.lower())
+    wav_path = os.path.join(DAILY_DIR, f"{key}.wav")
+    return _get_briefing_wav(
+        key, WEATHER_TTL, wav_path,
+        lambda: get_weather_text_for_location(location),
+        f"Weather for {location} is unavailable. Assume it's miserable.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registered sources — used by refresh_all()
+# ---------------------------------------------------------------------------
+
+_SOURCES: list[BriefingSource] = [
+    BriefingSource(
+        key="weather", ttl=WEATHER_TTL, wav_path=WEATHER_WAV,
+        generate_text=get_weather_text,
+        fallback_text="Weather data unavailable. Assume it's miserable. It usually is.",
+    ),
+    BriefingSource(
+        key="news", ttl=NEWS_TTL, wav_path=NEWS_WAV,
+        generate_text=get_news_text,
+        fallback_text="My news feed exploded. Try again later.",
+    ),
+]
+
+
+def refresh_all() -> None:
+    """Force-refresh all registered briefings. Call at service start."""
+    for source in _SOURCES:
+        _invalidate(source.key)
+    for source in _SOURCES:
+        _get_briefing_wav(
+            source.key, source.ttl, source.wav_path,
+            source.generate_text, source.fallback_text,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -392,16 +460,23 @@ if __name__ == "__main__":
     from dotenv import dotenv_values
     os.environ.update({k: v for k, v in dotenv_values("/home/pi/bender/.env").items() if v})
 
-    print("=== Weather ===")
+    print("=== Weather (home) ===")
     try:
-        text = get_weather_text()
-        print(text)
+        print(get_weather_text())
     except Exception as e:
         print(f"Error: {e}")
 
     print("\n=== News ===")
     try:
-        text = get_news_text()
-        print(text)
+        print(get_news_text())
+    except Exception as e:
+        print(f"Error: {e}")
+
+    print("\n=== Time (local) ===")
+    print(get_time_text())
+
+    print("\n=== Weather (Tokyo) ===")
+    try:
+        print(get_weather_text_for_location("Tokyo"))
     except Exception as e:
         print(f"Error: {e}")
