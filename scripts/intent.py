@@ -16,6 +16,7 @@ Intents:
   WEATHER       — weather/forecast/rain
   NEWS          — news/headlines/what's happening
   HA_CONTROL    — Commands to control HA devices (lights, switches)
+  TIME          — what time is it / how late is it
   VISION        — scene/room awareness queries (what do you see, who's in the room)
   UNKNOWN       — everything else → AI fallback
 """
@@ -142,9 +143,12 @@ PERSONAL_PATTERNS = [
     ("job",         r"\b(job|purpose|programmed|function)\b|\bwhat do you do\b"),
 ]
 
+TIME_PATTERNS = [
+    r"\b(what time|what's the time|tell me the time|current time|time is it)\b",
+    r"\b(what hour|how late is it)\b",
+]
+
 CONTEXTUAL_PATTERNS = [
-    ("time", r"\b(what time|what's the time|tell me the time|current time|time is it)\b"),
-    ("time", r"\b(what hour|how late is it)\b"),
     ("date", r"\b(what('s| is) the date|what day is it|today's date|current date)\b"),
     ("date", r"\b(what month|what year is it)\b"),
     ("weather_detail", r"\b(how (hot|cold|warm|chilly) is it)\b"),
@@ -274,6 +278,8 @@ def classify(text: str) -> tuple[str, str | None]:
         return ("WEATHER", location)
     if _match_any(t, NEWS_PATTERNS):
         return ("NEWS", None)
+    if _match_any(t, TIME_PATTERNS):
+        return ("TIME", None)
     if _match_any(t, DISMISSAL_PATTERNS):
         return ("DISMISSAL", None)
     if _match_any(t, JOKE_PATTERNS):

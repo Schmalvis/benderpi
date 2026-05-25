@@ -55,6 +55,7 @@ class Responder:
         from handlers.ha_handler import HAHandler
         from handlers.timer_handler import TimerHandler
         from handlers.contextual_handler import ContextualHandler
+        from handlers.time_handler import TimeHandler
         from handlers.vision_handler import VisionHandler
 
         handlers = [
@@ -64,6 +65,7 @@ class Responder:
             ContextualHandler(),
             WeatherHandler(),
             NewsHandler(),
+            TimeHandler(),
             HAHandler(),
             TimerHandler(),
             VisionHandler(),
