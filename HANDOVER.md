@@ -126,12 +126,43 @@ Verified: `WatchdogUSec=2min`, `Type=notify`, `READY=1 sent`, mic=`mic_shared id
 
 ---
 
+## 2026-05-24/25 — Architectural deepening (complete)
+
+All 4 refactor candidates identified in the architecture review are done and deployed.
+
+**1. `ha_control.py` decomposition** — 440-line monolith split into 4 focused modules:
+- `handlers/entity_registry.py` — entity discovery + TTL cache (60s)
+- `handlers/entity_matcher.py` — pure fuzzy matching, two-phase scoring
+- `handlers/ha_client.py` — injectable HAClient Protocol + UrllibHAClient
+- `handlers/ha_control.py` — thin orchestrator; `make_default(cfg)` factory
+- `handlers/ha_handler.py` — pronoun state (`_last_entities`) moved to handler instance
+
+**2. `wake_converse.py` → ConversationSession** — new `scripts/session.py`:
+- `ConversationSession` owns: audio open/close, greeting, turn dispatch, vision injection, logging, IPC
+- `VisionProvider` Protocol + `FutureVisionProvider` (ThreadPoolExecutor)
+- `TurnResult` dataclass with `should_end` + `end_reason`
+- `wake_converse.py` reduced to wake word detection + STT loop (~120 lines vs ~500 before)
+
+**3. `briefings.py` — source abstraction + new capabilities**:
+- `_get_briefing_wav(key, ttl, wav_path, generate_text, fallback_text)` — core pattern extracted
+- `BriefingSource` dataclass + `_SOURCES` list drives `refresh_all()` as a loop
+- `get_weather_wav_for_location(location)` — now cached (was ephemeral temp file)
+- New: `get_time_wav(timezone)` / `get_time_text(timezone)` — 60s TTL, pure zoneinfo
+
+**4. `web/app.py` → domain routers** — 967-line flat file split into 9 modules:
+- `routes/health.py`, `actions.py`, `config.py`, `puppet.py`, `logs.py`, `timers.py`, `status.py`, `remote.py`, `vision.py`
+- `app.py` is now 32 lines; auth applied at router level
+
+All deployed and verified clean on BenderPi (2026-05-25).
+
+---
+
 ## Current Priorities
-- **Investigate Weather 401 Unauthorized** — briefings failing at startup (`HTTP Error 401`). Check `HA_TOKEN` in `.env` on Pi — may have expired.
 - Monitor Ollama escalation rates
 - Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs
 - Test timers: "Hey Bender, set a timer for pasta for 5 minutes"
 - Monitor local LLM escalation rates — collect data for future ML classifier training (~500+ queries needed)
+- **Wire up new briefing capabilities** — `get_time_wav()` and `get_weather_wav_for_location()` exist but aren't yet connected to intent routing in `responder.py`
 
 ## Recent Decisions
 - **Diagnosis fixes (2026-05-09):** bender-converse was inactive for 3.5 weeks. Three bugs fixed:
