@@ -17,8 +17,9 @@ import os
 import signal
 import time
 import sys
-import struct
 import threading
+
+import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR   = os.path.dirname(SCRIPT_DIR)
@@ -29,7 +30,6 @@ from dotenv import dotenv_values
 _env = dotenv_values(os.path.join(BASE_DIR, ".env"))
 os.environ.update({k: v for k, v in _env.items() if v})
 
-import pvporcupine
 import pyaudio
 
 import audio
@@ -54,7 +54,7 @@ log = get_logger("converse")
 # Config
 # ---------------------------------------------------------------------------
 
-KEYWORD_PATH = os.path.join(SCRIPT_DIR, "hey-bender.ppn")
+OWW_FRAME_SIZE = 1280
 
 
 def _remove_session_file():
@@ -99,29 +99,33 @@ def _check_abort_on_chunk(level):
 # ---------------------------------------------------------------------------
 
 
-def wait_for_wakeword():
-    porcupine = pvporcupine.create(
-        access_key=os.environ["PORCUPINE_ACCESS_KEY"],
-        keyword_paths=[KEYWORD_PATH],
+def _load_oww_model(model_path: str):
+    from openwakeword.model import Model
+    return Model(wakeword_model_paths=[model_path])
+
+
+def wait_for_wakeword(_oww_model=None):
+    oww_model = _oww_model or _load_oww_model(
+        os.path.join(BASE_DIR, cfg.oww_model_path)
     )
-    # Use the shared PyAudio instance — creating a second one crashes PortAudio
     pa = audio.get_pa()
     input_device_index = audio.get_input_device_index()
     device_name = (
         pa.get_device_info_by_index(input_device_index)["name"]
         if input_device_index is not None else ""
     )
-    # xvf_dsnoop (reSpeaker 4-mic) only supports stereo — downmix to mono for Porcupine
     capture_channels = 2 if "xvf_dsnoop" in device_name else 1
     stream = pa.open(
-        rate=porcupine.sample_rate,
+        rate=16000,
         channels=capture_channels,
         format=pyaudio.paInt16,
         input=True,
-        frames_per_buffer=porcupine.frame_length,
+        frames_per_buffer=OWW_FRAME_SIZE,
         input_device_index=input_device_index,
     )
-    log.info("Listening for 'Hey Bender'... (mic: %s, ch=%d)", device_name or "default", capture_channels)
+    log.info("Listening for wake word... (mic: %s, ch=%d, model: %s, threshold: %.2f)",
+             device_name or "default", capture_channels,
+             os.path.basename(cfg.oww_model_path), cfg.oww_threshold)
 
     stall_s = float(cfg.wake_stall_seconds)
     hb_every = int(cfg.wake_heartbeat_frames)
@@ -130,7 +134,7 @@ def wait_for_wakeword():
 
     try:
         while True:
-            pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
+            pcm = stream.read(OWW_FRAME_SIZE, exception_on_overflow=False)
             now = time.monotonic()
             if not pcm or len(pcm) == 0:
                 if now - last_read_ts > stall_s:
@@ -142,19 +146,18 @@ def wait_for_wakeword():
             if frames_since_hb >= hb_every:
                 metrics.count("wake_loop_heartbeat")
                 try:
-                    from systemd import daemon as _sd_daemon  # optional dep
+                    from systemd import daemon as _sd_daemon
                     _sd_daemon.notify("WATCHDOG=1")
                 except Exception:
                     pass
                 frames_since_hb = 0
 
+            pcm_np = np.frombuffer(pcm, dtype=np.int16)
             if capture_channels == 2:
-                all_samples = struct.unpack_from("h" * porcupine.frame_length * 2, pcm)
-                pcm_unpacked = all_samples[::2]  # left channel only
-            else:
-                pcm_unpacked = struct.unpack_from("h" * porcupine.frame_length, pcm)
-            if porcupine.process(pcm_unpacked) >= 0:
-                log.info("Wake word detected")
+                pcm_np = pcm_np[::2]  # left channel only (stereo downmix)
+            prediction = oww_model.predict(pcm_np)
+            if prediction and max(prediction.values()) >= cfg.oww_threshold:
+                log.info("Wake word detected (score: %.3f)", max(prediction.values()))
                 return
     finally:
         try:
@@ -162,7 +165,6 @@ def wait_for_wakeword():
             stream.close()
         except Exception:
             pass
-        porcupine.delete()
 
 
 
