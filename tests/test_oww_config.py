@@ -1,0 +1,17 @@
+"""Tests for OWW config fields."""
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+
+
+def test_oww_config_fields_exist():
+    from config import cfg
+    assert hasattr(cfg, 'oww_model_path'), "cfg missing oww_model_path"
+    assert hasattr(cfg, 'oww_threshold'), "cfg missing oww_threshold"
+    assert isinstance(cfg.oww_model_path, str)
+    assert isinstance(cfg.oww_threshold, float)
+    assert 0.0 < cfg.oww_threshold <= 1.0
+
+
+def test_oww_threshold_default_is_reasonable():
+    from config import cfg
+    assert cfg.oww_threshold == 0.5

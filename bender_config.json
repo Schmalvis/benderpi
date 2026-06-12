@@ -69,6 +69,8 @@
     "knowledge": "local_first",
     "creative": "local_first"
   },
+  "oww_model_path": "models/hey_jarvis.onnx",
+  "oww_threshold": 0.5,
   "tts_noise_scale": 0.9,
   "tts_noise_scale_w": 1.2,
   "vision_model": "yolo11n",

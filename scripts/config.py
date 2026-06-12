@@ -69,6 +69,10 @@ class Config:
     tts_noise_scale_w: float = 1.2    # Piper phoneme duration variance (default 0.8)
     ai_routing: dict = None  # set in __init__ to avoid mutable default
 
+    # Wake word (openWakeWord)
+    oww_model_path: str = "models/hey_jarvis.onnx"
+    oww_threshold: float = 0.5
+
     # Conversation
     silence_timeout: float = 8.0
     thinking_sound: bool = True
