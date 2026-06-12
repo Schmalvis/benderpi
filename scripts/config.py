@@ -90,7 +90,6 @@ class Config:
 
     # Secrets (from .env only, never in config JSON)
     anthropic_api_key: str = ""
-    porcupine_access_key: str = ""
 
     # Briefings
     weather_ttl: int = 1800
@@ -190,7 +189,6 @@ class Config:
         self.ha_url = os.environ.get("HA_URL", self.ha_url)
         self.ha_weather_entity = os.environ.get("HA_WEATHER_ENTITY", self.ha_weather_entity)
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", self.anthropic_api_key)
-        self.porcupine_access_key = os.environ.get("PORCUPINE_ACCESS_KEY", self.porcupine_access_key)
 
     def _load_dotenv(self, path: str):
         """Minimal .env parser — no dependency on python-dotenv for config module."""

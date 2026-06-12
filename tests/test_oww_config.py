@@ -15,3 +15,16 @@ def test_oww_config_fields_exist():
 def test_oww_threshold_default_is_reasonable():
     from config import cfg
     assert cfg.oww_threshold == 0.5
+
+
+def test_no_pvporcupine_imports_in_source():
+    """Ensure no Python source file in scripts/ imports pvporcupine."""
+    import glob
+    scripts = glob.glob('scripts/**/*.py', recursive=True)
+    for path in scripts:
+        with open(path) as f:
+            content = f.read()
+        assert 'pvporcupine' not in content, \
+            f"Found pvporcupine import in {path}"
+        assert 'PORCUPINE_ACCESS_KEY' not in content, \
+            f"Found PORCUPINE_ACCESS_KEY in {path}"

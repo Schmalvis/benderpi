@@ -57,7 +57,7 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 | ALSA card | Card 2 (`seeed-2mic-voicecard`, `hw:2,0`) |
 
 ### Critical audio constraint
-The WM8960 can only operate at **one sample rate** at a time. The mic (porcupine wake word) runs at 16000Hz; playback runs at 44100Hz. **You cannot have both the input and output streams open simultaneously** — the output stream must be closed while listening for the wake word.
+The WM8960 can only operate at **one sample rate** at a time. The mic (openWakeWord wake word) runs at 16000Hz; playback runs at 44100Hz. **You cannot have both the input and output streams open simultaneously** — the output stream must be closed while listening for the wake word.
 
 This is why `audio.py` uses `open_session()` / `close_session()` rather than a persistent stream.
 
@@ -89,7 +89,6 @@ bender/
 │   ├── wake_tts.py           — TTS-only mode (random lines on wake word)
 │   ├── git_pull.sh           — auto-pull script (called by systemd timer)
 │   ├── switch_mode.sh        — switch between clips/tts/converse modes
-│   ├── hey-bender.ppn        — Porcupine wake word model (gitignored — contains key)
 │   └── handlers/
 │       ├── ha_control.py     — dynamic HA entity control via REST API
 │       └── weather.py        — legacy weather handler (superseded by briefings.py)
@@ -118,7 +117,6 @@ bender/
 
 | Variable | Required | Description |
 |---|---|---|
-| `PORCUPINE_ACCESS_KEY` | Yes | Picovoice API key (free at console.picovoice.ai) |
 | `ANTHROPIC_API_KEY` | Yes (converse) | Claude API key for AI fallback |
 | `HA_TOKEN` | Yes (converse) | Home Assistant Long-Lived Access Token |
 | `HA_URL` | Yes (converse) | HA base URL (default: `http://<ha-ip>:8123`) |
@@ -167,7 +165,7 @@ python3 -m venv --system-site-packages venv
 venv/bin/pip install -r requirements.txt
 ```
 
-Key packages: `pvporcupine`, `faster-whisper`, `webrtcvad-wheels` (NOT `webrtcvad` — broken on Python 3.13), `PyAudio`, `anthropic`, `python-dotenv`, `scipy` (for TTS resampling).
+Key packages: `openwakeword`, `faster-whisper`, `webrtcvad-wheels` (NOT `webrtcvad` — broken on Python 3.13), `PyAudio`, `anthropic`, `python-dotenv`, `scipy` (for TTS resampling).
 
 ---
 
@@ -439,3 +437,5 @@ sudo systemctl restart bender-converse
 - **Piper output is 22050Hz** — must be resampled before playback; `tts_generate.py` handles this
 - **BBC Nottingham RSS** — `feeds.bbci.co.uk/news/england/nottinghamshire/rss.xml` returns 404; use UK + England feeds instead
 - **BBC RSS CDATA** — `xml.etree.ElementTree` can't parse BBC's CDATA titles; use regex extraction
+- **openWakeWord model** — `models/hey_jarvis.onnx` is gitignored; after fresh venv setup, copy from `venv/lib/python3.13/site-packages/openwakeword/resources/models/hey_jarvis_v0.1.onnx`
+- **hey_jarvis is interim** — not "hey bender"; custom model training is a future task using openWakeWord's synthetic TTS training pipeline

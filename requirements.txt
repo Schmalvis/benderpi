@@ -8,8 +8,6 @@
 # adafruit-blinka, neopixel) that are installed system-wide via apt.
 
 # ── Wake word ───────────────────────────────────────────────────────────────
-pvporcupine==4.0.2
-pvrecorder==1.2.7
 openwakeword
 
 # ── Speech-to-text ──────────────────────────────────────────────────────────
