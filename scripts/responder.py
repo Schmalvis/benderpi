@@ -165,41 +165,72 @@ class Responder:
 
         # Local-first or local-only path (also reached as cloud_first fallback)
         from ai_local import QualityCheckFailed
-        local_response_text = None
         start = time.monotonic()
+
         try:
-            local_response_text = ai_local.generate(text)
+            local_stream = ai_local.generate_stream(text)
+
+            # Eagerly pull first sentence — blocks ~1-3s (Ollama) or ~3-8s (Hailo)
+            # but thinking sound is already playing concurrently (A.1).
+            # This is where quality-check happens: hedge phrases appear in sentence 1.
+            try:
+                first_sentence = next(local_stream)
+            except StopIteration:
+                raise QualityCheckFailed("empty_response", "")
+
             local_latency_ms = int((time.monotonic() - start) * 1000)
+            log.info("Local LLM first sentence ready in %dms", local_latency_ms)
+            metrics._write({
+                "type": "timer", "name": "ai_local_first_sentence_ms",
+                "duration_ms": local_latency_ms,
+                "routing": effective_routing,
+            })
+
+            def _chained():
+                yield first_sentence
+                yield from local_stream
 
             routing_log.update({
                 "local_attempted": True,
-                "local_response": local_response_text,
                 "local_latency_ms": local_latency_ms,
                 "quality_check_passed": True,
                 "escalated_to_cloud": False,
-                "final_method": "ai_local",
+                "final_method": "ai_local_stream",
             })
-            return Response(
-                text=local_response_text, wav_path=None,
-                method="ai_local", intent=intent_name, sub_key=sub_key,
-                is_temp=False, needs_thinking=True, routing_log=routing_log)
+            return ResponseStream(
+                intent=intent_name,
+                method="ai_local_stream",
+                sentence_iter=_chained(),
+                sub_key=sub_key,
+                model=cfg.local_llm_model,
+                routing_log=routing_log,
+            )
 
-        except QualityCheckFailed as qcf:
+        except QualityCheckFailed as e:
             local_latency_ms = int((time.monotonic() - start) * 1000)
-            local_response_text = qcf.response_text
-            log.info("Local LLM quality check failed (%s), escalating",
-                     qcf.reason)
+            log.info("Local quality check failed (%s) — %s",
+                     e.reason, "using anyway (local_only)" if effective_routing == "local_only" else "escalating")
             routing_log.update({
                 "local_attempted": True,
-                "local_response": qcf.response_text,
                 "local_latency_ms": local_latency_ms,
                 "quality_check_passed": False,
-                "quality_failure_reason": qcf.reason,
+                "quality_failure_reason": e.reason,
             })
+            if effective_routing == "local_only":
+                routing_log["escalated_to_cloud"] = False
+                routing_log["final_method"] = "ai_local_forced"
+                return Response(
+                    text=e.response_text, wav_path=None,
+                    method="ai_local_forced", intent=intent_name,
+                    sub_key=sub_key, is_temp=False, needs_thinking=True,
+                    routing_log=routing_log,
+                )
+            # local_first: escalate to cloud
 
         except Exception as e:
             local_latency_ms = int((time.monotonic() - start) * 1000)
-            log.warning("Local LLM error: %s, escalating", e)
+            log.warning("Local LLM stream error (%s) — %s",
+                        e, "local_only — error response" if effective_routing == "local_only" else "escalating")
             routing_log.update({
                 "local_attempted": True,
                 "local_response": None,
@@ -207,32 +238,13 @@ class Responder:
                 "quality_check_passed": False,
                 "quality_failure_reason": f"error:{type(e).__name__}",
             })
-
-        # Escalate to cloud (unless local_only)
-        if effective_routing == "local_only":
-            if local_response_text:
-                # Intentional: TTS for rejected response —
-                # local_only means use it regardless of quality check outcome.
-                routing_log.update({
-                    "escalated_to_cloud": False,
-                    "final_method": "ai_local_forced",
-                })
-                return Response(
-                    text=local_response_text, wav_path=None,
-                    method="ai_local_forced", intent=intent_name,
-                    sub_key=sub_key, is_temp=False, needs_thinking=True,
-                    routing_log=routing_log)
-            else:
-                # local_only but local failed entirely — return error
-                routing_log.update({
-                    "escalated_to_cloud": False,
-                    "final_method": "error_fallback",
-                })
+            if effective_routing == "local_only":
                 return self._error_response(text, intent_name, sub_key,
                                             "Local LLM unavailable (local_only mode)")
+            # local_first: escalate to cloud
 
-        return self._respond_cloud(text, ai_cloud, intent_name, sub_key,
-                                   routing_log)
+        routing_log["escalated_to_cloud"] = True
+        return self._respond_cloud(text, ai_cloud, intent_name, sub_key, routing_log)
 
     def _respond_cloud(self, text: str, ai_cloud, intent_name: str,
                        sub_key: str | None, routing_log: dict) -> ResponseStream:
