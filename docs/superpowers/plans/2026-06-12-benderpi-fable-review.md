@@ -4,7 +4,7 @@
 
 **Goal:** Run a 3-phase workflow that compiles a comprehensive BenderPi project brief via parallel Sonnet agents, then feeds it to a single Fable agent for deep architectural review, producing two output documents.
 
-**Architecture:** Phase 1 fans out 6 parallel Sonnet agents across subsystems to produce structured summaries. Phase 2 synthesises everything into a brief file. Phase 3 runs one Fable agent (model: "fable") that reads the brief and writes a prioritised improvement plan.
+**Architecture:** Phase 1 fans out 7 parallel Sonnet agents across subsystems to produce structured summaries. Phase 2 synthesises everything into a brief file. Phase 3 runs one Fable agent (model: "fable") that reads the brief and writes a prioritised improvement plan.
 
 **Tech Stack:** Claude Code Workflow tool, Sonnet subagents (gather + compile), Fable subagent (review), Write tool for output files.
 
@@ -34,7 +34,7 @@ export const meta = {
   name: 'benderpi-fable-review',
   description: 'Parallel Sonnet gather + compile brief + Fable deep review for BenderPi',
   phases: [
-    { title: 'Gather', detail: 'Six parallel Sonnet agents read BenderPi subsystems' },
+    { title: 'Gather', detail: 'Seven parallel Sonnet agents read BenderPi subsystems' },
     { title: 'Compile', detail: 'Synthesize findings into structured project brief' },
     { title: 'Review', detail: 'Fable reads brief and writes improvement plan' },
   ],
@@ -63,8 +63,10 @@ Return a structured markdown summary covering:
 5. LED sync — WS2812B via SPI GPIO10, on_chunk/on_done callback decoupling, listening (blue) / talking (white) colours, RMS normalisation
 6. Any latency contributions, fragile assumptions, or bottlenecks you observe
 
+Do not write or modify any files.
+
 Return ONLY the structured markdown. No preamble.`,
-  {label: 'gather:audio-hardware', phase: 'Gather'}),
+  {label: 'gather:audio-hardware', phase: 'Gather', model: 'sonnet'}),
 
   () => agent(`You are gathering information about the BenderPi AI routing subsystem.
 
@@ -82,8 +84,10 @@ Return a structured markdown summary covering:
 5. Scenario classifier (_classify_scenario) — how it decides which routing rule applies per query
 6. Latency breakdown: typical Ollama response time, escalation overhead, cloud fallback timing
 
+Do not write or modify any files.
+
 Return ONLY the structured markdown. No preamble.`,
-  {label: 'gather:ai-routing', phase: 'Gather'}),
+  {label: 'gather:ai-routing', phase: 'Gather', model: 'sonnet'}),
 
   () => agent(`You are gathering information about the BenderPi intent classification and handler subsystem.
 
@@ -102,8 +106,10 @@ Return a structured markdown summary covering:
 5. ConversationSession — full turn loop, TurnResult dataclass (should_end + end_reason), VisionProvider Protocol, file-based IPC
 6. wake_converse.py — wake word detection loop, STT handoff, xvf_dsnoop stereo path, session lifecycle
 
+Do not write or modify any files.
+
 Return ONLY the structured markdown. No preamble.`,
-  {label: 'gather:intent-handlers', phase: 'Gather'}),
+  {label: 'gather:intent-handlers', phase: 'Gather', model: 'sonnet'}),
 
   () => agent(`You are gathering information about the BenderPi TTS pipeline subsystem.
 
@@ -120,8 +126,10 @@ Return a structured markdown summary covering:
 5. Streaming opportunity — at what point in the pipeline could TTS begin before full LLM response is complete?
 6. Persistent Piper process potential — what would need to change to keep Piper alive between calls?
 
+Do not write or modify any files.
+
 Return ONLY the structured markdown. No preamble.`,
-  {label: 'gather:tts-pipeline', phase: 'Gather'}),
+  {label: 'gather:tts-pipeline', phase: 'Gather', model: 'sonnet'}),
 
   () => agent(`You are gathering information about the BenderPi web UI subsystem.
 
@@ -145,37 +153,75 @@ Return a structured markdown summary covering:
 5. Health dashboard — metrics surfaced, polling interval, alert display logic
 6. UX gaps — features that feel incomplete, missing functionality, confusing flows
 
-Return ONLY the structured markdown. No preamble.`,
-  {label: 'gather:web-ui', phase: 'Gather'}),
+Do not write or modify any files.
 
-  () => agent(`You are gathering information about BenderPi's dependencies, known issues, and the Picovoice sunset.
+Return ONLY the structured markdown. No preamble.`,
+  {label: 'gather:web-ui', phase: 'Gather', model: 'sonnet'}),
+
+  () => agent(`You are gathering information about BenderPi's dependencies, known issues, prior architectural decisions, and the Picovoice sunset.
 
 Read these files (use the Read tool on each):
 - ${REPO}/requirements.txt
 - ${REPO}/HANDOVER.md
 - ${REPO}/docs/superpowers/plans/2026-05-22-openwakeword-migration.md
+- ${REPO}/docs/ARCHITECTURAL_REVIEW_2026-05-14.md
+- ${REPO}/docs/benderpi-technical-profile.md
+- ${REPO}/docs/superpowers/plans/2026-04-01-streaming-tts.md
 
 Return a structured markdown summary covering:
-1. Complete dependency table — package, pinned version, purpose, risk level (High/Medium/Low)
+1. Complete dependency table — read exact versions from requirements.txt (do not assume), columns: package, version, purpose, risk level (High/Medium/Low)
 2. Known issues — copy the Known Issues section from HANDOVER.md verbatim, then annotate each with severity (Critical/Major/Minor)
 3. Future considerations — copy the Future Considerations section from HANDOVER.md verbatim
-4. Picovoice sunset: pvporcupine 4.0.2 + pvrecorder 1.2.7 free tier ends June 30 2026. Which files reference them? What will break?
-5. OpenWakeWord migration plan — full summary of docs/superpowers/plans/2026-05-22-openwakeword-migration.md (key differences table, custom wake word problem, open questions)
-6. Other dependency risks: webrtcvad-wheels Python 3.13 compat, faster-whisper stability, Hailo SDK version lock
+4. Picovoice sunset: read requirements.txt to confirm exact pvporcupine and pvrecorder versions. Identify every file that imports or references pvporcupine/pvrecorder. What will break the moment the API key stops working?
+5. OpenWakeWord migration plan — full summary of docs/superpowers/plans/2026-05-22-openwakeword-migration.md (key differences table, custom wake word problem, open questions not yet resolved)
+6. Prior architectural decisions — summarise key findings and decisions from ARCHITECTURAL_REVIEW_2026-05-14.md and benderpi-technical-profile.md. Summarise the streaming TTS design from 2026-04-01-streaming-tts.md (it was planned — include its current status/whether it was implemented)
+7. Other dependency risks: webrtcvad-wheels Python 3.13 compat, faster-whisper stability, Hailo SDK version lock
+
+Do not write or modify any files.
 
 Return ONLY the structured markdown. No preamble.`,
-  {label: 'gather:deps-issues', phase: 'Gather'}),
+  {label: 'gather:deps-issues', phase: 'Gather', model: 'sonnet'}),
 ])
 
-log('All 6 subsystem summaries gathered. Compiling project brief...')
+  () => agent(`You are gathering information about BenderPi's vision, timer, and observability subsystems.
+
+Read these files (use the Read tool on each):
+- ${REPO}/scripts/camera.py
+- ${REPO}/scripts/vision.py
+- ${REPO}/scripts/vlm.py
+- ${REPO}/scripts/timers.py
+- ${REPO}/scripts/time_parser.py
+- ${REPO}/scripts/metrics.py
+- ${REPO}/scripts/watchdog.py
+- ${REPO}/scripts/logger.py
+- ${REPO}/scripts/generate_status.py
+Also read: ${REPO}/scripts/handlers/timer_alert.py and ${REPO}/scripts/handlers/vision_handler.py (if they exist)
+
+Return a structured markdown summary covering:
+1. Vision/VLM pipeline — camera.py (IMX500 AI Camera), vision.py (scene analysis), vlm.py (Qwen2-VL-2B on Hailo NPU), VisionHandler — current status (enabled/disabled), lazy scene injection into conversation context
+2. Timer subsystem — timers.py (concurrent named timers, persistence via timers.json), time_parser.py (natural language duration parsing), timer_alert.py (play-pause dismissal cycle respecting WM8960)
+3. Observability stack — metrics.py (timing/counter metrics to logs/metrics.jsonl), logger.py (structured logging to logs/bender.log), watchdog.py (session liveness checks, configurable thresholds), generate_status.py (STATUS.md auto-generation)
+4. Real latency data — read ${REPO}/logs/metrics.jsonl if it exists (read only the last 50 lines using Bash: tail -50 ${REPO}/logs/metrics.jsonl) and extract any measured timing figures (STT duration, TTS duration, AI response time, etc.)
+5. Current operational status — what is enabled vs disabled in bender_config.json (vlm_enabled, hailo_stt_enabled) and why
+6. Gaps in observability — what would you want to measure that isn't currently instrumented?
+
+Do not write or modify any files.
+
+Return ONLY the structured markdown. No preamble.`,
+  {label: 'gather:vision-timers-ops', phase: 'Gather', model: 'sonnet'}),
+])
+
+log('All 7 subsystem summaries gathered. Compiling project brief...')
 
 phase('Compile')
 
 const compileResult = await agent(`You are compiling a comprehensive project brief for BenderPi — a Raspberry Pi 5 offline-first voice assistant with the personality of Bender (Futurama), using a Hailo AI HAT+ NPU for on-device inference.
 
-First, read ${REPO}/CLAUDE.md in full using the Read tool. This is the authoritative project documentation.
+First, read ${REPO}/CLAUDE.md in full using the Read tool.
 
-Then combine the CLAUDE.md content with the following 6 subsystem summaries into a single project brief.
+IMPORTANT — conflict resolution: CLAUDE.md may be outdated on some hardware details (e.g. it may reference Adafruit Voice Bonnet; the current mic is ReSpeaker XVF3800). Where CLAUDE.md conflicts with the subsystem summaries below, the summaries win (they are derived from current code). Note any such discrepancies in Section 2.
+
+Then combine the CLAUDE.md content with the following 7 subsystem summaries into a single project brief. If any summary below reads as "null" or is empty, note the missing section in the brief rather than silently omitting it.
 
 ---
 SUBSYSTEM SUMMARY 1 — AUDIO + HARDWARE:
@@ -200,6 +246,10 @@ ${gathered[4]}
 ---
 SUBSYSTEM SUMMARY 6 — DEPENDENCIES + ISSUES:
 ${gathered[5]}
+
+---
+SUBSYSTEM SUMMARY 7 — VISION, TIMERS + OBSERVABILITY:
+${gathered[6]}
 
 ---
 
@@ -289,11 +339,13 @@ You MUST address at minimum:
 Evaluate:
 1. OpenWakeWord (primary candidate — existing migration plan already scoped)
 2. Vosk keyword spotting
-3. Precise / Montana / other community wake word tools
+3. Precise / microWakeWord / other community wake word tools
 4. Custom ONNX model trained on synthetic "Hey Bender" TTS data
 5. Any other viable option you identify
 
 For each: detection accuracy profile, false positive rate, RPi5 aarch64 support, Python API complexity, Hailo NPU potential, migration complexity from pvporcupine.
+
+IMPORTANT — you do not have web access. For any accuracy figure or benchmark not present in the project brief, mark it explicitly as **[UNVERIFIED — needs testing]** rather than stating it as fact.
 
 Make ONE clear recommendation. Then provide a concrete migration checklist:
 - Exact pip packages to remove and add (with versions if known)
@@ -347,7 +399,7 @@ scriptPath: "docs/superpowers/plans/2026-06-12-benderpi-fable-review-workflow.js
 ```
 
 This runs 3 phases. Expected timeline:
-- **Gather (Phase 1):** ~3–5 min — 6 agents running in parallel
+- **Gather (Phase 1):** ~3–5 min — 7 agents running in parallel
 - **Compile (Phase 2):** ~2–3 min — one agent reads CLAUDE.md + 6 summaries, writes brief
 - **Review (Phase 3):** ~4–8 min — Fable reads brief, writes full review
 
