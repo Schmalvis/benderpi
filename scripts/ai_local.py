@@ -1,6 +1,8 @@
 """Local LLM responder — Hailo on-chip primary, Ollama CPU fallback."""
 
+import json
 import os
+import re
 import time
 
 import requests
@@ -20,6 +22,10 @@ HEDGE_PHRASES = {
 
 _HAILO_HEF = "/usr/local/hailo/resources/models/hailo10h/Qwen2.5-1.5B-Instruct.hef"
 _HAILO_RETRY_COOLDOWN = 60  # seconds before retrying after init failure
+
+# Sentence boundary: [.!?] optionally followed by closing quote, then
+# either whitespace or end-of-string.
+_SENT_RE = re.compile(r'[.!?]["\']?(?:\s|$)')
 
 
 class QualityCheckFailed(Exception):
@@ -248,17 +254,10 @@ class _OllamaResponder:
         History is appended to self.history only after the generator is fully
         consumed. If abandoned mid-stream, partial history is discarded.
         """
-        import json as _json
-        import re as _re
-
         if self._scene_context and len(self.history) == 0:
             user_text = f"{self._scene_context} {user_text}"
 
         self.history.append({"role": "user", "content": user_text})
-
-        # Sentence boundary: [.!?] optionally followed by closing quote, then
-        # either whitespace or end-of-string.
-        _SENT_RE = _re.compile(r'[.!?]["\']?(?:\s|$)')
 
         buffer = ""
         collected: list[str] = []
@@ -296,8 +295,8 @@ class _OllamaResponder:
                     if not raw_line:
                         continue
                     try:
-                        chunk = _json.loads(raw_line)
-                    except _json.JSONDecodeError:
+                        chunk = json.loads(raw_line)
+                    except json.JSONDecodeError:
                         continue
                     buffer += chunk.get("message", {}).get("content", "")
                     done = chunk.get("done", False)
