@@ -237,6 +237,104 @@ class _OllamaResponder:
         metrics.count("ai_local_success")
         return reply
 
+    def generate_stream(self, user_text: str):
+        """Stream response as sentences. Yields each sentence as Piper can start it.
+
+        Quality-checks the first sentence only — hedge phrases nearly always
+        appear at the start of the response. Raises QualityCheckFailed (before
+        yielding anything) if the first sentence fails. Caller must handle the
+        exception and escalate to cloud.
+
+        History is appended to self.history only after the generator is fully
+        consumed. If abandoned mid-stream, partial history is discarded.
+        """
+        import json as _json
+        import re as _re
+
+        if self._scene_context and len(self.history) == 0:
+            user_text = f"{self._scene_context} {user_text}"
+
+        self.history.append({"role": "user", "content": user_text})
+
+        # Sentence boundary: [.!?] optionally followed by closing quote, then
+        # either whitespace or end-of-string.
+        _SENT_RE = _re.compile(r'[.!?]["\']?(?:\s|$)')
+
+        buffer = ""
+        collected: list[str] = []
+        quality_checked = False
+
+        def _flush_sentence(buf: str, force: bool) -> tuple[str, str]:
+            """Extract one sentence from buf if boundary found (or force=True).
+            Returns (sentence, remainder)."""
+            m = _SENT_RE.search(buf)
+            if m:
+                sent = buf[:m.end()].strip()
+                rest = buf[m.end():]
+                return sent, rest
+            if force and buf.strip():
+                return buf.strip(), ""
+            return "", buf
+
+        try:
+            with requests.post(
+                f"{cfg.local_llm_url}/api/chat",
+                json={
+                    "model": cfg.local_llm_model,
+                    "messages": [
+                        {"role": "system", "content": BENDER_SYSTEM_PROMPT},
+                        *self.history,
+                    ],
+                    "stream": True,
+                    "options": {"num_predict": cfg.ai_max_tokens},
+                },
+                stream=True,
+                timeout=cfg.local_llm_timeout,
+            ) as resp:
+                resp.raise_for_status()
+                for raw_line in resp.iter_lines():
+                    if not raw_line:
+                        continue
+                    try:
+                        chunk = _json.loads(raw_line)
+                    except _json.JSONDecodeError:
+                        continue
+                    buffer += chunk.get("message", {}).get("content", "")
+                    done = chunk.get("done", False)
+
+                    # Flush as many complete sentences as possible
+                    while True:
+                        sentence, buffer = _flush_sentence(buffer, force=done)
+                        if not sentence:
+                            break
+                        if not quality_checked:
+                            quality_checked = True
+                            passed, reason = check_response_quality(sentence)
+                            if not passed:
+                                raise QualityCheckFailed(reason, sentence)
+                        collected.append(sentence)
+                        yield sentence
+
+        except QualityCheckFailed:
+            # Roll back user turn — caller will retry with cloud
+            if self.history and self.history[-1].get("role") == "user":
+                self.history.pop()
+            raise
+        except Exception:
+            if self.history and self.history[-1].get("role") == "user":
+                self.history.pop()
+            raise
+        else:
+            # Generator fully consumed without exception — commit to history
+            if collected:
+                self.history.append({"role": "assistant", "content": " ".join(collected)})
+                self._trim_history()
+                metrics.count("ai_local_success")
+            else:
+                # Empty stream — undo user message
+                if self.history and self.history[-1].get("role") == "user":
+                    self.history.pop()
+
     def clear_history(self):
         self.history = []
         self._scene_context = ""
