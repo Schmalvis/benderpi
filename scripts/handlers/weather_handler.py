@@ -11,7 +11,11 @@ class WeatherHandler(Handler):
     intents = ["WEATHER"]
 
     def handle(self, text: str, intent: str, sub_key: str | None = None) -> Response | None:
-        wav_path = briefings.get_weather_wav()
+        if sub_key:
+            log.info("WeatherHandler: location=%s", sub_key)
+            wav_path = briefings.get_weather_wav_for_location(sub_key)
+        else:
+            wav_path = briefings.get_weather_wav()
         if not wav_path:
             log.warning("WeatherHandler: no weather WAV available")
             return None

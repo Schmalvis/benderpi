@@ -168,6 +168,48 @@ _WEATHER_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+_CITY_TIMEZONES: dict[str, str] = {
+    "new york": "America/New_York", "new york city": "America/New_York",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles",
+    "chicago": "America/Chicago", "denver": "America/Denver",
+    "toronto": "America/Toronto", "vancouver": "America/Vancouver",
+    "london": "Europe/London", "paris": "Europe/Paris",
+    "berlin": "Europe/Berlin", "amsterdam": "Europe/Amsterdam",
+    "madrid": "Europe/Madrid", "rome": "Europe/Rome",
+    "athens": "Europe/Athens", "moscow": "Europe/Moscow",
+    "dubai": "Asia/Dubai",
+    "india": "Asia/Kolkata", "delhi": "Asia/Kolkata", "mumbai": "Asia/Kolkata",
+    "bangkok": "Asia/Bangkok", "singapore": "Asia/Singapore",
+    "hong kong": "Asia/Hong_Kong",
+    "beijing": "Asia/Shanghai", "shanghai": "Asia/Shanghai", "china": "Asia/Shanghai",
+    "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo",
+    "seoul": "Asia/Seoul", "korea": "Asia/Seoul",
+    "sydney": "Australia/Sydney", "australia": "Australia/Sydney",
+    "melbourne": "Australia/Melbourne",
+    "auckland": "Pacific/Auckland", "new zealand": "Pacific/Auckland",
+    "hawaii": "Pacific/Honolulu", "alaska": "America/Anchorage",
+    "karachi": "Asia/Karachi", "pakistan": "Asia/Karachi",
+}
+
+
+def _extract_time_timezone(text: str) -> str | None:
+    """Extract an IANA timezone from a time query (e.g. 'in Tokyo'), or None for local."""
+    m = re.search(r"\bin\s+((?:[A-Za-z][A-Za-z\-\']*\s*){1,3})", text, re.IGNORECASE)
+    if not m:
+        return None
+    raw = m.group(1).strip().rstrip("?.,!")
+    key = raw.lower()
+    if key in _CITY_TIMEZONES:
+        return _CITY_TIMEZONES[key]
+    # Partial match: "New York City" → try "new york"
+    words = key.split()
+    for n in range(len(words) - 1, 0, -1):
+        partial = " ".join(words[:n])
+        if partial in _CITY_TIMEZONES:
+            return _CITY_TIMEZONES[partial]
+    return None
+
+
 def _extract_weather_location(text: str) -> str | None:
     """Extract an explicit location from a weather query, or None for local."""
     t = text.strip()
@@ -279,7 +321,8 @@ def classify(text: str) -> tuple[str, str | None]:
     if _match_any(t, NEWS_PATTERNS):
         return ("NEWS", None)
     if _match_any(t, TIME_PATTERNS):
-        return ("TIME", None)
+        timezone = _extract_time_timezone(text.strip())
+        return ("TIME", timezone)
     if _match_any(t, DISMISSAL_PATTERNS):
         return ("DISMISSAL", None)
     if _match_any(t, JOKE_PATTERNS):
@@ -349,6 +392,11 @@ if __name__ == "__main__":
         "Can you play some music?",
         "What do you see?",
         "Who's in the room?",
+        "What time is it?",
+        "What time is it in Tokyo?",
+        "What time is it in New York?",
+        "What's the weather like in Paris?",
+        "What's the weather in Sydney today?",
     ]
     for t in tests:
         intent, sub = classify(t)

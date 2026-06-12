@@ -12,7 +12,9 @@ class TimeHandler(Handler):
     intents = ["TIME"]
 
     def handle(self, text: str, intent: str, sub_key: str | None = None) -> Response | None:
-        wav_path = briefings.get_time_wav()
+        if sub_key:
+            log.info("TimeHandler: timezone=%s", sub_key)
+        wav_path = briefings.get_time_wav(sub_key)
         if not wav_path:
             log.warning("TimeHandler: no time WAV available")
             return None
