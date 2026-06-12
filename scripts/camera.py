@@ -1,4 +1,4 @@
-"""Camera module for BenderPi — Camera Module 3 (IMX708).
+"""Camera module for BenderPi — AI Camera (IMX500).
 
 Owns the Picamera2 singleton with thread-safe reference counting.
 Supports concurrent access from analyse_scene() and the MJPEG stream endpoint.

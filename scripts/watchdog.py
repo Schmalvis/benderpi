@@ -172,6 +172,17 @@ def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
                     data={"avg_ms": avg_ms, "samples": len(timers)},
                 ))
 
+    # Briefing generation failures
+    briefing_failures = [e for e in events if e.get("type") == "count" and e.get("name") == "briefing_generation_failed"]
+    if briefing_failures:
+        threshold = cfg.get("briefing_failure_threshold", 3)
+        if len(briefing_failures) >= threshold:
+            alerts.append(Alert(
+                severity="warning", check="briefing_generation_failed",
+                message=f"Briefing generation failed {len(briefing_failures)}x in the last {lookback}h — check HA token or network",
+                data={"failures": len(briefing_failures)},
+            ))
+
     alerts.extend(check_session_liveness(cfg))
 
     return alerts

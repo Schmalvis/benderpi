@@ -1,7 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import { config, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
-  import { getWatchdogConfig, updateWatchdogConfig, getVisionPassive, enableVisionPassive, disableVisionPassive } from '../lib/api.js';
+  import { getWatchdogConfig, updateWatchdogConfig, getVisionPassive, enableVisionPassive, disableVisionPassive,
+           rebuildResponses, generateStatus, getVolume, setVolume } from '../lib/api.js';
 
   let saving = false;
   let saveMsg = '';
@@ -143,6 +144,40 @@
   const inputClass = 'bg-bg-input border border-border rounded px-3 py-2 text-text-default focus:outline-none focus:border-accent transition-colors w-full';
   const labelClass = 'block text-[11px] text-text-muted uppercase tracking-wider mb-1';
   const summaryClass = 'cursor-pointer text-[11px] text-text-muted uppercase tracking-wider font-semibold select-none py-2';
+
+  // Maintenance actions
+  let maintenance = { rebuild: false, status: false };
+  let maintenanceMsg = '';
+  let volume = 50;
+
+  onMount(async () => {
+    try { const v = await getVolume(); volume = v.volume ?? 50; } catch { /* ignore */ }
+  });
+
+  async function handleRebuild() {
+    maintenance.rebuild = true;
+    maintenanceMsg = '';
+    try {
+      const r = await rebuildResponses();
+      maintenanceMsg = r.status === 'ok' ? 'Responses rebuilt.' : (r.output || 'Done.');
+    } catch (e) { maintenanceMsg = 'Error: ' + e.message; }
+    maintenance.rebuild = false;
+  }
+
+  async function handleGenerateStatus() {
+    maintenance.status = true;
+    maintenanceMsg = '';
+    try {
+      await generateStatus();
+      maintenanceMsg = 'STATUS.md regenerated.';
+    } catch (e) { maintenanceMsg = 'Error: ' + e.message; }
+    maintenance.status = false;
+  }
+
+  async function handleVolume(e) {
+    volume = parseInt(e.target.value);
+    try { await setVolume(volume); } catch { /* ignore */ }
+  }
 
   const VISION_COCO_CANDIDATES = [
     "person", "bicycle", "bottle", "wine glass", "cup",
@@ -424,6 +459,39 @@
             on:input={e => config.update(c => ({ ...c, led_talking_color: e.target.value }))} />
         </div>
       </div>
+
+    </div>
+  </details>
+
+  <!-- Maintenance -->
+  <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">
+    <summary class={summaryClass + ' px-4'}>Maintenance</summary>
+    <div class="px-4 pb-4 pt-2 space-y-4">
+
+      <div>
+        <label class={labelClass}>Volume — <span class="text-text-default">{volume}</span></label>
+        <input type="range" min="0" max="100" step="1" class="w-full accent-accent"
+          bind:value={volume} on:change={handleVolume} />
+        <div class="flex justify-between text-[11px] text-text-muted mt-1">
+          <span>Mute (0)</span><span>Full (100)</span>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-2">
+        <button
+          class="bg-bg-input border border-border text-text-default px-4 py-2 rounded text-sm font-medium hover:border-accent transition-colors disabled:opacity-40"
+          disabled={maintenance.rebuild} on:click={handleRebuild}>
+          {maintenance.rebuild ? 'Rebuilding…' : 'Rebuild Responses'}
+        </button>
+        <button
+          class="bg-bg-input border border-border text-text-default px-4 py-2 rounded text-sm font-medium hover:border-accent transition-colors disabled:opacity-40"
+          disabled={maintenance.status} on:click={handleGenerateStatus}>
+          {maintenance.status ? 'Generating…' : 'Generate Status'}
+        </button>
+      </div>
+      {#if maintenanceMsg}
+        <p class="text-sm {maintenanceMsg.startsWith('Error') ? 'text-error' : 'text-success'}">{maintenanceMsg}</p>
+      {/if}
 
     </div>
   </details>

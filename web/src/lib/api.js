@@ -67,7 +67,7 @@ export const dismissTimer = (id) => request(`/api/timers/${id}/dismiss`, { metho
 export const dismissAllTimers = () => request('/api/timers/dismiss-all', { method: 'POST' });
 
 // Remote
-export const remoteAsk = (text) => request('/api/remote/ask', { method: 'POST', body: JSON.stringify({ text }) });
+export const remoteAsk = (text) => request('/api/remote/ask-text', { method: 'POST', body: JSON.stringify({ text }) });
 
 // Vision
 export const getVisionPassive = () => request('/api/vision/passive');

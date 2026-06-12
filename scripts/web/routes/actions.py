@@ -88,14 +88,9 @@ async def action_restart():
 
 @router.post("/api/actions/refresh-briefings")
 async def action_refresh_briefings():
-    if not _IS_LINUX:
-        return {"status": "ok", "message": "Simulated refresh (not on Pi)"}
     try:
-        await asyncio.to_thread(
-            subprocess.run,
-            ["sudo", "systemctl", "restart", "bender-converse"],
-            capture_output=True, text=True, timeout=30,
-        )
+        import briefings
+        await asyncio.to_thread(briefings.refresh_all)
         return {"status": "ok"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

@@ -50,9 +50,9 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 | Board | Raspberry Pi 5 |
 | AI Accelerator | Hailo AI HAT+ (Hailo-10H, 40 TOPS NPU) — LLM + STT + vision inference |
 | Camera | Raspberry Pi AI Camera (IMX500) — used for VLM / scene analysis |
-| Audio HAT | Adafruit Voice Bonnet (WM8960 codec) — I2S, 2x MEMS mics |
-| Speaker | 3W passive, connected to Voice Bonnet |
-| LEDs | 12x WS2812B addressable RGB |
+| Audio HAT | ReSpeaker 2-Mic Pi HAT (WM8960 codec) — I2S, 2x MEMS mics |
+| Speaker | 3W passive, connected to ReSpeaker HAT |
+| LEDs | 45x WS2812B addressable RGB |
 | LED Data | GPIO 10 / SPI MOSI — SPI enabled in `/boot/firmware/config.txt` |
 | ALSA card | Card 2 (`seeed-2mic-voicecard`, `hw:2,0`) |
 

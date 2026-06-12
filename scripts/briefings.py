@@ -121,6 +121,7 @@ def _get_briefing_wav(
             log.info("[briefing] %s refreshed", key)
         except Exception as e:
             log.error("[briefing] %s generation failed: %s", key, e)
+            metrics.count("briefing_generation_failed", briefing=key)
             if not os.path.exists(wav_path):
                 wav = tts_generate.speak(fallback_text)
                 shutil.move(wav, wav_path)

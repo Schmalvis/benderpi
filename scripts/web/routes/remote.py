@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 from web.auth import require_pin
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -11,6 +12,51 @@ _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
 sys.path.insert(0, _SCRIPTS_DIR)
 
 router = APIRouter(dependencies=[Depends(require_pin)])
+
+
+class _TextQuery(BaseModel):
+    text: str
+
+
+@router.post("/api/remote/ask-text")
+async def remote_ask_text(body: _TextQuery):
+    """Accept a text query, run it through the response pipeline, return text + WAV as base64."""
+    import base64
+    import time
+
+    t_start = time.time()
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text query is empty")
+
+    resp_wav = None
+    resp_is_temp = False
+
+    try:
+        from responder import Responder
+        from ai_response import AIResponder
+        resp = await asyncio.to_thread(Responder().get_response, text, AIResponder())
+        resp_wav = resp.wav_path
+        resp_is_temp = resp.is_temp
+        resp_text = resp.text
+        resp_intent = resp.intent
+
+        with open(resp_wav, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+
+        return {
+            "transcript": text,
+            "response_text": resp_text,
+            "intent": resp_intent,
+            "audio_b64": audio_b64,
+            "duration_ms": round((time.time() - t_start) * 1000),
+        }
+    finally:
+        if resp_is_temp and resp_wav:
+            try:
+                os.unlink(resp_wav)
+            except OSError:
+                pass
 
 
 @router.post("/api/remote/ask")

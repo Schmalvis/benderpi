@@ -15,6 +15,7 @@
   $: alerts = status.alerts || [];
   let recentTurns = [];
   let stopPolling;
+  let statusInterval;
 
   // Per-action busy state
   let busy = { endSession: false, restart: false, briefings: false };
@@ -24,9 +25,15 @@
     try { await loadConfig(); } catch { /* ignore */ }
     try { status = await getStatus(); } catch { /* ignore */ }
     await loadRecentConversations();
+    statusInterval = setInterval(async () => {
+      try { status = await getStatus(); } catch { /* ignore */ }
+    }, 30000);
   });
 
-  onDestroy(() => { if (stopPolling) stopPolling(); });
+  onDestroy(() => {
+    if (stopPolling) stopPolling();
+    if (statusInterval) clearInterval(statusInterval);
+  });
 
   async function loadRecentConversations() {
     try {
