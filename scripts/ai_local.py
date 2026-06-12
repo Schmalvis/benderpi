@@ -385,6 +385,24 @@ class LocalAIResponder:
             log.warning("Hailo LLM error (%s) — falling back to Ollama", e)
             return self._ollama.generate(user_text)
 
+    def generate_stream(self, user_text: str):
+        """Stream response as sentences. Hailo wraps full text as one item;
+        Ollama truly streams tokens into sentences as they form.
+
+        QualityCheckFailed propagates out — caller decides whether to escalate.
+        """
+        try:
+            # Hailo doesn't expose token-level streaming; generate fully then yield once.
+            text = self._hailo.generate(user_text)
+            yield text
+            return
+        except QualityCheckFailed:
+            raise  # propagate directly — don't try Ollama for quality failures
+        except Exception as e:
+            log.info("Hailo unavailable for stream (%s) — falling back to Ollama", e)
+
+        yield from self._ollama.generate_stream(user_text)
+
     def clear_history(self):
         self._hailo.clear_history()
         self._ollama.clear_history()

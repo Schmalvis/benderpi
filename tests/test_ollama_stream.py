@@ -94,3 +94,43 @@ def test_generate_stream_rolls_back_history_on_quality_fail(ollama):
             list(ollama.generate_stream("Help me"))
 
     assert len(ollama.history) == 0  # rolled back
+
+
+def test_local_ai_responder_stream_hailo_unavailable_falls_back(monkeypatch):
+    """When Hailo raises RuntimeError, LocalAIResponder.generate_stream falls back to Ollama."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    from ai_local import LocalAIResponder
+
+    r = LocalAIResponder()
+
+    # Hailo raises RuntimeError (unavailable)
+    monkeypatch.setattr(r._hailo, 'generate', lambda text: (_ for _ in ()).throw(RuntimeError("no hailo")))
+
+    tokens = ["Bite", " my", " shiny", " metal", " response", "!"]
+    lines = _make_ndjson_lines(tokens)
+    mock_resp = MagicMock()
+    mock_resp.iter_lines.return_value = lines
+    mock_resp.__enter__ = lambda s: mock_resp
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch('requests.post', return_value=mock_resp):
+        sentences = list(r.generate_stream("Tell me something"))
+
+    assert len(sentences) >= 1
+    assert "Bite my shiny metal response" in " ".join(sentences)
+
+
+def test_local_ai_responder_stream_hailo_success_yields_full_text():
+    """When Hailo succeeds, generate_stream yields the full text as one item."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    from ai_local import LocalAIResponder
+    from unittest.mock import patch
+
+    r = LocalAIResponder()
+    with patch.object(r._hailo, 'generate', return_value="Bite my shiny metal response!"):
+        sentences = list(r.generate_stream("Tell me something"))
+
+    assert sentences == ["Bite my shiny metal response!"]
