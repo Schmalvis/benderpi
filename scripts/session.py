@@ -318,18 +318,34 @@ class ConversationSession:
         """Play response audio. Returns (text, model, method, routing_log, response)."""
         if isinstance(response, ResponseStream):
             _collected: list[str] = []
+            _first_audio_ts: list[float] = []  # singleton list as mutable cell
 
             def _collecting_iter(it):
                 for sentence in it:
                     _collected.append(sentence)
                     yield sentence
 
+            def _timed_wav_iter(wav_iter):
+                for wav_path in wav_iter:
+                    if not _first_audio_ts:
+                        _first_audio_ts.append(time.monotonic())
+                    yield wav_path
+
             leds.set_talking()
+            _play_start = time.monotonic()
             audio.play_stream(
-                tts_generate.speak_from_iter(_collecting_iter(response.sentence_iter)),
+                _timed_wav_iter(
+                    tts_generate.speak_from_iter(_collecting_iter(response.sentence_iter))
+                ),
                 on_chunk=self._on_chunk,
                 on_done=leds.all_off,
             )
+            if _first_audio_ts:
+                metrics._write({
+                    "type": "timer", "name": "time_to_first_audio_ms",
+                    "duration_ms": round((_first_audio_ts[0] - _play_start) * 1000, 1),
+                    "method": response.method,
+                })
             return " ".join(_collected), response.model, response.method, response.routing_log, response
 
         if response.wav_path is None:
