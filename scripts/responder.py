@@ -239,8 +239,13 @@ class Responder:
                 "quality_failure_reason": f"error:{type(e).__name__}",
             })
             if effective_routing == "local_only":
+                routing_log.update({
+                    "escalated_to_cloud": False,
+                    "final_method": "error_fallback",
+                })
                 return self._error_response(text, intent_name, sub_key,
-                                            "Local LLM unavailable (local_only mode)")
+                                            "Local LLM unavailable (local_only mode)",
+                                            routing_log=routing_log)
             # local_first: escalate to cloud
 
         routing_log["escalated_to_cloud"] = True
@@ -267,7 +272,8 @@ class Responder:
         )
 
     def _error_response(self, text: str, intent_name: str,
-                        sub_key: str | None, error_msg: str) -> Response:
+                        sub_key: str | None, error_msg: str,
+                        routing_log: dict | None = None) -> Response:
         """Generate a TTS error message as last resort."""
         import tts_generate
         error_text = f"Something went very wrong. Error: {error_msg}."
@@ -276,4 +282,5 @@ class Responder:
             text=error_msg, wav_path=wav,
             method="error_fallback", intent=intent_name, sub_key=sub_key,
             is_temp=True, needs_thinking=True, model=None,
+            routing_log=routing_log,
         )
