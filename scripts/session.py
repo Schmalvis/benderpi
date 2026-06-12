@@ -192,17 +192,27 @@ class ConversationSession:
         _infer_start = time.monotonic()
         _thinking_played = False
         _infer_thread = threading.Thread(target=_infer, daemon=True)
-        _infer_thread.start()
 
-        # Fast responses (clips/handlers) finish in <150ms — thinking sound skipped
-        _infer_thread.join(timeout=0.15)
-        if _infer_thread.is_alive() and cfg.thinking_sound and self._thinking_clips:
+        if self._responder.will_need_thinking(text) and cfg.thinking_sound and self._thinking_clips:
+            # AI route — known to be slow; play thinking sound immediately (no 150ms wait)
+            _infer_thread.start()
             _thinking_played = True
             audio.play(
                 random.choice(self._thinking_clips),
                 on_chunk=self._on_chunk,
                 on_done=leds.all_off,
             )
+        else:
+            # Handler/clip route — start thread, check after 150ms
+            _infer_thread.start()
+            _infer_thread.join(timeout=0.15)
+            if _infer_thread.is_alive() and cfg.thinking_sound and self._thinking_clips:
+                _thinking_played = True
+                audio.play(
+                    random.choice(self._thinking_clips),
+                    on_chunk=self._on_chunk,
+                    on_done=leds.all_off,
+                )
 
         hard_timeout = max(0.0, float(cfg.response_hard_timeout_s) - (time.monotonic() - _infer_start))
         _infer_thread.join(timeout=hard_timeout)

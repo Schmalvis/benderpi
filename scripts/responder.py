@@ -79,6 +79,18 @@ class Responder:
     # Main entry point
     # ------------------------------------------------------------------
 
+    def will_need_thinking(self, text: str) -> bool:
+        """Quick pre-classification: will this query route to slow AI inference?
+
+        Runs intent classification only (<1ms). Returns True when no handler
+        is registered for the intent, meaning the call will hit the AI tier.
+        Used by session.py to play the thinking sound immediately rather than
+        waiting for a 150ms thread-alive check.
+        """
+        import intent as intent_mod
+        intent_name, _ = intent_mod.classify(text)
+        return intent_name not in self._dispatch
+
     def _classify_scenario(self, text: str) -> str:
         """Classify query into scenario for AI routing."""
         t = text.lower()
