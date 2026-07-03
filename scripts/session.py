@@ -229,6 +229,19 @@ class ConversationSession:
             )
             return TurnResult(text=text, intent="TIMEOUT", method="error_fallback")
 
+        # Release the Hailo LLM's VDevice so STT can reacquire the shared
+        # "SHARED"-group device on the next loop iteration (mirrors stt.release()
+        # after each transcription). This turn's inference thread has finished
+        # (the timeout branch above returns early), but a *previous* turn's
+        # abandoned zombie thread may still be inside generate_all(): release_chip()
+        # is internally guarded by _HailoLLMResponder._infer_lock and is a safe
+        # no-op both while such a zombie holds the lock (device stays held — never
+        # released under active inference) and when Hailo never loaded (clip/
+        # handler/Ollama turns). The device is freed by a later turn's release once
+        # any zombie finishes.
+        if self._ai_local is not None:
+            self._ai_local.release_chip()
+
         if _exc_holder[0] is not None:
             raise _exc_holder[0]
 

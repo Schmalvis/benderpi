@@ -42,6 +42,12 @@ FRAME_BYTES    = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit samples
 # Hailo NPU backend (Whisper-Small HEF — primary)
 WHISPER_HEF        = "/usr/local/hailo/resources/models/hailo10h/Whisper-Small.hef"
 
+# Settle window (seconds) after releasing the Hailo VDevice before the LLM
+# re-acquires the same SHARED group. NOT part of Hailo's one-shot reference —
+# added defensively because VDMA/KV-cache teardown appears asynchronous and we
+# re-acquire in the same long-running process. Set to 0 to disable.
+_RELEASE_SETTLE_S = 0.15
+
 WHISPER_HALLUCINATIONS = set(cfg.whisper_hallucinations)
 
 # ---------------------------------------------------------------------------
@@ -52,6 +58,7 @@ _backend   = None   # "hailo" | "cpu"
 _vdevice   = None   # Hailo VDevice (held open for lifetime of process)
 _s2t       = None   # Hailo Speech2Text instance
 _cpu_model = None   # faster-whisper fallback
+_cpu_only_model = None  # dedicated CPU model for prefer_cpu callers (never Hailo)
 _model_lock = threading.Lock()  # guards _backend/_vdevice/_s2t mutations
 
 
@@ -69,22 +76,31 @@ def _load_model():
                 from hailo_platform.genai import Speech2Text, Speech2TextTask  # noqa: F401
                 _params = VDevice.create_params()
                 _params.group_id = "SHARED"
+                # Construct without entering a context manager — Hailo's reference
+                # (simple_whisper_chat.py) uses the objects directly after
+                # construction and tears them down via .release(), never
+                # __enter__/__exit__. Matching that avoids the __exit__ + __del__
+                # double-release path.
                 _vdevice = VDevice(_params)
-                _vdevice.__enter__()
                 _s2t = Speech2Text(_vdevice, WHISPER_HEF)
-                _s2t.__enter__()
                 _backend = "hailo"
                 log.info("STT backend: Hailo Speech2Text (Whisper-Small on Hailo-10H)")
                 return
             except Exception as e:
                 log.warning("Hailo STT init failed (%s) — falling back to CPU", e)
+                # Release in reference order: Speech2Text before its VDevice.
+                if _s2t is not None:
+                    try:
+                        _s2t.release()
+                    except Exception:
+                        pass
+                    _s2t = None
                 if _vdevice is not None:
                     try:
-                        _vdevice.__exit__(None, None, None)
+                        _vdevice.release()
                     except Exception:
                         pass
                     _vdevice = None
-                _s2t = None
 
         # CPU fallback
         try:
@@ -107,6 +123,19 @@ def _active_model_name() -> str:
 # Transcription helpers
 # ---------------------------------------------------------------------------
 
+def _transcribe_cpu(model, audio_array: np.ndarray) -> str:
+    """Transcribe a float32 array with a faster-whisper CPU model."""
+    segments, _ = model.transcribe(
+        audio_array,
+        language="en",
+        beam_size=1,
+        temperature=0.0,
+        condition_on_previous_text=False,
+        vad_filter=True,
+    )
+    return " ".join(s.text for s in segments).strip()
+
+
 def _transcribe_array(audio_array: np.ndarray) -> str:
     """Transcribe a float32 numpy array. Assumes model already loaded."""
     if _backend == "hailo":
@@ -117,15 +146,25 @@ def _transcribe_array(audio_array: np.ndarray) -> str:
             language="en",
         ).strip()
     else:
-        segments, _ = _cpu_model.transcribe(
-            audio_array,
-            language="en",
-            beam_size=1,
-            temperature=0.0,
-            condition_on_previous_text=False,
-            vad_filter=True,
+        return _transcribe_cpu(_cpu_model, audio_array)
+
+
+def _load_cpu_only_model():
+    """Load a dedicated CPU faster-whisper model that never touches the Hailo
+    device. Used by non-latency-critical callers in *other* processes (the
+    bender-web service) so a second process can't contend for the shared Hailo
+    STT VDevice while bender-converse is orchestrating STT/LLM turn-taking."""
+    global _cpu_only_model
+    with _model_lock:
+        if _cpu_only_model is not None:
+            return _cpu_only_model
+        from faster_whisper import WhisperModel
+        _cpu_only_model = WhisperModel(
+            cfg.whisper_model, device="cpu", compute_type="int8", cpu_threads=3
         )
-        return " ".join(s.text for s in segments).strip()
+        log.info("STT: CPU-only faster-whisper loaded (%s) — Hailo not touched",
+                 cfg.whisper_model)
+        return _cpu_only_model
 
 
 def _wav_to_array(wav_path: str) -> np.ndarray:
@@ -223,29 +262,43 @@ def warm_up() -> None:
 
 
 def release() -> None:
-    """Release Hailo VDevice after transcription, freeing KV-Cache for the LLM."""
-    import gc
+    """Release the Hailo Speech2Text + VDevice after transcription, freeing the
+    KV-Cache so the LLM can acquire the device.
+
+    Mirrors Hailo's reference teardown (hailo-apps simple_whisper_chat.py):
+    call the public ``.release()`` method on each object, Speech2Text first then
+    the VDevice it was created on, each guarded independently.
+
+    We deliberately do NOT use ``__exit__()`` + ``del`` + ``gc.collect()`` here.
+    That path let the C++ VDevice destructor (``__del__``) fire a *second*
+    release after ``__exit__`` had already freed the device — the most likely
+    cause of the HAILO_INVALID_OPERATION(6) crash seen on 2026-05-19.
+    ``.release()`` is the documented, idempotent public teardown call.
+    """
     global _backend, _vdevice, _s2t
-    if _backend != "hailo":
-        return
-    # Exit context managers, then delete objects so __del__ frees Hailo hardware
-    s2t_ref, vdev_ref = _s2t, _vdevice
-    _s2t = _vdevice = None
-    _backend = None
-    try:
-        if s2t_ref is not None:
-            s2t_ref.__exit__(None, None, None)
-    except Exception as e:
-        log.debug("STT s2t exit error: %s", e)
-    del s2t_ref
-    try:
-        if vdev_ref is not None:
-            vdev_ref.__exit__(None, None, None)
-    except Exception as e:
-        log.debug("STT vdevice exit error: %s", e)
-    del vdev_ref
-    gc.collect()
-    log.info("STT: Hailo VDevice released (KV-Cache free)")
+    with _model_lock:
+        if _backend != "hailo":
+            return
+        s2t_ref, vdev_ref = _s2t, _vdevice
+        _s2t = _vdevice = None
+        _backend = None
+
+    # Release Speech2Text before the VDevice it was created on (reference order).
+    if s2t_ref is not None:
+        try:
+            s2t_ref.release()
+        except Exception as e:
+            log.debug("STT Speech2Text release error: %s", e)
+    if vdev_ref is not None:
+        try:
+            vdev_ref.release()
+        except Exception as e:
+            log.debug("STT VDevice release error: %s", e)
+
+    if _RELEASE_SETTLE_S > 0:
+        time.sleep(_RELEASE_SETTLE_S)
+
+    log.info("STT: Hailo Speech2Text + VDevice released (KV-Cache free)")
 
 
 def listen_and_transcribe() -> str:
@@ -267,10 +320,23 @@ def listen_and_transcribe() -> str:
     return _filter_hallucination(text)
 
 
-def transcribe_file(wav_path: str) -> str:
-    """Transcribe a pre-recorded WAV file (e.g. uploaded via web UI)."""
-    _load_model()
+def transcribe_file(wav_path: str, prefer_cpu: bool = False) -> str:
+    """Transcribe a pre-recorded WAV file (e.g. uploaded via web UI).
+
+    prefer_cpu=True forces the CPU faster-whisper backend and never acquires the
+    Hailo STT VDevice. The web UI (bender-web) runs in a separate process from
+    bender-converse; if it grabbed the shared "SHARED"-group Hailo device it
+    could collide with — or indefinitely starve — the conversation loop's
+    STT/LLM turn-taking. This path is not latency-critical (a human clicking a
+    button), so CPU is an acceptable, deterministic trade-off.
+    """
     audio_array = _wav_to_array(wav_path)
+    if prefer_cpu:
+        model = _load_cpu_only_model()
+        with metrics.timer("stt_transcribe", model=cfg.whisper_model, source="file_cpu"):
+            text = _transcribe_cpu(model, audio_array)
+        return _filter_hallucination(text, source="file")
+    _load_model()
     with metrics.timer("stt_transcribe", model=_active_model_name(), source="file"):
         text = _transcribe_array(audio_array)
     return _filter_hallucination(text, source="file")

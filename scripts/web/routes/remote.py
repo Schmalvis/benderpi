@@ -98,7 +98,9 @@ async def remote_ask(audio: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail="Audio conversion failed")
 
         import stt as _stt
-        transcript = await asyncio.to_thread(_stt.transcribe_file, tmp_wav)
+        # prefer_cpu=True: this is a separate process from bender-converse; force
+        # CPU Whisper so we never contend for the shared Hailo STT VDevice.
+        transcript = await asyncio.to_thread(_stt.transcribe_file, tmp_wav, prefer_cpu=True)
 
         if not transcript:
             import tts_generate as _tts

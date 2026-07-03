@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import threading
 import time
 
 import requests
@@ -58,6 +59,17 @@ class _HailoLLMResponder:
         self._last_failed_at: float | None = None
         self.history: list[dict] = []
         self._scene_context: str = ""
+        # Held for exactly the duration of a self._llm.generate_all() call, from
+        # whichever thread issues it. Its lifetime brackets "is the Hailo NPU
+        # currently doing LLM inference" independent of caller thread or whether
+        # session.py's hard-timeout join already gave up waiting. Used to:
+        #   1. stop a new generate() from starting a second concurrent
+        #      generate_all() on the shared _llm object (zombie from a timed-out
+        #      turn may still be mid-call), and
+        #   2. stop release_chip()/close() from releasing the VDevice out from
+        #      under a still-running generate_all().
+        # Always taken non-blocking so a hung zombie never stalls the loop.
+        self._infer_lock = threading.Lock()
 
     def inject_scene_context(self, text: str):
         """Store scene context to be prepended to the first user message of the session."""
@@ -116,13 +128,27 @@ class _HailoLLMResponder:
             *self.history,
         ]
 
-        with metrics.timer("ai_hailo_call"):
-            result = self._llm.generate_all(
-                prompt=messages,
-                temperature=0.7,
-                seed=42,
-                max_generated_tokens=cfg.ai_max_tokens,
-            )
+        # A prior generate_all() (e.g. a zombie thread abandoned by session.py's
+        # hard-timeout join) may still be executing on this shared _llm object.
+        # Acquire non-blocking: if inference is genuinely still in flight, do NOT
+        # start a second concurrent generate_all() — roll back the user turn and
+        # raise so the caller (LocalAIResponder) fails over to Ollama.
+        if not self._infer_lock.acquire(blocking=False):
+            if self.history and self.history[-1].get("role") == "user":
+                self.history.pop()
+            log.warning("Hailo LLM busy (prior generate_all() still in flight) "
+                        "— failing over to Ollama")
+            raise RuntimeError("Hailo LLM busy")
+        try:
+            with metrics.timer("ai_hailo_call"):
+                result = self._llm.generate_all(
+                    prompt=messages,
+                    temperature=0.7,
+                    seed=42,
+                    max_generated_tokens=cfg.ai_max_tokens,
+                )
+        finally:
+            self._infer_lock.release()
 
         # Strip Qwen special tokens
         reply = result.split("<|im_end|>")[0].strip() if result else ""
@@ -156,42 +182,88 @@ class _HailoLLMResponder:
         self._last_failed_at = None
 
     def release_chip(self) -> None:
-        """Release Hailo VDevice between sessions, freeing KV-Cache for STT."""
-        import gc
-        if self._llm is not None:
-            try:
-                self._llm.clear_context()
-            except Exception as e:
-                log.debug("Hailo LLM clear_context error: %s", e)
+        """Release the Hailo LLM + VDevice between sessions, freeing the KV-Cache
+        for STT.
+
+        Uses the public ``.release()`` method (Hailo reference pattern), LLM
+        before its VDevice — never ``__exit__()`` + ``del`` + ``gc.collect()``,
+        which risks a double-release via ``VDevice.__del__``.
+
+        Guarded by ``_infer_lock``: if a generate_all() call is still in flight
+        (typically a zombie thread from a turn whose hard-timeout join gave up),
+        this is a no-op — we log a warning and leave the device held rather than
+        release it out from under active inference. Taken non-blocking so a hung
+        zombie never stalls the conversation loop; the device is simply freed by
+        a later turn's release once the zombie finishes.
+        """
+        if not self._infer_lock.acquire(blocking=False):
+            log.warning("Hailo generate_all() still in flight — skipping VDevice "
+                        "release to avoid releasing it under active inference")
+            return
+        try:
+            llm_ref, vdev_ref = self._llm, self._vdevice
             self._llm = None
-        if self._vdevice is not None:
-            try:
-                self._vdevice.__exit__(None, None, None)
-            except Exception as e:
-                log.debug("Hailo LLM vdevice exit error: %s", e)
-            del self._vdevice
             self._vdevice = None
-        self._available = None
-        gc.collect()
-        log.debug("Hailo LLM chip released (will re-acquire on next generate)")
+            self._available = None
+            if llm_ref is not None:
+                try:
+                    llm_ref.clear_context()
+                except Exception as e:
+                    log.debug("Hailo LLM clear_context error: %s", e)
+                try:
+                    llm_ref.release()
+                except Exception as e:
+                    log.debug("Hailo LLM release error: %s", e)
+            if vdev_ref is not None:
+                try:
+                    vdev_ref.release()
+                except Exception as e:
+                    log.debug("Hailo LLM VDevice release error: %s", e)
+            log.debug("Hailo LLM chip released (will re-acquire on next generate)")
+        finally:
+            self._infer_lock.release()
 
     def close(self) -> None:
-        """Release Hailo VDevice and LLM, freeing the on-chip KV-Cache."""
-        if self._llm is not None:
-            try:
-                self._llm.clear_context()
-            except Exception:
-                pass
+        """Release Hailo LLM + VDevice, freeing the on-chip KV-Cache. Called at
+        process exit (atexit). Uses the public ``.release()`` method (LLM before
+        its VDevice) rather than bare ``del``, so teardown is deterministic and
+        matches Hailo's reference pattern.
+
+        Like release_chip(), this respects _infer_lock: if a generate_all() is
+        still in flight we skip the hardware release (only null our refs) rather
+        than release under active inference — the OS reclaims the device handle
+        on process death. Taken non-blocking so exit never hangs on a zombie."""
+        if not self._infer_lock.acquire(blocking=False):
+            log.warning("Hailo generate_all() still in flight at close() — "
+                        "skipping hardware release; OS will reclaim on exit")
             self._llm = None
-        if self._vdevice is not None:
-            try:
-                del self._vdevice
-            except Exception:
-                pass
             self._vdevice = None
-        self._available = None
-        self._last_failed_at = None
-        log.info("Hailo LLM closed and KV-Cache released")
+            self._available = None
+            self._last_failed_at = None
+            return
+        try:
+            llm_ref, vdev_ref = self._llm, self._vdevice
+            self._llm = None
+            self._vdevice = None
+            self._available = None
+            self._last_failed_at = None
+            if llm_ref is not None:
+                try:
+                    llm_ref.clear_context()
+                except Exception:
+                    pass
+                try:
+                    llm_ref.release()
+                except Exception:
+                    pass
+            if vdev_ref is not None:
+                try:
+                    vdev_ref.release()
+                except Exception:
+                    pass
+            log.info("Hailo LLM closed and KV-Cache released")
+        finally:
+            self._infer_lock.release()
 
 
 class _OllamaResponder:

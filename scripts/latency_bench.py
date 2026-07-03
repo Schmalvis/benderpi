@@ -3,8 +3,10 @@
 latency_bench.py — BenderPi pipeline latency benchmarking.
 
 Tests each stage of the response pipeline in isolation and reports
-p50/p95 timings. Safe to run while bender-converse is active (uses
-shared Hailo VDevice group).
+p50/p95 timings. Safe to run while bender-converse is active: the STT
+stage always forces CPU Whisper (never touches Hailo, so it no longer
+benchmarks Hailo STT specifically), and the LLM stage releases the
+shared Hailo VDevice group after every call.
 
 Usage:
     cd /home/pi/bender
@@ -106,13 +108,13 @@ def main():
         # Warm up (first call initialises the model)
         print(f"  Warming up STT model...", end="", flush=True)
         try:
-            stt.transcribe_file(test_wav)
+            stt.transcribe_file(test_wav, prefer_cpu=True)
             print(" ready")
         except Exception as e:
             print(f" failed: {e}")
 
         times, errors = _run("transcribe_file ×" + str(args.runs),
-                             lambda: stt.transcribe_file(test_wav), args.runs)
+                             lambda: stt.transcribe_file(test_wav, prefer_cpu=True), args.runs)
         results["STT (file)"] = (times, errors)
         medians["stt"] = statistics.median(times) if times else 0
     else:
@@ -150,14 +152,24 @@ def main():
         # Short prompt to minimise token generation noise
         prompt = "Reply in exactly four words."
 
+        def _generate_and_release():
+            # Release the Hailo VDevice after every call, same as the live
+            # service does per-turn (session.py) — holding it between calls
+            # would contend with bender-converse's own Hailo STT/LLM handoff
+            # if this benchmark runs while the service is active.
+            try:
+                ai.generate(prompt)
+            finally:
+                ai.release_chip()
+
         print(f"  Warming up LLM...", end="", flush=True)
         try:
-            ai.generate(prompt)
+            _generate_and_release()
             print(" ready")
         except Exception as e:
             print(f" failed: {e}")
 
-        times, errors = _run(f"generate ×{args.runs}", lambda: ai.generate(prompt), args.runs)
+        times, errors = _run(f"generate ×{args.runs}", _generate_and_release, args.runs)
         results["LLM (local)"] = (times, errors)
         medians["llm"] = statistics.median(times) if times else 0
     else:
