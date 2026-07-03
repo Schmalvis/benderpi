@@ -89,7 +89,7 @@ def _load_model():
         # CPU fallback
         try:
             from faster_whisper import WhisperModel
-            _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
+            _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8", cpu_threads=3)
             _backend = "cpu"
             log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
             return
@@ -117,7 +117,14 @@ def _transcribe_array(audio_array: np.ndarray) -> str:
             language="en",
         ).strip()
     else:
-        segments, _ = _cpu_model.transcribe(audio_array, language="en", beam_size=1)
+        segments, _ = _cpu_model.transcribe(
+            audio_array,
+            language="en",
+            beam_size=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            vad_filter=True,
+        )
         return " ".join(s.text for s in segments).strip()
 
 

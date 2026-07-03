@@ -226,9 +226,19 @@ def main():
             last_heard = time.time()
             while True:
                 leds.set_listening(True)
+                rec_start = time.time()
                 text = stt.listen_and_transcribe()
                 if not text:
-                    if time.time() - last_heard > cfg.silence_timeout:
+                    # Anchor the silence timeout on when this recording STARTED, not on
+                    # `now`. A slow CPU-whisper transcription can stall 20-110s on
+                    # silence/noise and then return empty; measuring `now - last_heard`
+                    # would make the timeout trivially true and end the session the
+                    # instant the slow transcription returns — the user never actually
+                    # got an idle window, they just waited out a stuck transcription.
+                    # Using rec_start means a slow (empty) transcription instead grants
+                    # another live recording attempt, while genuine silence still
+                    # accumulates recording time across cycles and ends the session.
+                    if rec_start - last_heard > cfg.silence_timeout:
                         session.end("timeout")
                         break
                     continue
