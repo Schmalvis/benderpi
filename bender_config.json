@@ -60,6 +60,8 @@
   },
   "wake_stall_seconds": 30,
   "wake_heartbeat_frames": 250,
+  "mic_read_timeout_s": 10.0,
+  "mic_stall_max_reinits": 1,
   "ai_backend": "hybrid",
   "local_llm_model": "qwen2.5:1.5b",
   "local_llm_url": "http://localhost:11434",

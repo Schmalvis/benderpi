@@ -11,5 +11,7 @@
   "min_avg_session_turns": 1.5,
   "log_gap_threshold_s": 86400,
   "lookback_hours": 168,
-  "max_hours_without_session": 6
+  "max_hours_without_session": 6,
+  "mic_stall_reinit_threshold": 3,
+  "mic_stall_exit_threshold": 1
 }

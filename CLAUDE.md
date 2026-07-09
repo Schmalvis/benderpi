@@ -133,8 +133,10 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 |---|---|---|
 | `input_device_name` | `"mic_shared"` | ALSA device name hint for mic input |
 | `output_device_name` | `"seeed"` | ALSA device name hint for audio output |
-| `wake_stall_seconds` | `30` | Seconds of zero PCM reads before wake loop reinits |
+| `wake_stall_seconds` | `30` | Seconds of zero-length PCM reads before wake loop treats it as a stall |
 | `wake_heartbeat_frames` | `250` | Frames between sd_notify WATCHDOG=1 pings |
+| `mic_read_timeout_s` | `10` | Max seconds to wait for a mic frame via MicReader before raising MicStallError (all mic paths: wake loop + STT) |
+| `mic_stall_max_reinits` | `1` | In-process mic reinit attempts after a stall before `sys.exit(1)` → systemd restart |
 | `vlm_yolo_timeout_s` | `8` | Max seconds for YOLO/LLM inference in vlm.py |
 | `vlm_lazy_poll_s` | `0.05` | Non-blocking poll interval for lazy scene injection |
 | `response_hard_timeout_s` | `20` | Hard kill timeout for inference thread |
@@ -150,9 +152,14 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `ha_exclude_entities` | (list) | Specific entity IDs to exclude from HA control |
 | `whisper_hallucinations` | (list) | Phrases Whisper hallucinates — filtered from STT output |
 
-`watchdog_config.json` key: `max_hours_without_session` (default `6`) — alerts if no conversation session detected in N hours.
+`watchdog_config.json` keys:
+- `max_hours_without_session` (default `6`) — alerts if no conversation session detected in N hours.
+- `mic_stall_reinit_threshold` (default `3`) — warns if the wake loop reinitialised the mic after a stall this many times in the lookback window (USB mic flapping).
+- `mic_stall_exit_threshold` (default `1`) — errors if the service exited for a systemd restart after an unrecoverable mic stall (mic likely needs a physical reseat).
 
-**systemd:** Service uses `Type=notify` + `WatchdogSec=120`. Requires `libsystemd-dev pkg-config` (apt) and `systemd-python` (pip). After updating the service file: `sudo cp systemd/bender-converse.service /etc/systemd/system/ && sudo systemctl daemon-reload`.
+**systemd:** Service uses `Type=notify` + `WatchdogSec=120`, plus `TimeoutStopSec=20` / `TimeoutAbortSec=20` so a wedged process gets SIGKILLed instead of sticking in "deactivating". Requires `libsystemd-dev pkg-config` (apt) and `systemd-python` (pip). After updating the service file: `sudo cp systemd/bender-converse.service /etc/systemd/system/ && sudo systemctl daemon-reload`.
+
+**Mic stall watchdog (MicReader):** All blocking mic reads (wake-word loop + STT recording) go through `audio.MicReader`, a daemon reader thread + queue with a `mic_read_timeout_s` timeout. A wedged USB read raises `MicStallError` (subclass of `RuntimeError`) on the consumer thread so the process can log, feed the systemd watchdog, and escalate instead of hanging forever. Escalation policy: reinit the mic up to `mic_stall_max_reinits` times, then `sys.exit(1)` and let systemd's `Restart=on-failure` recover. A startup `audio.mic_selftest()` reads ~1s of frames and WARNs (non-blocking) if the mic path looks wedged or silent.
 
 ---
 

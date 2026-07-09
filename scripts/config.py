@@ -127,6 +127,10 @@ class Config:
     wake_stall_seconds: float = 30.0    # raise RuntimeError if no PCM frames for this long
     wake_heartbeat_frames: int = 250    # emit heartbeat metric every N frames
 
+    # Mic read watchdog (MicReader) — applies to all blocking mic reads
+    mic_read_timeout_s: float = 10.0    # raise MicStallError if no frame arrives in this window
+    mic_stall_max_reinits: int = 1      # in-process mic reinit attempts before sys.exit(1) → systemd restart
+
     # Inference hard timeout
     response_hard_timeout_s: float = 20.0  # max seconds to wait for responder inference thread
 

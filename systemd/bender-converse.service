@@ -9,6 +9,11 @@ NotifyAccess=main
 WatchdogSec=120
 Restart=on-failure
 RestartSec=5
+# If a mic read wedges and the process must be stopped, don't let it stick in
+# "deactivating" forever: SIGKILL it after these timeouts. TimeoutStopSec covers
+# a normal SIGTERM stop; TimeoutAbortSec covers the WatchdogSec=120 abort path.
+TimeoutStopSec=20
+TimeoutAbortSec=20
 User=pi
 WorkingDirectory=/home/pi/bender
 EnvironmentFile=/home/pi/bender/.env

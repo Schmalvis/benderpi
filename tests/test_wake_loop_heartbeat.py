@@ -1,10 +1,21 @@
-"""Offline test that wait_for_wakeword raises on stall (zero-length reads)."""
+"""Offline test that wait_for_wakeword escalates on stall (zero-length reads).
+
+With the MicReader watchdog, a mic that only ever produces zero-length frames
+trips the classic no-PCM stall accounting, which now escalates: reinit up to
+mic_stall_max_reinits times, then sys.exit(1) so systemd restarts the process.
+Here max_reinits=0, so the first stall exits immediately.
+"""
 import sys
 import time
 import types
 import pytest
 
 sys.path.insert(0, "scripts")
+
+# Import the real MicReader/MicStallError so wait_for_wakeword's queue-based
+# read path is exercised against the fake stall stream.
+import audio as _real_audio
+from audio import MicReader, MicStallError
 
 
 class StallingStream:
@@ -14,6 +25,21 @@ class StallingStream:
     def read(self, n, exception_on_overflow=False):
         self.reads += 1
         return b""  # always zero-length — simulates wedged USB
+
+    def stop_stream(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class DeadStream:
+    """A stream whose blocking read never returns — simulates a wedged USB read
+    that hangs inside PortAudio's C layer."""
+
+    def read(self, n, exception_on_overflow=False):
+        # Block "forever" (long enough that the read timeout fires first).
+        time.sleep(3600)
 
     def stop_stream(self):
         pass
@@ -54,7 +80,7 @@ def _patch_all_deps(monkeypatch):
     for mod in ("leds", "stt", "tts_generate", "vision", "briefings",
                 "ai_response", "ai_local", "conversation_log",
                 "responder", "handlers.clip_handler", "handlers.timer_alert",
-                "handler_base", "timers"):
+                "handler_base", "timers", "session"):
         monkeypatch.setitem(sys.modules, mod,
             _make_fake_module(mod,
                 AIResponder=lambda: None,
@@ -63,12 +89,15 @@ def _patch_all_deps(monkeypatch):
                 Responder=lambda: None,
                 RealClipHandler=lambda: None,
                 TimerAlertRunner=lambda: None,
+                ConversationSession=object,
+                FutureVisionProvider=object,
+                Response=object,
                 load_clips_from_index=lambda *a: [],
                 ResponseStream=object,
                 get_logger=lambda n: __import__("logging").getLogger(n),
             ))
 
-    # audio needs get_pa and get_input_device_index
+    # audio needs get_pa, get_input_device_index, and the real MicReader path
     fake_audio = _make_fake_module("audio",
         get_pa=lambda: fake_pa_instance,
         get_input_device_index=lambda: None,
@@ -77,6 +106,8 @@ def _patch_all_deps(monkeypatch):
         play=lambda *a, **kw: None,
         abort=lambda: None,
         was_aborted=lambda: False,
+        MicReader=MicReader,
+        MicStallError=MicStallError,
     )
     monkeypatch.setitem(sys.modules, "audio", fake_audio)
 
@@ -94,6 +125,10 @@ def _patch_all_deps(monkeypatch):
     fake_cfg = types.SimpleNamespace(
         wake_stall_seconds=0.2,
         wake_heartbeat_frames=1000,
+        mic_read_timeout_s=1.0,
+        mic_stall_max_reinits=0,  # no reinit — stall escalates straight to exit
+        oww_model_path="models/hey_jarvis.onnx",
+        oww_threshold=0.5,
         ai_backend="cloud_only",
         session_file="/tmp/.bender_test_session",
         end_session_file="/tmp/.bender_test_end",
@@ -114,7 +149,12 @@ def _patch_all_deps(monkeypatch):
     return fake_audio, fake_cfg, fake_pa_instance
 
 
-def test_wake_loop_raises_after_stall(monkeypatch):
+def test_wake_loop_exits_after_stall_no_reinit(monkeypatch):
+    """Zero-length reads (wedged USB) → stall → escalation to sys.exit(1).
+
+    max_reinits=0 means the first stall skips reinit and exits so systemd's
+    Restart=on-failure recovers the process.
+    """
     fake_audio, fake_cfg, fake_pa_instance = _patch_all_deps(monkeypatch)
 
     # Remove cached module if already imported in a previous test run
@@ -131,5 +171,32 @@ def test_wake_loop_raises_after_stall(monkeypatch):
 
     monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "fake-key-for-testing")
 
-    with pytest.raises(RuntimeError, match="stalled"):
-        wake_converse.wait_for_wakeword()
+    # Fake oww model — never consulted before the stall fires, but avoids a real
+    # openWakeWord load.
+    fake_model = types.SimpleNamespace(predict=lambda *a, **k: {"hey": 0.0})
+    with pytest.raises(SystemExit):
+        wake_converse.wait_for_wakeword(_oww_model=fake_model)
+
+
+def test_wake_loop_exits_on_wedged_read(monkeypatch):
+    """A blocking read that never returns (DeadStream) trips the MicReader read
+    timeout → MicStallError → stall escalation → sys.exit(1). This is the case
+    the old dead-code stall check could never catch."""
+    fake_audio, fake_cfg, fake_pa_instance = _patch_all_deps(monkeypatch)
+    # Point the fake PA at a stream whose read() never returns.
+    fake_pa_instance.open = lambda **kw: DeadStream()
+    # Short read timeout so the test finishes quickly.
+    fake_cfg.mic_read_timeout_s = 0.3
+
+    sys.modules.pop("wake_converse", None)
+    import wake_converse
+    monkeypatch.setattr(wake_converse, "cfg", fake_cfg, raising=False)
+    monkeypatch.setattr(wake_converse, "audio", fake_audio, raising=False)
+    monkeypatch.setattr(wake_converse, "metrics",
+        types.SimpleNamespace(count=lambda *a, **kw: None, _write=lambda *a, **kw: None),
+        raising=False)
+    monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "fake-key-for-testing")
+
+    fake_model = types.SimpleNamespace(predict=lambda *a, **k: {"hey": 0.0})
+    with pytest.raises(SystemExit):
+        wake_converse.wait_for_wakeword(_oww_model=fake_model)

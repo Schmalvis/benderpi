@@ -14,6 +14,7 @@ API:
 """
 
 import os
+import queue
 import threading
 import wave
 
@@ -220,6 +221,237 @@ def rms(data: bytes, sample_width: int) -> float:
 def rms_to_ratio(value: float) -> float:
     clamped = max(0.0, value - RMS_FLOOR)
     return min(clamped / (RMS_CEILING - RMS_FLOOR), 1.0)
+
+
+# ---------------------------------------------------------------------------
+# MicReader — timeout-guarded blocking-read abstraction
+# ---------------------------------------------------------------------------
+#
+# The failure this guards against: a wedged USB mic (reSpeaker XVF3800 unplugged
+# or hung) makes PortAudio's blocking stream.read() never return. Any consumer
+# that calls read() directly on the main thread then hangs forever — the stall
+# checks and the systemd WATCHDOG=1 heartbeat downstream of it become dead code
+# because they only run *after* read() returns.
+#
+# MicReader moves the blocking read onto a daemon thread that pushes frames onto
+# a bounded queue. Consumers call read(timeout) which does queue.get(timeout=...)
+# and raises MicStallError when no frame arrives in time — so the main thread
+# stays live (can log, feed the watchdog, and escalate) even while the reader
+# thread is wedged inside a C read() that will never return.
+#
+# Zombie-thread policy: a wedged read never returns, so on stop() we signal the
+# thread to stop, best-effort close the stream from a *separate* timeout-guarded
+# thread (closing a blocked stream can itself block), and then abandon the reader
+# thread. It is a daemon, so a leaked wedged thread + its PortAudio stream will
+# not keep the process alive. Repeated stalls leak one thread + one stream each;
+# the escalation policy (reinit-once-then-exit) exists precisely so we never
+# leak more than a bounded number before letting systemd restart the process.
+
+
+class MicStallError(RuntimeError):
+    """Raised when no mic frame arrives within the read timeout — the mic is
+    presumed wedged (e.g. USB unplug/hang). Subclasses RuntimeError so existing
+    ``except RuntimeError`` handlers (and the "stalled" reinit path in
+    wake_converse) continue to catch it."""
+
+
+class MicReader:
+    """Reads a PortAudio input stream on a daemon thread, hands frames to the
+    consumer via a bounded queue with a read timeout.
+
+    Args:
+        stream:      An open PyAudio input stream (or any object with
+                     ``read(nframes, exception_on_overflow=...)`` and
+                     ``stop_stream``/``close`` methods).
+        frames_per_read: Number of frames to request per blocking read.
+        timeout_s:   Default per-read timeout; a read that produces no frame in
+                     this window raises MicStallError.
+        maxsize:     Max queued frames before the reader thread blocks (back
+                     pressure — bounds memory if the consumer stalls).
+    """
+
+    def __init__(self, stream, frames_per_read: int, timeout_s: float,
+                 maxsize: int = 32, name: str = "mic-reader"):
+        self._stream = stream
+        self._frames_per_read = int(frames_per_read)
+        self._timeout_s = float(timeout_s)
+        self._q: "queue.Queue" = queue.Queue(maxsize=maxsize)
+        self._stop = threading.Event()
+        self._read_error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        """Daemon loop: blocking-read frames and push them onto the queue.
+
+        If read() wedges (USB unplug), this call never returns and the thread is
+        abandoned by stop(). We tolerate a full queue by polling _stop so a
+        stopped-but-not-consumed reader can exit instead of blocking on put().
+        """
+        while not self._stop.is_set():
+            try:
+                pcm = self._stream.read(
+                    self._frames_per_read, exception_on_overflow=False
+                )
+            except Exception as exc:  # stream died mid-read (e.g. device gone)
+                self._read_error = exc
+                # Push a sentinel-free signal by unblocking the consumer's get()
+                # via a zero-length frame; the consumer treats empty as no-PCM.
+                try:
+                    self._q.put(b"", timeout=0.5)
+                except queue.Full:
+                    pass
+                return
+            # Deliver the frame, but stay responsive to stop() if the consumer
+            # has stopped draining (bounded queue would otherwise block forever).
+            while not self._stop.is_set():
+                try:
+                    self._q.put(pcm, timeout=0.5)
+                    break
+                except queue.Full:
+                    continue
+
+    def read(self, timeout_s: float | None = None) -> bytes:
+        """Return the next mic frame, or raise MicStallError on timeout.
+
+        A zero-length frame (empty read) is returned as-is so the caller can
+        apply its own zero-PCM stall accounting — MicStallError is reserved for
+        the *no frame at all* case (a wedged blocking read)."""
+        t = self._timeout_s if timeout_s is None else float(timeout_s)
+        try:
+            return self._q.get(timeout=t)
+        except queue.Empty:
+            if self._read_error is not None:
+                raise MicStallError(
+                    f"mic read failed: {self._read_error}"
+                ) from self._read_error
+            raise MicStallError(
+                f"mic stalled: no frame in {t:.1f}s (reader thread wedged?)"
+            )
+
+    def stop(self, close_timeout_s: float = 2.0):
+        """Signal the reader thread to stop and best-effort close the stream.
+
+        Closing a stream whose read() is currently wedged can itself block, so
+        the close is done on a separate short-lived thread guarded by
+        close_timeout_s. If it doesn't return in time we abandon it — the reader
+        thread is a daemon and won't keep the process alive."""
+        self._stop.set()
+
+        def _close():
+            try:
+                self._stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+
+        closer = threading.Thread(target=_close, name="mic-reader-close", daemon=True)
+        closer.start()
+        closer.join(timeout=close_timeout_s)
+        if closer.is_alive():
+            log.warning("MicReader.stop: stream close still blocked after %.1fs "
+                        "— abandoning wedged stream + reader thread", close_timeout_s)
+
+
+def mic_selftest(duration_s: float = 1.0) -> dict:
+    """Read ~duration_s of mic frames at startup and sanity-check the input path.
+
+    Non-blocking to startup: on any failure this returns a result dict with
+    ok=False and WARNs — the mic may still recover (e.g. USB re-enumerates), so
+    we never abort the service here. Emits a `mic_selftest` metric.
+
+    Checks:
+      * read completed (no MicStallError) — mic not wedged
+      * read-rate ≈ real-time (elapsed within 3x of requested duration)
+      * at least one frame had non-zero RMS (mic producing signal, not silence-
+        only or all-zero frames)
+
+    Returns dict: {ok, reason, frames, elapsed_s, max_rms}.
+    """
+    frame_ms = 30
+    rate = 16000
+    frames_per_read = int(rate * frame_ms / 1000)
+    want_frames = max(1, int((duration_s * 1000) / frame_ms))
+    read_timeout_s = float(getattr(cfg, "mic_read_timeout_s", 10.0))
+
+    pa = get_pa()
+    input_device_index = get_input_device_index()
+    device_name = ""
+    try:
+        if input_device_index is not None:
+            device_name = pa.get_device_info_by_index(input_device_index)["name"]
+    except Exception:
+        pass
+    capture_channels = 2 if "xvf_dsnoop" in device_name else 1
+
+    result = {"ok": False, "reason": "unknown", "frames": 0,
+              "elapsed_s": 0.0, "max_rms": 0.0}
+    stream = None
+    reader = None
+    try:
+        stream = pa.open(
+            rate=rate, channels=capture_channels, format=FORMAT,
+            input=True, frames_per_buffer=frames_per_read,
+            input_device_index=input_device_index,
+        )
+        reader = MicReader(stream, frames_per_read, read_timeout_s,
+                           name="mic-selftest-reader")
+        import time as _time
+        t0 = _time.monotonic()
+        max_rms = 0.0
+        read_ok = 0
+        for _ in range(want_frames):
+            data = reader.read(read_timeout_s)
+            if not data:
+                continue
+            read_ok += 1
+            samples = np.frombuffer(data, dtype=np.int16)
+            if capture_channels == 2:
+                samples = samples[::2]
+            if len(samples):
+                max_rms = max(max_rms, float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))))
+        elapsed = _time.monotonic() - t0
+        result.update(frames=read_ok, elapsed_s=round(elapsed, 3),
+                      max_rms=round(max_rms, 1))
+
+        if read_ok == 0:
+            result["reason"] = "no frames read"
+        elif elapsed > 3.0 * duration_s:
+            result["reason"] = f"read-rate too slow ({elapsed:.2f}s for {duration_s:.1f}s of audio)"
+        elif max_rms <= 0.0:
+            result["reason"] = "all-zero frames (mic silent / disconnected?)"
+        else:
+            result["ok"] = True
+            result["reason"] = "ok"
+    except MicStallError as exc:
+        result["reason"] = f"mic stalled: {exc}"
+    except Exception as exc:
+        result["reason"] = f"mic self-test error: {exc}"
+    finally:
+        if reader is not None:
+            reader.stop()
+        elif stream is not None:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+
+    metrics.count("mic_selftest", ok=result["ok"], reason=result["reason"],
+                  frames=result["frames"], max_rms=result["max_rms"])
+    if result["ok"]:
+        log.info("Mic self-test OK: %d frames in %.2fs, max_rms=%.0f (mic: %s)",
+                 result["frames"], result["elapsed_s"], result["max_rms"],
+                 device_name or "default")
+    else:
+        log.warning("Mic self-test FAILED (%s) — continuing anyway, mic may recover "
+                    "(mic: %s, frames=%d, max_rms=%.0f)",
+                    result["reason"], device_name or "default",
+                    result["frames"], result["max_rms"])
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -104,10 +104,11 @@ def _load_oww_model(model_path: str):
     return Model(wakeword_model_paths=[model_path])
 
 
-def wait_for_wakeword(_oww_model=None):
-    oww_model = _oww_model or _load_oww_model(
-        os.path.join(BASE_DIR, cfg.oww_model_path)
-    )
+def _open_wake_stream():
+    """Open the 16kHz mic input stream for wake-word listening.
+
+    Returns (stream, capture_channels, device_name).
+    """
     pa = audio.get_pa()
     input_device_index = audio.get_input_device_index()
     device_name = (
@@ -123,48 +124,103 @@ def wait_for_wakeword(_oww_model=None):
         frames_per_buffer=OWW_FRAME_SIZE,
         input_device_index=input_device_index,
     )
-    log.info("Listening for wake word... (mic: %s, ch=%d, model: %s, threshold: %.2f)",
-             device_name or "default", capture_channels,
-             os.path.basename(cfg.oww_model_path), cfg.oww_threshold)
+    return stream, capture_channels, device_name
+
+
+def _feed_watchdog():
+    """Send systemd WATCHDOG=1 (no-op if systemd unavailable)."""
+    try:
+        from systemd import daemon as _sd_daemon
+        _sd_daemon.notify("WATCHDOG=1")
+    except Exception:
+        pass
+
+
+def wait_for_wakeword(_oww_model=None):
+    oww_model = _oww_model or _load_oww_model(
+        os.path.join(BASE_DIR, cfg.oww_model_path)
+    )
 
     stall_s = float(cfg.wake_stall_seconds)
     hb_every = int(cfg.wake_heartbeat_frames)
-    last_read_ts = time.monotonic()
-    frames_since_hb = 0
+    read_timeout_s = float(getattr(cfg, "mic_read_timeout_s", 10.0))
+    max_reinits = int(getattr(cfg, "mic_stall_max_reinits", 1))
 
-    try:
-        while True:
-            pcm = stream.read(OWW_FRAME_SIZE, exception_on_overflow=False)
-            now = time.monotonic()
-            if not pcm or len(pcm) == 0:
-                if now - last_read_ts > stall_s:
-                    log.error("Wake loop stalled: %.1fs since last PCM frame", now - last_read_ts)
-                    raise RuntimeError("wake loop stalled")
-                continue
-            last_read_ts = now
-            frames_since_hb += 1
-            if frames_since_hb >= hb_every:
-                metrics.count("wake_loop_heartbeat")
-                try:
-                    from systemd import daemon as _sd_daemon
-                    _sd_daemon.notify("WATCHDOG=1")
-                except Exception:
-                    pass
-                frames_since_hb = 0
+    reinit_count = 0
+    while True:
+        stream, capture_channels, device_name = _open_wake_stream()
+        reader = audio.MicReader(
+            stream, OWW_FRAME_SIZE, read_timeout_s, name="wake-mic-reader"
+        )
+        log.info("Listening for wake word... (mic: %s, ch=%d, model: %s, threshold: %.2f)",
+                 device_name or "default", capture_channels,
+                 os.path.basename(cfg.oww_model_path), cfg.oww_threshold)
 
-            pcm_np = np.frombuffer(pcm, dtype=np.int16)
-            if capture_channels == 2:
-                pcm_np = pcm_np[::2]  # left channel only (stereo downmix)
-            prediction = oww_model.predict(pcm_np)
-            if prediction and max(prediction.values()) >= cfg.oww_threshold:
-                log.info("Wake word detected (score: %.3f)", max(prediction.values()))
-                return
-    finally:
+        last_read_ts = time.monotonic()
+        frames_since_hb = 0
         try:
-            stream.stop_stream()
-            stream.close()
-        except Exception:
-            pass
+            while True:
+                try:
+                    pcm = reader.read(read_timeout_s)
+                except audio.MicStallError as exc:
+                    # No frame at all within the timeout — the blocking read is
+                    # wedged. Feed the watchdog so systemd doesn't kill us mid
+                    # diagnosis, then escalate (reinit once, then exit).
+                    _feed_watchdog()
+                    log.error("Wake loop stalled (no mic frame in %.1fs): %s",
+                              read_timeout_s, exc)
+                    raise RuntimeError("wake loop stalled") from exc
+
+                now = time.monotonic()
+                if not pcm or len(pcm) == 0:
+                    # Zero-length reads still arrive as frames; apply the classic
+                    # no-PCM stall accounting. Keep feeding the watchdog + emit
+                    # heartbeats so we stay alive while diagnostics accrue.
+                    if now - last_read_ts > stall_s:
+                        log.error("Wake loop stalled: %.1fs of zero-length PCM frames",
+                                  now - last_read_ts)
+                        raise RuntimeError("wake loop stalled")
+                    frames_since_hb += 1
+                    if frames_since_hb >= hb_every:
+                        metrics.count("wake_loop_heartbeat")
+                        _feed_watchdog()
+                        frames_since_hb = 0
+                    continue
+                last_read_ts = now
+                frames_since_hb += 1
+                if frames_since_hb >= hb_every:
+                    metrics.count("wake_loop_heartbeat")
+                    _feed_watchdog()
+                    frames_since_hb = 0
+
+                pcm_np = np.frombuffer(pcm, dtype=np.int16)
+                if capture_channels == 2:
+                    pcm_np = pcm_np[::2]  # left channel only (stereo downmix)
+                prediction = oww_model.predict(pcm_np)
+                if prediction and max(prediction.values()) >= cfg.oww_threshold:
+                    log.info("Wake word detected (score: %.3f)", max(prediction.values()))
+                    return  # reader stopped in finally
+        except RuntimeError as exc:
+            if "stalled" not in str(exc):
+                raise
+            # Escalation: honest failure beats fake self-healing. The 2026 USB
+            # wedge needed a physical reseat — an infinite reinit loop against a
+            # dead device just spins. Reinit once in-process; if it stalls again,
+            # exit loudly and let systemd's Restart=on-failure take over.
+            metrics.count("wake_loop_stall_reinit", reinit_count=reinit_count)
+            if reinit_count >= max_reinits:
+                log.error("Wake mic stalled again after %d reinit(s) — exiting for "
+                          "systemd restart (device likely needs physical reseat)",
+                          reinit_count)
+                metrics.count("wake_loop_stall_exit")
+                sys.exit(1)
+            reinit_count += 1
+            log.warning("Reinitialising wake mic (attempt %d/%d) after stall",
+                        reinit_count, max_reinits)
+            time.sleep(1.0)
+            # loop back to re-open the stream
+        finally:
+            reader.stop()
 
 
 
@@ -195,6 +251,12 @@ def main():
     # Clean up stale IPC files from previous crashes
     _cleanup_abort_files()
     _remove_session_file()
+    # Startup mic self-test — WARNs loudly if the mic path looks wedged/silent,
+    # but never blocks startup (the mic may re-enumerate and recover).
+    try:
+        audio.mic_selftest()
+    except Exception as exc:
+        log.warning("Mic self-test raised unexpectedly: %s — continuing", exc)
     log.info("Listening for 'Hey Bender'...")
     try:
         from systemd import daemon as _sd_daemon

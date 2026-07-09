@@ -183,6 +183,36 @@ def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
                 data={"failures": len(briefing_failures)},
             ))
 
+    # Mic stall reinits — the wake loop reinitialised the mic after a stall.
+    # A few can happen on legitimate ALSA rate switches; a burst means the USB
+    # mic is flapping or wedging repeatedly.
+    stall_reinits = [e for e in events if e.get("type") == "count"
+                     and e.get("name") == "wake_loop_stall_reinit"]
+    if stall_reinits:
+        threshold = cfg.get("mic_stall_reinit_threshold", 3)
+        if len(stall_reinits) >= threshold:
+            alerts.append(Alert(
+                severity="warning", check="mic_stall_reinit",
+                message=f"Mic stall reinit {len(stall_reinits)}x in the last {lookback}h "
+                        f"(threshold {threshold}) — USB mic may be flapping/wedging",
+                data={"reinits": len(stall_reinits), "threshold": threshold},
+            ))
+
+    # Mic stall exits — the process exited for a systemd restart after a mic
+    # stall it couldn't recover in-process. This usually means the mic needed a
+    # physical reseat.
+    stall_exits = [e for e in events if e.get("type") == "count"
+                   and e.get("name") == "wake_loop_stall_exit"]
+    if stall_exits:
+        threshold = cfg.get("mic_stall_exit_threshold", 1)
+        if len(stall_exits) >= threshold:
+            alerts.append(Alert(
+                severity="error", check="mic_stall_exit",
+                message=f"Mic stall exit {len(stall_exits)}x in the last {lookback}h "
+                        f"— service restarted by systemd; mic likely needs a physical reseat",
+                data={"exits": len(stall_exits), "threshold": threshold},
+            ))
+
     alerts.extend(check_session_liveness(cfg))
 
     return alerts

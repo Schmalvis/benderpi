@@ -198,25 +198,31 @@ def _filter_hallucination(text: str, source: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def _record_utterance() -> bytes:
-    """Record from mic until ~1.5s silence or hard cap. Returns raw PCM bytes."""
+    """Record from mic until ~1.5s silence or hard cap. Returns raw PCM bytes.
+
+    All blocking reads go through audio_mod.MicReader so a wedged USB mic (read
+    never returns) raises MicStallError instead of hanging this thread forever.
+    MicStallError subclasses RuntimeError, so it propagates to the wake/session
+    loop's stall handling rather than silently stalling a live conversation.
+    """
     import pyaudio
 
     vad = webrtcvad.Vad(cfg.vad_aggressiveness)
     pa  = audio_mod.get_pa()  # shared instance — DO NOT terminate
+    frame_frames = int(SAMPLE_RATE * FRAME_MS / 1000)
+    read_timeout_s = float(getattr(cfg, "mic_read_timeout_s", 10.0))
 
     stream = pa.open(
         format=pyaudio.paInt16,
         channels=CHANNELS,
         rate=SAMPLE_RATE,
         input=True,
-        frames_per_buffer=int(SAMPLE_RATE * FRAME_MS / 1000),
+        frames_per_buffer=frame_frames,
         input_device_index=audio_mod.get_input_device_index(),
     )
-
-    # Flush mic buffer — discard post-playback reverb before VAD starts
-    _flush_frames = max(1, round(cfg.post_play_flush_ms / FRAME_MS))
-    for _ in range(_flush_frames):
-        stream.read(int(SAMPLE_RATE * FRAME_MS / 1000), exception_on_overflow=False)
+    reader = audio_mod.MicReader(
+        stream, frame_frames, read_timeout_s, name="stt-mic-reader"
+    )
 
     frames       = []
     started      = False
@@ -224,11 +230,20 @@ def _record_utterance() -> bytes:
     silent_count = 0
 
     try:
+        # Flush mic buffer — discard post-playback reverb before VAD starts
+        _flush_frames = max(1, round(cfg.post_play_flush_ms / FRAME_MS))
+        for _ in range(_flush_frames):
+            reader.read(read_timeout_s)
+
         while True:
             if time.time() - start_time > cfg.max_record_seconds:
                 break
-            data     = stream.read(int(SAMPLE_RATE * FRAME_MS / 1000),
-                                   exception_on_overflow=False)
+            data = reader.read(read_timeout_s)
+            if not data:
+                # Zero-length frame — no PCM to feed VAD. MicReader raises
+                # MicStallError for a truly wedged read; an empty-but-returning
+                # read just yields nothing this cycle, so skip it.
+                continue
             frames.append(data)
             is_speech = vad.is_speech(data, SAMPLE_RATE)
             if is_speech:
@@ -239,8 +254,7 @@ def _record_utterance() -> bytes:
                 if silent_count >= cfg.silence_frames:
                     break
     finally:
-        stream.stop_stream()
-        stream.close()
+        reader.stop()
 
     return b"".join(frames)
 
