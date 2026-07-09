@@ -1,6 +1,6 @@
 <script>
   import { session } from '../lib/stores/session.js';
-  import { getServiceStatus } from '../lib/api.js';
+  import { login } from '../lib/api.js';
 
   let pin = '';
   let error = '';
@@ -11,14 +11,15 @@
     loading = true;
     error = '';
 
-    sessionStorage.setItem('benderpi_pin', pin);
-    session.restore(pin);
-
     try {
-      await getServiceStatus();
-      session.login(pin);
+      const token = await login(pin);
+      session.login(token);
     } catch (e) {
-      error = 'INVALID PIN. TRY AGAIN, MEATBAG.';
+      // 429 → surface the server's lockout countdown; anything else → the
+      // classic wrong-PIN taunt.
+      error = e.status === 429
+        ? (e.message || 'LOCKED OUT. COOL YOUR CIRCUITS, MEATBAG.').toUpperCase()
+        : 'INVALID PIN. TRY AGAIN, MEATBAG.';
       session.logout();
     } finally {
       loading = false;

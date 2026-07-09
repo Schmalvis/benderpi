@@ -102,7 +102,7 @@ Stored in `.env` (created by `setup.sh` from `.env.example`):
 | `HA_URL` | Yes | HA base URL (e.g. `http://homeassistant.local:8123`) |
 | `HA_WEATHER_ENTITY` | Optional | HA weather entity (default: `weather.forecast_home`) |
 | `BENDER_AI_MODEL` | Optional | Claude model ID (default: `claude-haiku-4-5-20251001`) |
-| `BENDER_WEB_PIN` | Yes | Web UI access PIN |
+| `BENDER_WEB_PIN` | Yes | Web UI access PIN — **mandatory**: `bender-web` fails closed and refuses to start if unset, empty, or left as a placeholder (`CHANGE_ME`/`2904`) |
 | `BENDER_WEB_PORT` | Optional | Web UI port (default: `8080`) |
 
 ---
@@ -135,7 +135,7 @@ benderpi/
 │   │   └── weather.py            — HA weather fetch → Bender response text
 │   └── web/
 │       ├── app.py                — FastAPI web UI
-│       ├── auth.py               — PIN authentication
+│       ├── auth.py               — PIN login → signed token auth
 │       └── static/               — web UI frontend
 │
 ├── systemd/

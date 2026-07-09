@@ -15,7 +15,8 @@ def get_client():
     return TestClient(app)
 
 def auth():
-    return {"X-Bender-Pin": PIN}
+    from web.auth import issue_token
+    return {"X-Bender-Token": issue_token()}
 
 def test_session_status_inactive():
     path = os.path.join(_BASE_DIR, ".session_active.json")

@@ -1,8 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { get } from 'svelte/store';
-  import { getClips, speak, getCameraStatus, cameraStreamUrl, analyseVision } from '../lib/api.js';
-  import { session } from '../lib/stores/session.js';
+  import { getClips, speak, getCameraStatus, cameraStreamUrl, getStreamToken, analyseVision } from '../lib/api.js';
   import { toast } from '../lib/stores/toast.js';
   import ClipButton from '../lib/components/ClipButton.svelte';
 
@@ -119,10 +117,16 @@
     nextPlayTime = startAt + audioBuffer.duration;
   }
 
-  function startMic() {
-    const { pin } = get(session);
+  async function startMic() {
+    let streamToken;
+    try {
+      ({ token: streamToken } = await getStreamToken());
+    } catch {
+      toast.push('Mic stream error', 'error');
+      return;
+    }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws/puppet/mic?pin=${encodeURIComponent(pin)}`);
+    const ws = new WebSocket(`${proto}://${location.host}/ws/puppet/mic?token=${encodeURIComponent(streamToken)}`);
     ws.binaryType = 'arraybuffer';
 
     audioCtx = new AudioContext({ sampleRate: 16000 });
@@ -171,10 +175,16 @@
 
   // ── Camera streaming ────────────────────────────────────────────
 
-  function startCamera() {
-    const { pin } = get(session);
+  async function startCamera() {
+    let streamToken;
+    try {
+      ({ token: streamToken } = await getStreamToken());
+    } catch {
+      handleCameraError();
+      return;
+    }
     cameraError = false;
-    cameraSrc = cameraStreamUrl(pin);
+    cameraSrc = cameraStreamUrl(streamToken);
     cameraActive = true;
     toast.push('Seeing room…', 'success');
   }

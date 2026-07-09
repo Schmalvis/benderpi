@@ -18,6 +18,11 @@ def get_client():
     return TestClient(app)
 
 
+def _auth():
+    from web.auth import issue_token
+    return {"X-Bender-Token": issue_token()}
+
+
 def _mock_generate_dict():
     return {
         "health": {"errors_7d": 0, "alert_count": 0},
@@ -47,7 +52,7 @@ def _mock_generate_dict():
 def test_status_returns_structured_data():
     client = get_client()
     with patch("generate_status.generate_dict", _mock_generate_dict):
-        resp = client.get("/api/status", headers={"X-Bender-Pin": PIN})
+        resp = client.get("/api/status", headers=_auth())
     assert resp.status_code == 200
     data = resp.json()
     assert "health" in data
@@ -66,7 +71,7 @@ def test_status_refresh_returns_structured_data():
     client = get_client()
     with patch("generate_status.generate_dict", _mock_generate_dict), \
          patch("generate_status.generate", return_value=None):
-        resp = client.post("/api/status/refresh", headers={"X-Bender-Pin": PIN})
+        resp = client.post("/api/status/refresh", headers=_auth())
     assert resp.status_code == 200
     data = resp.json()
     assert "health" in data

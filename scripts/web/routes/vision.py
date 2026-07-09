@@ -6,7 +6,7 @@ import sys
 import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends
-from web.auth import require_pin
+from web.auth import require_token
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -19,7 +19,7 @@ import vision as _vision
 _IS_LINUX = os.name != "nt"
 log = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_pin)])
+router = APIRouter(dependencies=[Depends(require_token)])
 
 
 @router.post("/api/vision/analyse")

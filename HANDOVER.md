@@ -1,5 +1,35 @@
 # BenderPi Handover Context
-Last updated: 2026-05-14
+Last updated: 2026-07-09
+
+---
+
+## ⚠️ Web UI auth hardening (2026-07-09) — DEPLOY ORDER MATTERS
+
+The web UI now uses a token scheme (PIN → signed ~12h token) and **fails closed**:
+`bender-web` refuses to start if `BENDER_WEB_PIN` is unset, empty, or a placeholder
+(`CHANGE_ME`/`2904`). The 5-minute auto-pull will restart the service, so:
+
+**Before this branch merges to main, set a real PIN on BenderPi:**
+```bash
+grep -q '^BENDER_WEB_PIN=' /home/pi/bender/.env && \
+  sed -i 's/^BENDER_WEB_PIN=.*/BENDER_WEB_PIN=<real-pin>/' /home/pi/bender/.env || \
+  echo 'BENDER_WEB_PIN=<real-pin>' >> /home/pi/bender/.env
+```
+If the PIN is still a placeholder when the deploy lands, `bender-web` will crash-loop.
+After deploy: `sudo systemctl status bender-web` and log in from a browser (a restart
+invalidates the browser token — that's expected; just re-enter the PIN).
+
+Also verify on real hardware (couldn't be tested off-device):
+- Camera MJPEG stream + mic websocket auth via short-lived stream tokens (token
+  validated only at connection open, so it must **not** kill a live stream when it
+  expires mid-stream).
+- Puppet speak + camera + mic together (WM8960 single-rate constraint).
+- CSP: load the UI, confirm no console errors (build uses inline `style=` attrs →
+  `style-src 'unsafe-inline'`; no inline scripts).
+
+**Admin-tier decision (deferred):** a second PIN for the sudoers-backed systemctl
+actions was considered and **deferred** — on a single-user LAN it adds friction with
+no real threat-model win. Revisit only if the UI is ever exposed off-LAN.
 
 ---
 
@@ -30,6 +60,7 @@ sudo systemctl restart bender-converse
 ```bash
 nano /home/pi/bender/.env
 # Add: BENDER_WEB_PIN=<your-pin>  BENDER_WEB_PORT=8080
+# BENDER_WEB_PIN is MANDATORY — bender-web fails closed on a missing/placeholder PIN.
 ```
 
 ### Install web UI service

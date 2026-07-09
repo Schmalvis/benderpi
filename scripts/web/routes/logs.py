@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from web.auth import require_pin
+from web.auth import require_token
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -17,7 +17,7 @@ _LOG_DIR = os.path.join(_BASE_DIR, "logs")
 _BENDER_LOG = os.path.join(_LOG_DIR, "bender.log")
 _METRICS_LOG = os.path.join(_LOG_DIR, "metrics.jsonl")
 
-router = APIRouter(dependencies=[Depends(require_pin)])
+router = APIRouter(dependencies=[Depends(require_token)])
 
 
 @router.get("/api/logs/conversations")

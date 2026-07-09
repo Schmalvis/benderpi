@@ -20,7 +20,8 @@ def get_client():
 
 
 def headers():
-    return {"X-Bender-Pin": PIN}
+    from web.auth import issue_token
+    return {"X-Bender-Token": issue_token()}
 
 
 # ── Config endpoints ──────────────────────────────

@@ -18,7 +18,8 @@ def get_client():
 
 
 def auth():
-    return {"X-Bender-Pin": PIN}
+    from web.auth import issue_token
+    return {"X-Bender-Token": issue_token()}
 
 
 def test_list_timers_empty(monkeypatch, tmp_path):

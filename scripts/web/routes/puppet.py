@@ -7,7 +7,7 @@ import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from web.auth import require_pin, verify_pin
+from web.auth import require_stream_token_ws, require_token, verify_stream_token
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -200,12 +200,12 @@ def _check_camera() -> bool:
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.get("/api/puppet/clips", dependencies=[Depends(require_pin)])
+@router.get("/api/puppet/clips", dependencies=[Depends(require_token)])
 async def puppet_clips():
     return {"clips": _get_clips()}
 
 
-@router.post("/api/puppet/speak", dependencies=[Depends(require_pin)])
+@router.post("/api/puppet/speak", dependencies=[Depends(require_token)])
 async def puppet_speak(body: dict = Body(...)):
     text = body.get("text", "").strip()
     if not text:
@@ -224,7 +224,7 @@ async def puppet_speak(body: dict = Body(...)):
     return {"status": "ok", "text": text}
 
 
-@router.post("/api/puppet/clip", dependencies=[Depends(require_pin)])
+@router.post("/api/puppet/clip", dependencies=[Depends(require_token)])
 async def puppet_clip(body: dict = Body(...)):
     path = body.get("path", "").strip()
     if not path:
@@ -240,7 +240,7 @@ async def puppet_clip(body: dict = Body(...)):
     return {"status": "ok", "path": path}
 
 
-@router.post("/api/puppet/favourite", dependencies=[Depends(require_pin)])
+@router.post("/api/puppet/favourite", dependencies=[Depends(require_token)])
 async def puppet_favourite(body: dict = Body(...)):
     path = body.get("path", "").strip()
     favourite = body.get("favourite", True)
@@ -255,17 +255,19 @@ async def puppet_favourite(body: dict = Body(...)):
     return {"status": "ok", "path": path, "favourite": favourite}
 
 
-@router.get("/api/puppet/camera/status", dependencies=[Depends(require_pin)])
+@router.get("/api/puppet/camera/status", dependencies=[Depends(require_token)])
 async def puppet_camera_status():
     available = await asyncio.to_thread(_check_camera)
     return {"available": available}
 
 
 @router.get("/api/puppet/camera/stream")
-async def puppet_camera_stream(pin: str = ""):
-    """MJPEG stream. PIN passed as query param (browser img src limitation)."""
-    if not verify_pin(pin):
-        raise HTTPException(status_code=401, detail="Invalid PIN")
+async def puppet_camera_stream(token: str = ""):
+    """MJPEG stream. A short-lived stream token is passed as a query param
+    (browser <img src> can't set headers). Validated only here, at connection
+    open — a token expiring mid-stream must never kill a live camera feed."""
+    if not verify_stream_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired stream token")
     available = await asyncio.to_thread(_check_camera)
     if not available:
         raise HTTPException(status_code=503, detail="Camera not available")
@@ -291,10 +293,11 @@ async def puppet_camera_stream(pin: str = ""):
 
 @router.websocket("/ws/puppet/mic")
 async def puppet_mic_ws(websocket: WebSocket):
-    """Stream ambient mic audio to operator (PCM 16 kHz mono S16_LE)."""
-    pin = websocket.query_params.get("pin", "")
-    if not verify_pin(pin):
-        await websocket.close(code=4001)
+    """Stream ambient mic audio to operator (PCM 16 kHz mono S16_LE).
+
+    Auth is a short-lived stream token in the ``token`` query param, validated
+    once at connection open (never per-frame)."""
+    if not await require_stream_token_ws(websocket):
         return
 
     await websocket.accept()

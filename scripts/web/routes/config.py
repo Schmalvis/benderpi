@@ -7,7 +7,7 @@ import sys
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import ValidationError
-from web.auth import require_pin
+from web.auth import require_token
 from web.routes.config_schema import (
     BenderConfigUpdate,
     WatchdogConfigUpdate,
@@ -25,7 +25,7 @@ import leds
 _CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
 _WATCHDOG_CONFIG_PATH = os.path.join(_BASE_DIR, "watchdog_config.json")
 
-router = APIRouter(dependencies=[Depends(require_pin)])
+router = APIRouter(dependencies=[Depends(require_token)])
 
 
 def _load_json_file(path: str) -> dict:

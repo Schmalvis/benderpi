@@ -2,9 +2,9 @@ import { get } from 'svelte/store';
 import { session } from './stores/session.js';
 
 async function request(path, options = {}) {
-  const { pin } = get(session);
+  const { token } = get(session);
   const headers = { ...options.headers };
-  if (pin) headers['X-Bender-Pin'] = pin;
+  if (token) headers['X-Bender-Token'] = token;
   if (options.body && typeof options.body === 'string') {
     headers['Content-Type'] = 'application/json';
   }
@@ -42,6 +42,32 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+// Auth
+// login() is intentionally NOT routed through request(): a 401 here means
+// "wrong PIN", not "session expired", and we want the server's detail (incl.
+// 429 lockout messages) surfaced verbatim to the login form.
+export async function login(pin) {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === 'string') msg = body.detail;
+    } catch { /* keep status line */ }
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+  const body = await res.json();
+  return body.token;
+}
+
+export const getStreamToken = () => request('/api/auth/stream-token');
+
 // Health
 export const getHealth = () => request('/api/health');
 export const getSessionStatus = () => request('/api/actions/session-status');
@@ -69,7 +95,8 @@ export const playClip = (path) => request('/api/puppet/clip', { method: 'POST', 
 export const getClips = () => request('/api/puppet/clips');
 export const setFavourite = (path, favourite) => request('/api/puppet/favourite', { method: 'POST', body: JSON.stringify({ path, favourite }) });
 export const getCameraStatus = () => request('/api/puppet/camera/status');
-export const cameraStreamUrl = (pin) => `/api/puppet/camera/stream?pin=${encodeURIComponent(pin)}`;
+// Callers fetch a short-lived stream token first, then embed it in the URL.
+export const cameraStreamUrl = (streamToken) => `/api/puppet/camera/stream?token=${encodeURIComponent(streamToken)}`;
 
 // Status
 export const getStatus = () => request('/api/status');

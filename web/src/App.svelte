@@ -17,12 +17,12 @@
 
   onMount(async () => {
     theme.init();
-    const { pin } = $session;
-    if (pin) {
+    const { token } = $session;
+    if (token) {
       try {
-        session.restore(pin);
+        session.restore(token);
         await getServiceStatus();
-        session.login(pin);
+        session.login(token);
       } catch {
         session.logout();
       }

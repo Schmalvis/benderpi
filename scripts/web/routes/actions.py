@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from web.auth import require_pin
+from web.auth import require_token
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -18,7 +18,7 @@ _IS_LINUX = os.name != "nt"
 _VENV_PYTHON = os.path.join(_BASE_DIR, "venv", "bin", "python")
 _PREBUILD_SCRIPT = os.path.join(_SCRIPTS_DIR, "prebuild_responses.py")
 
-router = APIRouter(dependencies=[Depends(require_pin)])
+router = APIRouter(dependencies=[Depends(require_token)])
 
 
 @router.get("/api/actions/session-status")

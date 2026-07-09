@@ -3,13 +3,13 @@ import os
 import sys
 
 from fastapi import APIRouter, Depends
-from web.auth import require_pin
+from web.auth import require_token
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
 sys.path.insert(0, _SCRIPTS_DIR)
 
-router = APIRouter(dependencies=[Depends(require_pin)])
+router = APIRouter(dependencies=[Depends(require_token)])
 
 
 @router.get("/api/status")

@@ -418,7 +418,7 @@ hand-edited bad `bender_config.json` skips the offending key instead of crashing
 - `web/src/pages/` — page components (Dashboard, Puppet, Config, Logs, Remote)
 - `web/src/lib/components/` — shared components (Sidebar, VolumeSlider, etc.)
 - `scripts/web/app.py` — FastAPI application (serves `web/dist/`)
-- `scripts/web/auth.py` — PIN authentication middleware
+- `scripts/web/auth.py` — auth: `POST /api/auth/login` verifies the PIN (`hmac.compare_digest`) and issues an HMAC-signed ~12h token (sent as `X-Bender-Token`); mints ~60s stream tokens for the camera `<img>` stream + mic websocket; in-memory login rate-limit (429 on backoff); fails closed if `BENDER_WEB_PIN` is unset/placeholder
 - `scripts/web/routes/config_schema.py` — pydantic validation for config PUTs
 - `systemd/bender-web.service` — systemd service file
 

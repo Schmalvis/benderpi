@@ -20,7 +20,8 @@ def get_client(extra_modules=None):
 
 
 def auth():
-    return {"X-Bender-Pin": PIN}
+    from web.auth import issue_token
+    return {"X-Bender-Token": issue_token()}
 
 
 def _base_mocks():
