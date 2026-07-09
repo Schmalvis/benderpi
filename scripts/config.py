@@ -43,10 +43,29 @@ class Config:
     post_play_flush_ms: int = 200  # ms of mic buffer to discard after playback (reverb flush)
 
     # STT
-    whisper_model: str = "tiny.en"
-    vad_aggressiveness: int = 3  # 0–3 scale; 3 = most aggressive non-speech filtering → faster silence detection
-    silence_frames: int = 15  # 15×30ms = 450ms — was 50 (1.5s); tune via BENDER_VAD_SILENCE_FRAMES
+    whisper_model: str = "base.en"
+    # 0–3 scale; higher = more aggressive non-speech filtering. Deployed
+    # bender_config.json overrides this to 1 (gentler) — the XVF3800 array's
+    # noise floor made 3 clip the starts of quiet utterances. Default reconciled
+    # to the deployed value so a fresh checkout behaves the same.
+    vad_aggressiveness: int = 1
+    # Trailing silence before an utterance ends = silence_frames × 30ms frames.
+    # 25 × 30ms = 750ms. Deployed bender_config.json also sets 25; default
+    # reconciled so a fresh checkout matches deployment. Tune via
+    # BENDER_VAD_SILENCE_FRAMES.
+    silence_frames: int = 25
     max_record_seconds: int = 15
+
+    # STT confidence gating (faster-whisper CPU path only — Hailo returns no
+    # confidence signals, so the phrase blocklist remains its only defence).
+    # A segment is dropped when it is BOTH probably-silence (no_speech_prob >
+    # max) AND low-confidence (avg_logprob < min); or when compression_ratio
+    # exceeds max (repetitive garbage). Canonical Whisper-lore values, kept
+    # permissive — over-gating rejects quiet real speech. Tune from the
+    # stt_confidence_reject metric in logs/metrics.jsonl.
+    stt_no_speech_prob_max: float = 0.6
+    stt_avg_logprob_min: float = -1.0
+    stt_compression_ratio_max: float = 2.4
     hailo_stt_enabled: bool = True
     vlm_enabled: bool = True  # set False to skip Hailo VLM scene capture  # set False to use faster-whisper CPU only
 

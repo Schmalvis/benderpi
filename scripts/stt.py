@@ -124,7 +124,31 @@ def _active_model_name() -> str:
 # ---------------------------------------------------------------------------
 
 def _transcribe_cpu(model, audio_array: np.ndarray) -> str:
-    """Transcribe a float32 array with a faster-whisper CPU model."""
+    """Transcribe a float32 array with a faster-whisper CPU model.
+
+    Uses faster-whisper's per-segment confidence signals to gate out
+    hallucinated segments *before* they reach the phrase blocklist. This is the
+    primary hallucination defence on the CPU path; the blocklist in
+    ``_filter_hallucination`` stays as a backstop (and is the ONLY defence on
+    the Hailo path, which returns text with no confidence signals).
+
+    Gating (all thresholds config-overridable, permissive by default):
+      * drop a segment only when it is BOTH probably-silence
+        (``no_speech_prob > stt_no_speech_prob_max``) AND low-confidence
+        (``avg_logprob < stt_avg_logprob_min``) — either alone keeps the segment
+      * drop a segment whose ``compression_ratio > stt_compression_ratio_max``
+        (repetitive garbage, e.g. "you you you you")
+
+    Every rejection emits a ``stt_confidence_reject`` metric with the raw values
+    so thresholds can be reviewed/tuned from logs/metrics.jsonl rather than by
+    guesswork. Thresholds default to Whisper-lore canonical values and are
+    deliberately permissive — over-gating drops quiet real speech, which feels
+    worse than the occasional "thanks for watching".
+    """
+    no_speech_max = float(getattr(cfg, "stt_no_speech_prob_max", 0.6))
+    logprob_min   = float(getattr(cfg, "stt_avg_logprob_min", -1.0))
+    compress_max  = float(getattr(cfg, "stt_compression_ratio_max", 2.4))
+
     segments, _ = model.transcribe(
         audio_array,
         language="en",
@@ -133,7 +157,40 @@ def _transcribe_cpu(model, audio_array: np.ndarray) -> str:
         condition_on_previous_text=False,
         vad_filter=True,
     )
-    return " ".join(s.text for s in segments).strip()
+
+    kept: list[str] = []
+    for s in segments:
+        text = (s.text or "").strip()
+        if not text:
+            continue
+        no_speech = float(getattr(s, "no_speech_prob", 0.0) or 0.0)
+        avg_logprob = float(getattr(s, "avg_logprob", 0.0) or 0.0)
+        compression = float(getattr(s, "compression_ratio", 0.0) or 0.0)
+
+        reason = ""
+        if no_speech > no_speech_max and avg_logprob < logprob_min:
+            reason = "low_confidence"
+        elif compression > compress_max:
+            reason = "repetition"
+
+        if reason:
+            log.warning(
+                "STT segment rejected (%s): %r [no_speech=%.2f logprob=%.2f "
+                "compression=%.2f]",
+                reason, text[:60], no_speech, avg_logprob, compression,
+            )
+            metrics.count(
+                "stt_confidence_reject",
+                reason=reason,
+                no_speech_prob=round(no_speech, 3),
+                avg_logprob=round(avg_logprob, 3),
+                compression_ratio=round(compression, 3),
+                text=text[:80],
+            )
+            continue
+        kept.append(text)
+
+    return " ".join(kept).strip()
 
 
 def _transcribe_array(audio_array: np.ndarray) -> str:
@@ -197,8 +254,20 @@ def _filter_hallucination(text: str, source: str = "") -> str:
 # Recording with VAD
 # ---------------------------------------------------------------------------
 
-def _record_utterance() -> bytes:
-    """Record from mic until ~1.5s silence or hard cap. Returns raw PCM bytes.
+def _record_utterance() -> tuple[bytes, str]:
+    """Record from mic until trailing silence or the hard record cap.
+
+    Returns ``(pcm_bytes, termination_reason)`` where ``termination_reason`` is
+    one of:
+      * ``"silence"``  — VAD detected ``cfg.silence_frames`` trailing silent
+        frames after speech started (the normal, clean end of an utterance)
+      * ``"max_cap"``  — hit ``cfg.max_record_seconds`` before trailing silence,
+        i.e. the recording was likely cut short mid-sentence
+      * ``"no_speech"``— the cap was hit but VAD never detected speech at all
+        (silence-only capture)
+
+    Trailing silence is ``cfg.silence_frames`` × ``FRAME_MS`` (deployed default
+    25 × 30ms = 750ms; code default 15 × 30ms = 450ms).
 
     All blocking reads go through audio_mod.MicReader so a wedged USB mic (read
     never returns) raises MicStallError instead of hanging this thread forever.
@@ -228,6 +297,7 @@ def _record_utterance() -> bytes:
     started      = False
     start_time   = time.time()
     silent_count = 0
+    reason       = "max_cap"  # overwritten to "silence" on a clean VAD end
 
     try:
         # Flush mic buffer — discard post-playback reverb before VAD starts
@@ -237,6 +307,9 @@ def _record_utterance() -> bytes:
 
         while True:
             if time.time() - start_time > cfg.max_record_seconds:
+                # Cap reached. If speech was detected we cut it short mid-sentence;
+                # if not, it was a silence-only capture (no_speech).
+                reason = "max_cap" if started else "no_speech"
                 break
             data = reader.read(read_timeout_s)
             if not data:
@@ -252,11 +325,12 @@ def _record_utterance() -> bytes:
             elif started:
                 silent_count += 1
                 if silent_count >= cfg.silence_frames:
+                    reason = "silence"
                     break
     finally:
         reader.stop()
 
-    return b"".join(frames)
+    return b"".join(frames), reason
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +394,17 @@ def listen_and_transcribe() -> str:
     _load_model()
 
     with metrics.timer("stt_record"):
-        pcm = _record_utterance()
+        pcm, term_reason = _record_utterance()
+
+    # Directional signal for silence-timing tuning: "max_cap" means the utterance
+    # was likely cut short mid-sentence (silence_frames/max_record_seconds too
+    # tight). No ground truth — treat the counts as directional, not exact.
+    metrics.count(
+        "stt_cut_short",
+        reason=term_reason,
+        backend=_backend or "unknown",
+        pcm_bytes=len(pcm),
+    )
 
     if len(pcm) < FRAME_BYTES * 3:
         metrics.count("stt_empty", pcm_bytes=len(pcm))
@@ -331,7 +415,7 @@ def listen_and_transcribe() -> str:
     with metrics.timer("stt_transcribe", model=_active_model_name()):
         text = _transcribe_array(audio_array)
 
-    return _filter_hallucination(text)
+    return _filter_hallucination(text, source=_backend or "")
 
 
 def transcribe_file(wav_path: str, prefer_cpu: bool = False) -> str:
@@ -363,7 +447,9 @@ def transcribe_file(wav_path: str, prefer_cpu: bool = False) -> str:
 if __name__ == "__main__":
     _load_model()
     print(f"Backend: {_backend}  ({_active_model_name()})")
-    print("Say something... (up to 15s, stops after 1.5s silence)")
+    _silence_ms = cfg.silence_frames * FRAME_MS
+    print(f"Say something... (up to {cfg.max_record_seconds}s, stops after "
+          f"{_silence_ms / 1000:.2f}s silence)")
     text = listen_and_transcribe()
     if text:
         print(f"You said: {text}")

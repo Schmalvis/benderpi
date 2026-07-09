@@ -15,11 +15,24 @@ from metrics import metrics
 
 log = get_logger("ai_local")
 
+# Soft hedges: in-character for Bender ("I don't know, meatbag!"). A hedge alone
+# no longer forces cloud escalation — only a hedge in a *short* reply or a hedge
+# that is the *entire* (single-sentence) reply does. See check_response_quality.
 HEDGE_PHRASES = {
-    "i'm not sure", "i don't know", "as an ai",
+    "i'm not sure", "i don't know",
     "i cannot", "i can't help", "i'm just a",
-    "language model", "i apologize",
+    "i apologize",
 }
+
+# Hard fails: an assistant breaking character as an AI/LLM is never acceptable,
+# regardless of length. These always escalate to cloud.
+HARD_FAIL_PHRASES = {
+    "as an ai", "language model",
+}
+
+# A reply this short that also hedges is almost certainly a non-answer worth
+# escalating; a longer hedged reply is probably Bender being Bender.
+_HEDGE_SHORT_MAX = 40
 
 _HAILO_HEF = "/usr/local/hailo/resources/models/hailo10h/Qwen2.5-1.5B-Instruct.hef"
 _HAILO_RETRY_COOLDOWN = 60  # seconds before retrying after init failure
@@ -39,13 +52,37 @@ class QualityCheckFailed(Exception):
 
 
 def check_response_quality(text: str) -> tuple[bool, str]:
-    """Return (passed, reason). Reason is empty string if passed."""
-    if len(text.strip()) < 10:
+    """Return (passed, reason). Reason is empty string if passed.
+
+    Softened so an in-character hedge ("I don't know, meatbag!") no longer forces
+    a cloud escalation. A soft hedge fails only when the reply is short
+    (< _HEDGE_SHORT_MAX chars) or when the hedge is the *only* sentence — i.e.
+    the model genuinely produced a non-answer. Hard fails (breaking character as
+    an AI / language model) always escalate regardless of length.
+
+    Called on the full reply (non-stream path) and on the first sentence
+    (stream path); both cases are covered — first-sentence input naturally
+    triggers the single-sentence rule.
+    """
+    stripped = text.strip()
+    if len(stripped) < 10:
         return False, "too_short"
-    text_lower = text.lower()
+    text_lower = stripped.lower()
+
+    # Hard fails — always escalate.
+    for phrase in HARD_FAIL_PHRASES:
+        if phrase in text_lower:
+            return False, "hard_fail"
+
+    # Soft hedges — only escalate if the reply is short or the hedge stands alone.
     for phrase in HEDGE_PHRASES:
         if phrase in text_lower:
-            return False, "hedge_phrase"
+            is_short = len(stripped) < _HEDGE_SHORT_MAX
+            single_sentence = len(_SENT_RE.findall(stripped)) <= 1
+            if is_short or single_sentence:
+                return False, "hedge_phrase"
+            # Longer, multi-sentence hedged reply — treat as in-character.
+            break
     return True, ""
 
 

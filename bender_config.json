@@ -208,6 +208,9 @@
     "do_not"
   ],
   "silence_frames": 25,
+  "stt_no_speech_prob_max": 0.6,
+  "stt_avg_logprob_min": -1.0,
+  "stt_compression_ratio_max": 2.4,
   "hailo_stt_enabled": true,
   "vlm_enabled": false
 }
