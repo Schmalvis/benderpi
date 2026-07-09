@@ -15,7 +15,30 @@ async function request(path, options = {}) {
     session.logout();
     throw new Error('Unauthorized');
   }
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // Surface FastAPI's `detail` (e.g. 422 validation errors from the config
+    // schema) instead of a bare status line, so the Config editor can tell the
+    // user *which* field it rejected rather than just "422 Unprocessable Entity".
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body && body.detail !== undefined) {
+        const d = body.detail;
+        if (typeof d === 'string') {
+          msg = d;
+        } else if (Array.isArray(d)) {
+          // pydantic errors: [{loc:[...], msg:'...'}, ...]
+          msg = d
+            .map((e) => {
+              const field = Array.isArray(e.loc) ? e.loc.filter((p) => p !== 'body').join('.') : '';
+              return field ? `${field}: ${e.msg}` : e.msg;
+            })
+            .join('; ');
+        }
+      }
+    } catch { /* non-JSON body — keep the status line */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 

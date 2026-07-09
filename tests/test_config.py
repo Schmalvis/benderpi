@@ -117,6 +117,60 @@ class TestLocalLLMConfig:
         assert c.ai_routing["creative"] == "local_only"
 
 
+class TestTypeCoercionGuard:
+    """Config.__init__ must reject overrides whose type disagrees with the
+    class-level default, log-and-skip rather than crash the service at boot."""
+
+    def test_string_where_int_is_skipped(self, tmp_path, capsys):
+        import json
+        from config import Config
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({"ai_max_tokens": "lots"}))
+        c = Config(config_path=str(p), env_path="/dev/null")
+        # default preserved, not the bad string
+        assert c.ai_max_tokens == 150
+        assert "ignoring override" in capsys.readouterr().err
+
+    def test_int_accepted_where_float_declared(self, tmp_path):
+        """JSON has one number type; an int for a float field is legitimate
+        (e.g. an int http_timeout_s). Must NOT be skipped by the type guard.
+        (local_llm_timeout is a poor probe here — it hits the separate
+        _clamp_local_llm_timeout ceiling; http_timeout_s is unclamped.)"""
+        import json
+        from config import Config
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({"http_timeout_s": 12, "speech_rate": 2}))
+        c = Config(config_path=str(p), env_path="/dev/null")
+        assert c.http_timeout_s == 12
+        assert c.speech_rate == 2
+
+    def test_bool_where_number_is_skipped(self, tmp_path):
+        import json
+        from config import Config
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({"speech_rate": True}))
+        c = Config(config_path=str(p), env_path="/dev/null")
+        assert c.speech_rate == 1.0  # default kept, bool rejected
+
+    def test_led_tuple_special_case_still_works(self, tmp_path):
+        import json
+        from config import Config
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({"led_colour": [10, 20, 30]}))
+        c = Config(config_path=str(p), env_path="/dev/null")
+        assert c.led_colour == (10, 20, 30)
+
+    def test_production_config_has_no_type_warnings(self, capsys):
+        """The real deployed bender_config.json must not trigger the guard —
+        legit legacy values (ints for floats) must survive untouched."""
+        import os
+        from config import Config
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cfg_path = os.path.join(base, "bender_config.json")
+        Config(config_path=cfg_path, env_path="/dev/null")
+        assert "ignoring override" not in capsys.readouterr().err
+
+
 def test_vlm_defaults(tmp_path):
     from config import Config
     cfg = Config(config_path=str(tmp_path / "nonexistent.json"))

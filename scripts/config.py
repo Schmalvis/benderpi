@@ -193,6 +193,8 @@ class Config:
                 if hasattr(self, key):
                     if key in ("led_colour", "led_listening_colour", "led_talking_colour") and isinstance(value, list):
                         value = tuple(value)
+                    if not self._override_type_ok(key, value):
+                        continue
                     setattr(self, key, value)
 
         # Set mutable defaults after JSON overrides have been applied.
@@ -249,6 +251,44 @@ class Config:
         # a slow-but-steady stream can still exceed response_hard_timeout_s. This
         # clamp only bounds the non-stream / connect case.
         self._clamp_local_llm_timeout()
+
+    def _override_type_ok(self, key: str, value) -> bool:
+        """Defensive guard: reject a JSON override whose type disagrees with the
+        class-level default's type, so a hand-edited bad bender_config.json can't
+        crash wake_converse.py at 3am. Log-and-skip (keep the default) rather than
+        raise — a bad value for one key must not take the whole service down.
+
+        Deliberately permissive so legitimate legacy values survive:
+          * int is accepted where a float is declared (JSON has no float literal
+            distinction; e.g. local_llm_timeout: 25 for a float field).
+          * bool is NOT accepted for int/float (Python bool is an int subclass,
+            but a JSON `true` where a number is expected is a real mistake).
+          * None is always accepted (mutable-default fields start as None).
+          * Fields whose declared default is None are unconstrained (their real
+            type is set later in __init__).
+        """
+        if value is None:
+            return True
+        default = getattr(type(self), key, None)
+        if default is None:
+            return True
+        expected = type(default)
+        # bool masquerades as int — guard it explicitly both ways.
+        if expected is bool:
+            ok = isinstance(value, bool)
+        elif expected in (int, float):
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        else:
+            ok = isinstance(value, expected)
+        if not ok:
+            import sys
+            print(
+                f"[config] WARNING: ignoring override {key!r}={value!r} "
+                f"(expected {expected.__name__}, got {type(value).__name__}); "
+                f"keeping default {default!r}.",
+                file=sys.stderr,
+            )
+        return ok
 
     def _clamp_local_llm_timeout(self) -> None:
         try:

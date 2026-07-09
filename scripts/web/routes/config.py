@@ -6,7 +6,14 @@ import subprocess
 import sys
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import ValidationError
 from web.auth import require_pin
+from web.routes.config_schema import (
+    BenderConfigUpdate,
+    WatchdogConfigUpdate,
+    clean_bender_config,
+    clean_watchdog_config,
+)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -42,10 +49,23 @@ async def config_get():
 
 @router.put("/api/config")
 async def config_put(body: dict = Body(...)):
+    try:
+        clean = clean_bender_config(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors(include_url=False))
     current = _load_json_file(_CONFIG_PATH)
-    current.update(body)
+    current.update(clean)
     _save_json_file(_CONFIG_PATH, current)
     return {"status": "ok", "config": current}
+
+
+@router.get("/api/config/schema")
+async def config_schema():
+    """JSON Schema for the editable config, for the Svelte editor to consume."""
+    return {
+        "bender": BenderConfigUpdate.model_json_schema(),
+        "watchdog": WatchdogConfigUpdate.model_json_schema(),
+    }
 
 
 @router.get("/api/config/watchdog")
@@ -55,8 +75,12 @@ async def config_watchdog_get():
 
 @router.put("/api/config/watchdog")
 async def config_watchdog_put(body: dict = Body(...)):
+    try:
+        clean = clean_watchdog_config(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors(include_url=False))
     current = _load_json_file(_WATCHDOG_CONFIG_PATH)
-    current.update(body)
+    current.update(clean)
     _save_json_file(_WATCHDOG_CONFIG_PATH, current)
     return {"status": "ok", "config": current}
 

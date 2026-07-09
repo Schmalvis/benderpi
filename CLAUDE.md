@@ -396,6 +396,21 @@ pi ALL=(ALL) NOPASSWD: /bin/systemctl status bender-converse
 - **Config** — edit bender_config.json and watchdog_config.json, LED colour/brightness, speech rate
 - **Actions** — restart service, refresh briefings, rebuild responses, puppet-only mode toggle
 
+### Config PUT validation
+
+`PUT /api/config` and `PUT /api/config/watchdog` validate the incoming body against
+pydantic schemas in `scripts/web/routes/config_schema.py` before writing the JSON files.
+The Svelte editor PUTs the *whole* config blob on save, so the schema is intentionally
+lenient about unknown keys (`extra="allow"` — `vision_*`, UI-only hex colour fields, etc.
+pass through) but strict about the keys it does model: type + range checks (`oww_threshold`
+0–1, positive timeouts/TTLs), `oww_model_path` must be a `.onnx`/`.tflite` under `models/`,
+and `ha_url`/`local_llm_url` must be LAN/localhost http(s). Secrets (`ha_token`,
+`anthropic_api_key`) are silently stripped (they belong in `.env`); path-injection keys
+(`piper_bin`, `model_path`, IPC paths) are rejected with 422. `GET /api/config/schema`
+returns the JSON Schema. Violations return 422 with per-field detail, surfaced by the
+Config editor. `config.py` has a matching defensive type guard (`_override_type_ok`) so a
+hand-edited bad `bender_config.json` skips the offending key instead of crashing at boot.
+
 ### Key files
 - `web/src/App.svelte` — root component with auth gate, sidebar, page router
 - `web/src/lib/api.js` — centralised API client
@@ -404,6 +419,7 @@ pi ALL=(ALL) NOPASSWD: /bin/systemctl status bender-converse
 - `web/src/lib/components/` — shared components (Sidebar, VolumeSlider, etc.)
 - `scripts/web/app.py` — FastAPI application (serves `web/dist/`)
 - `scripts/web/auth.py` — PIN authentication middleware
+- `scripts/web/routes/config_schema.py` — pydantic validation for config PUTs
 - `systemd/bender-web.service` — systemd service file
 
 ---
