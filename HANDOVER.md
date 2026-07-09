@@ -157,6 +157,31 @@ All deployed and verified clean on BenderPi (2026-05-25).
 
 ---
 
+## 2026-07-09 — Wake-word recall/precision + training sweep (code complete, needs on-device calibration)
+
+Fable review group #10. Two independent tracks.
+
+**Runtime (`scripts/wake_converse.py`, `wait_for_wakeword`):**
+- **N-of-M temporal smoothing.** Per-frame threshold lowered `oww_threshold` 0.5 → 0.35 (recovers recall) and now requires `oww_frames_required` (2) of the last `oww_window` (4) frames over threshold before firing (restores precision by suppressing single-frame spikes). Set `oww_frames_required: 1` to disable smoothing. Smoothing state (a `deque`) resets on every stream (re)open, so a stale score from before a session/reinit can never trigger.
+- **RMS input sentinel.** The 6-day XVF3800 incident had the mic feeding zeros — reads returned frames so the stall detector never fired, but the wake word could never trigger. New `audio.rms()`-based sentinel: if rolling input RMS stays below `wake_rms_floor` (30) for `wake_silence_alarm_s` (120s), it escalates through the same reinit-then-exit path as a hard stall and emits a `wake_mic_silent` metric.
+- **`predict()` hardened** with try/except (`wake_predict_error` metric) so one bad frame can't kill the loop.
+- **Periodic idle log** every `wake_score_log_interval_s` (60s): peak score + peak RMS, so journald distinguishes "nobody spoke" (scores ~0, RMS healthy) from "mic feeding garbage" (RMS ~0).
+
+**Training (`scripts/train_hey_bender.py`):**
+- `target_recall` exposed as a CLI param (was hardcoded 0.5) across `train`/`main`/`_write_config`.
+- New `sweep` local_entrypoint: `modal run scripts/train_hey_bender.py::sweep` runs a small parallel grid (n_samples × augmentation_rounds × target_recall, ~6 combos) via `.starmap`, uploads each ONNX under a grid-tagged name (never overwrites `hey_bender_v0.1.onnx`), prints a ranking table.
+
+**⚠️ STILL NEEDS ON-DEVICE WORK (an agent cannot do this):**
+1. **Live threshold/N-of-M calibration.** The 0.35 threshold + 2-of-4 window are starting points tuned against the *old* hey_jarvis model's score distribution. After any retrain, and for the current model, they MUST be tuned live by saying "hey bender" at distance/volume variations on BenderPi. N-of-M adds up to ~240ms detection latency — acceptable, but verify it feels responsive.
+2. **`wake_rms_floor` calibration.** 30 is a guess. Measure the XVF3800's real idle noise floor (a quiet room is NOT zero) via the new periodic "peak RMS" log line over a quiet overnight soak. Too high → reinit loops.
+3. **Soak test** the RMS sentinel overnight via journald before trusting the escalation.
+4. The RMS sentinel catches *garbage/zero* audio, NOT a hung `stream.read()` — that hung-read case is covered by g5's `MicReader` read-timeout, a separate mechanism.
+5. Sweep synthetic-validation metrics rank candidates; they do NOT predict real-mic recall. Use the table to pick candidates, then confirm live.
+
+Tests: `tests/test_oww_smoothing.py` (new), `tests/test_oww_config.py` (updated). Also fixed a pre-existing g5 breakage in `tests/test_oww_detection.py` (its bail raised from `read()` no longer reaches the main loop now reads run on the MicReader daemon thread) and added a `dotenv` stub to `tests/conftest.py` so the wake tests run off-device.
+
+---
+
 ## Current Priorities
 - Monitor Ollama escalation rates
 - Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs

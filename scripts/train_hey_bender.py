@@ -213,7 +213,7 @@ def _download_training_data(work: str):
 def _write_config(work: str, oww: str, psg: str, phrase: str, n_samples: int,
                   n_samples_val: int, steps: int, piper_pt: str,
                   target_fp_per_hour: float, max_negative_weight: int,
-                  augmentation_rounds: int) -> str:
+                  augmentation_rounds: int, target_recall: float) -> str:
     import os
 
     import yaml
@@ -228,7 +228,7 @@ def _write_config(work: str, oww: str, psg: str, phrase: str, n_samples: int,
     config["n_samples_val"] = n_samples_val
     config["steps"] = steps
     config["target_accuracy"] = 0.7
-    config["target_recall"] = 0.5
+    config["target_recall"] = target_recall
     # Library defaults (target_false_positives_per_hour=0.2, max_negative_weight=1500)
     # over-suppress false positives at recall's expense. Loosen both so the
     # auto-tuning process stops trading recall away.
@@ -274,19 +274,19 @@ def _find_onnx(work: str) -> str:
     return candidates[0]
 
 
-def _upload_to_hub(onnx_path: str, token: str):
+def _upload_to_hub(onnx_path: str, token: str, output_name: str = OUTPUT_ONNX_NAME):
     from huggingface_hub import HfApi
 
     api = HfApi(token=token)
     api.create_repo(repo_id=HF_REPO, repo_type="model", exist_ok=True, private=False)
     api.upload_file(
         path_or_fileobj=onnx_path,
-        path_in_repo=OUTPUT_ONNX_NAME,
+        path_in_repo=output_name,
         repo_id=HF_REPO,
         repo_type="model",
-        commit_message=f"Upload {OUTPUT_ONNX_NAME}",
+        commit_message=f"Upload {output_name}",
     )
-    url = f"https://huggingface.co/{HF_REPO}/blob/main/{OUTPUT_ONNX_NAME}"
+    url = f"https://huggingface.co/{HF_REPO}/blob/main/{output_name}"
     print(f"\nUploaded -> {url}")
     return url
 
@@ -308,6 +308,8 @@ def train(
     target_fp_per_hour: float = 1.0,
     max_negative_weight: int = 500,
     augmentation_rounds: int = 2,
+    target_recall: float = 0.5,
+    output_name: str = OUTPUT_ONNX_NAME,
 ):
     import os
     import sys
@@ -336,7 +338,8 @@ def train(
 
     print("=== 4/5 Write config + train ===")
     cfg = _write_config(work, oww, psg, phrase, n_samples, n_samples_val, steps, piper_pt,
-                        target_fp_per_hour, max_negative_weight, augmentation_rounds)
+                        target_fp_per_hour, max_negative_weight, augmentation_rounds,
+                        target_recall)
     train_py = os.path.join(oww, "openwakeword", "train.py")
     env = f'PYTHONPATH="{psg}:$PYTHONPATH"'
     for label, flag in (
@@ -350,7 +353,7 @@ def train(
     print("=== 5/5 Upload to HF Hub ===")
     onnx = _find_onnx(work)
     print(f"Found model: {onnx}")
-    return _upload_to_hub(onnx, token)
+    return _upload_to_hub(onnx, token, output_name)
 
 
 @app.local_entrypoint()
@@ -362,6 +365,7 @@ def main(
     target_fp_per_hour: float = 1.0,
     max_negative_weight: int = 500,
     augmentation_rounds: int = 2,
+    target_recall: float = 0.5,
 ):
     url = train.remote(
         phrase=phrase,
@@ -371,7 +375,69 @@ def main(
         target_fp_per_hour=target_fp_per_hour,
         max_negative_weight=max_negative_weight,
         augmentation_rounds=augmentation_rounds,
+        target_recall=target_recall,
     )
     print("\nDone. Model URL:")
     print(url)
     print("\nDeploy on the Pi with: bash scripts/deploy_hey_bender.sh")
+
+
+# Sweep grid: (n_samples, augmentation_rounds, target_recall). Kept small
+# (default 6 combos) so a full sweep is a few dollars of T4 time. Each combo
+# uploads a grid-tagged ONNX so nothing overwrites the canonical v0.1 model.
+_SWEEP_GRID = [
+    (n, aug, rec)
+    for n in (5000, 15000)
+    for aug in (1, 2)
+    for rec in (0.5,)
+] + [
+    (15000, 2, 0.7),
+    (25000, 2, 0.6),
+]
+
+
+@app.local_entrypoint()
+def sweep(
+    phrase: str = "hey bender",
+    steps: int = 20000,
+    n_samples_val: int = 1000,
+    target_fp_per_hour: float = 1.0,
+    max_negative_weight: int = 500,
+):
+    """Run a parallel grid sweep over (n_samples, augmentation_rounds,
+    target_recall) on Modal T4s and print a ranking table of the uploaded
+    models.
+
+    NOTE: openWakeWord's synthetic validation metrics do NOT perfectly predict
+    real-mic recall — treat the table as a *ranking* to pick candidates for
+    live on-BenderPi testing, not as ground truth. Winner selection MUST be
+    confirmed by saying "hey bender" at distance/volume variations on the Pi.
+
+    Run: modal run scripts/train_hey_bender.py::sweep
+    """
+    combos = list(_SWEEP_GRID)
+    print(f"Sweeping {len(combos)} combos (n_samples x aug_rounds x target_recall):")
+    for n, aug, rec in combos:
+        print(f"  n={n:>6}  aug={aug}  recall={rec}")
+
+    def _args(combo):
+        n, aug, rec = combo
+        tag = f"hey_bender_n{n}_aug{aug}_rec{str(rec).replace('.', 'p')}.onnx"
+        return (
+            phrase, n, n_samples_val, steps,
+            target_fp_per_hour, max_negative_weight, aug, rec, tag,
+        )
+
+    starmap_args = [_args(c) for c in combos]
+    results = []
+    for combo, url in zip(combos, train.starmap(starmap_args)):
+        n, aug, rec = combo
+        results.append((n, aug, rec, url))
+
+    print("\n=== Sweep results ===")
+    print(f"{'n_samples':>10} {'aug':>4} {'recall':>7}  model_url")
+    for n, aug, rec, url in results:
+        print(f"{n:>10} {aug:>4} {rec:>7}  {url}")
+    print("\nPick a candidate from the ranking, deploy it to the Pi, and confirm "
+          "recall/precision LIVE by saying 'hey bender' at distance/volume "
+          "variations. Synthetic metrics rank; the mic decides.")

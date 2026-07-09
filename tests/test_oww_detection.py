@@ -104,12 +104,8 @@ def test_wait_for_wakeword_keeps_looping_below_threshold(monkeypatch):
     import audio
     from wake_converse import wait_for_wakeword
 
-    frames_read = [0]
     mock_stream = MagicMock()
     def fake_read(n, exception_on_overflow=False):
-        frames_read[0] += 1
-        if frames_read[0] > 10:
-            raise KeyboardInterrupt
         return _pcm_bytes(n)
     mock_stream.read = fake_read
 
@@ -117,8 +113,18 @@ def test_wait_for_wakeword_keeps_looping_below_threshold(monkeypatch):
     mock_pa.get_device_info_by_index.return_value = {'name': 'default_mic'}
     mock_pa.open.return_value = mock_stream
 
+    # Reads now run on a MicReader daemon thread (a bail raised in read() never
+    # reaches the main loop), so count frames + bail from predict() on the main
+    # thread instead. KeyboardInterrupt is a BaseException, so the loop's
+    # predict() try/except does not swallow it.
+    predicts = [0]
     mock_model = MagicMock()
-    mock_model.predict.return_value = {'hey_jarvis_v0.1': 0.1}  # always below 0.5
+    def fake_predict(arr):
+        predicts[0] += 1
+        if predicts[0] > 10:
+            raise KeyboardInterrupt
+        return {'hey_jarvis_v0.1': 0.1}  # always below threshold
+    mock_model.predict = fake_predict
 
     monkeypatch.setattr(audio, 'get_pa', lambda: mock_pa)
     monkeypatch.setattr(audio, 'get_input_device_index', lambda: 0)
@@ -129,7 +135,7 @@ def test_wait_for_wakeword_keeps_looping_below_threshold(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         wait_for_wakeword(_oww_model=mock_model)
 
-    assert frames_read[0] > 5
+    assert predicts[0] > 5
 
 
 def test_wait_for_wakeword_stereo_downmix(monkeypatch):

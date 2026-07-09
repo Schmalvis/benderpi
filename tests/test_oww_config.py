@@ -14,7 +14,19 @@ def test_oww_config_fields_exist():
 
 def test_oww_threshold_default_is_reasonable():
     from config import cfg
-    assert cfg.oww_threshold == 0.5
+    # Lowered from 0.5 to 0.35 alongside N-of-M temporal smoothing: a lower
+    # per-frame bar recovers recall, and requiring multiple frames over it
+    # (oww_frames_required-of-oww_window) restores precision.
+    assert cfg.oww_threshold == 0.35
+
+
+def test_oww_smoothing_fields_exist():
+    from config import cfg
+    assert hasattr(cfg, 'oww_frames_required')
+    assert hasattr(cfg, 'oww_window')
+    assert isinstance(cfg.oww_frames_required, int)
+    assert isinstance(cfg.oww_window, int)
+    assert 1 <= cfg.oww_frames_required <= cfg.oww_window
 
 
 def test_no_pvporcupine_imports_in_source():

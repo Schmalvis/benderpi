@@ -72,6 +72,12 @@ class Config:
     # Wake word (openWakeWord)
     oww_model_path: str = "models/hey_jarvis.onnx"
     oww_threshold: float = 0.5
+    # N-of-M temporal smoothing: fire only when >= oww_frames_required of the
+    # last oww_window frame scores clear oww_threshold. Suppresses single-frame
+    # spikes (false accepts) while a lowered threshold recovers recall. Set
+    # oww_frames_required to 1 to disable smoothing (pure per-frame threshold).
+    oww_frames_required: int = 2
+    oww_window: int = 4
 
     # Conversation
     silence_timeout: float = 8.0
@@ -126,6 +132,18 @@ class Config:
     # Wake loop liveness
     wake_stall_seconds: float = 30.0    # raise RuntimeError if no PCM frames for this long
     wake_heartbeat_frames: int = 250    # emit heartbeat metric every N frames
+
+    # Wake loop input-sanity (RMS sentinel + score logging)
+    #   The 2026 XVF3800 incident had the mic feeding *zeros* (or near-zero
+    #   garbage) for days: reads returned frames, so the stall detector never
+    #   fired, but the wake word could never trigger. The RMS sentinel watches
+    #   the rolling input level and, if it stays below wake_rms_floor for
+    #   wake_silence_alarm_s, escalates through the same reinit-then-exit path
+    #   as a hard stall. Floor must be calibrated against the mic's real noise
+    #   floor (a quiet room is NOT zero) — too high and it reinit-loops.
+    wake_rms_floor: float = 30.0        # rolling input RMS below this = presumed dead mic
+    wake_silence_alarm_s: float = 120.0 # seconds below floor before escalating (0 disables)
+    wake_score_log_interval_s: float = 60.0  # log max-score + RMS every N seconds (0 disables)
 
     # Mic read watchdog (MicReader) — applies to all blocking mic reads
     mic_read_timeout_s: float = 10.0    # raise MicStallError if no frame arrives in this window

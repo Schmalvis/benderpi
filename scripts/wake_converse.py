@@ -18,6 +18,7 @@ import signal
 import time
 import sys
 import threading
+from collections import deque
 
 import numpy as np
 
@@ -146,18 +147,36 @@ def wait_for_wakeword(_oww_model=None):
     read_timeout_s = float(getattr(cfg, "mic_read_timeout_s", 10.0))
     max_reinits = int(getattr(cfg, "mic_stall_max_reinits", 1))
 
+    # N-of-M temporal smoothing config. window >= 1, required clamped to window.
+    window = max(1, int(getattr(cfg, "oww_window", 1)))
+    required = max(1, min(int(getattr(cfg, "oww_frames_required", 1)), window))
+
+    # Input-sanity (RMS sentinel + periodic score/RMS logging) config.
+    rms_floor = float(getattr(cfg, "wake_rms_floor", 0.0))
+    silence_alarm_s = float(getattr(cfg, "wake_silence_alarm_s", 0.0))
+    score_log_interval_s = float(getattr(cfg, "wake_score_log_interval_s", 0.0))
+
     reinit_count = 0
     while True:
         stream, capture_channels, device_name = _open_wake_stream()
         reader = audio.MicReader(
             stream, OWW_FRAME_SIZE, read_timeout_s, name="wake-mic-reader"
         )
-        log.info("Listening for wake word... (mic: %s, ch=%d, model: %s, threshold: %.2f)",
+        log.info("Listening for wake word... (mic: %s, ch=%d, model: %s, "
+                 "threshold: %.2f, smoothing: %d-of-%d)",
                  device_name or "default", capture_channels,
-                 os.path.basename(cfg.oww_model_path), cfg.oww_threshold)
+                 os.path.basename(cfg.oww_model_path), cfg.oww_threshold,
+                 required, window)
 
         last_read_ts = time.monotonic()
         frames_since_hb = 0
+        # Smoothing + sentinel state is per-stream: reset on every (re)open so a
+        # stale score/level from before a session or reinit can never trigger.
+        recent_hits = deque(maxlen=window)  # 1.0 if frame >= threshold else 0.0
+        last_rms_ok_ts = time.monotonic()   # last time input level cleared floor
+        last_score_log_ts = time.monotonic()
+        window_max_score = 0.0              # peak score since last periodic log
+        window_max_rms = 0.0                # peak input RMS since last periodic log
         try:
             while True:
                 try:
@@ -193,12 +212,58 @@ def wait_for_wakeword(_oww_model=None):
                     _feed_watchdog()
                     frames_since_hb = 0
 
+                # Input-level sanity: a mic feeding zeros/garbage still delivers
+                # frames (so the stall detector above never fires) but can never
+                # trigger the wake word — the 6-day XVF3800 failure. Track the
+                # rolling RMS; if it stays below the floor for the alarm window,
+                # escalate through the same reinit-then-exit path as a hard stall.
+                frame_rms = audio.rms(pcm, 2)
+                if frame_rms > window_max_rms:
+                    window_max_rms = frame_rms
+                if rms_floor <= 0.0 or frame_rms >= rms_floor:
+                    last_rms_ok_ts = now
+                elif silence_alarm_s > 0.0 and now - last_rms_ok_ts > silence_alarm_s:
+                    metrics.count("wake_mic_silent",
+                                  silent_s=round(now - last_rms_ok_ts, 1),
+                                  floor=rms_floor)
+                    log.error("Wake mic silent: input RMS below %.0f for %.1fs "
+                              "(presumed dead/garbage mic feed)",
+                              rms_floor, now - last_rms_ok_ts)
+                    raise RuntimeError("wake loop stalled")
+
                 pcm_np = np.frombuffer(pcm, dtype=np.int16)
                 if capture_channels == 2:
                     pcm_np = pcm_np[::2]  # left channel only (stereo downmix)
-                prediction = oww_model.predict(pcm_np)
-                if prediction and max(prediction.values()) >= cfg.oww_threshold:
-                    log.info("Wake word detected (score: %.3f)", max(prediction.values()))
+                try:
+                    prediction = oww_model.predict(pcm_np)
+                except Exception as exc:  # a bad frame must not kill the loop
+                    log.warning("oww predict() failed on a frame: %s", exc)
+                    metrics.count("wake_predict_error")
+                    recent_hits.append(0.0)
+                    continue
+
+                frame_score = max(prediction.values()) if prediction else 0.0
+                if frame_score > window_max_score:
+                    window_max_score = frame_score
+
+                # Periodic max-score + RMS line so journald distinguishes
+                # "nobody said the wake word" (scores near 0, RMS healthy) from
+                # "mic feeding garbage" (RMS near 0) without a live console.
+                if (score_log_interval_s > 0.0
+                        and now - last_score_log_ts >= score_log_interval_s):
+                    log.info("Wake idle: peak score %.3f, peak RMS %.0f over last %.0fs",
+                             window_max_score, window_max_rms,
+                             now - last_score_log_ts)
+                    last_score_log_ts = now
+                    window_max_score = 0.0
+                    window_max_rms = 0.0
+
+                # N-of-M temporal smoothing: require multiple recent frames over
+                # threshold before firing, suppressing single-frame spikes.
+                recent_hits.append(1.0 if frame_score >= cfg.oww_threshold else 0.0)
+                if sum(recent_hits) >= required:
+                    log.info("Wake word detected (score: %.3f, %d/%d frames over "
+                             "threshold)", frame_score, int(sum(recent_hits)), window)
                     return  # reader stopped in finally
         except RuntimeError as exc:
             if "stalled" not in str(exc):
