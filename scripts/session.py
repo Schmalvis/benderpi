@@ -239,8 +239,13 @@ class ConversationSession:
         # released under active inference) and when Hailo never loaded (clip/
         # handler/Ollama turns). The device is freed by a later turn's release once
         # any zombie finishes.
+        #
+        # In llm_warm_session mode we pass warm=True so this per-turn call keeps
+        # the chip resident (no HEF reload next turn); the VDevice is instead
+        # released in end(). Gated behind cfg.llm_warm_session (default false)
+        # because it assumes Whisper + Qwen HEFs coexist on the Hailo-10H.
         if self._ai_local is not None:
-            self._ai_local.release_chip()
+            self._ai_local.release_chip(warm=cfg.llm_warm_session)
 
         if _exc_holder[0] is not None:
             raise _exc_holder[0]
@@ -306,6 +311,14 @@ class ConversationSession:
         self._remove_session_file()
         audio.close_session()
         if self._ai_local:
+            # In warm mode the Hailo VDevice was held across the whole session
+            # (per-turn release_chip() was a warm no-op); release it now so it
+            # doesn't stay stranded across sessions. warm=False forces the real
+            # release, still guarded by _infer_lock — a mid-session zombie leaves
+            # the device held, but process-exit close() / the next STT load
+            # reclaim it. Harmless in non-warm mode (chip already released
+            # per-turn, so this is a no-op clean acquire + null refs).
+            self._ai_local.release_chip(warm=False)
             self._ai_local.clear_history()
 
     # ------------------------------------------------------------------

@@ -66,6 +66,19 @@ def generate_dict() -> dict:
 
     sessions = [e for e in events if e.get("type") == "count" and e.get("name") == "session" and e.get("event") == "start"]
 
+    def count_metric(name) -> int:
+        return len([e for e in events if e.get("type") == "count" and e.get("name") == name])
+
+    hailo = {
+        # Per-turn HEF reload tax (invisible before the metrics split). In warm
+        # mode this fires ~once per session instead of once per AI turn.
+        "load_ms": avg_timer("ai_hailo_load"),
+        "call_ms": avg_timer("ai_hailo_call"),
+        "release_skipped": count_metric("hailo_release_skipped"),
+        "busy_lockout": count_metric("hailo_busy_lockout"),
+        "lock_stuck": count_metric("hailo_lock_stuck"),
+    }
+
     alert_count = len([a for a in alerts if a.severity in ("error", "warning")])
 
     recent = _recent_errors()
@@ -82,7 +95,10 @@ def generate_dict() -> dict:
             "ai_api_call_ms": avg_timer("ai_api_call"),
             "audio_play_ms": avg_timer("audio_play"),
             "response_total_ms": avg_timer("response_total"),
+            "ai_hailo_load_ms": hailo["load_ms"],
+            "ai_hailo_call_ms": hailo["call_ms"],
         },
+        "hailo": hailo,
         "usage": {
             "sessions": len(sessions),
             "turns": total_turns,
@@ -140,6 +156,11 @@ Generated: {now}
 - API call: {fmt_timer(perf['ai_api_call_ms'])}
 - Audio playback: {fmt_timer(perf['audio_play_ms'])}
 - End-to-end response: {fmt_timer(perf['response_total_ms'])}
+
+## Hailo NPU (LLM)
+- HEF load (reload tax): {fmt_timer(data['hailo']['load_ms'])}
+- generate_all(): {fmt_timer(data['hailo']['call_ms'])}
+- Release skipped: {data['hailo']['release_skipped']} | Busy lockouts: {data['hailo']['busy_lockout']} | Lock stuck: {data['hailo']['lock_stuck']}
 
 ## Usage (7 days)
 - Sessions: {usage['sessions']} | Turns: {usage['turns']}

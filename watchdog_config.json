@@ -13,5 +13,6 @@
   "lookback_hours": 168,
   "max_hours_without_session": 6,
   "mic_stall_reinit_threshold": 3,
-  "mic_stall_exit_threshold": 1
+  "mic_stall_exit_threshold": 1,
+  "hailo_lock_stuck_threshold": 1
 }

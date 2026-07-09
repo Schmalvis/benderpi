@@ -66,6 +66,7 @@
   "local_llm_model": "qwen2.5:1.5b",
   "local_llm_url": "http://localhost:11434",
   "local_llm_timeout": 25,
+  "llm_warm_session": false,
   "ai_routing": {
     "conversation": "local_first",
     "knowledge": "local_first",

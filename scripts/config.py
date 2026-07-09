@@ -84,6 +84,14 @@ class Config:
     local_llm_model: str = "qwen2.5:1.5b"
     local_llm_url: str = "http://localhost:11434"
     local_llm_timeout: int = 3
+    # Warm Hailo LLM session (opt-in, hardware-gated). When true, the Hailo
+    # VDevice is held across turns within a session instead of released after
+    # every AI turn — eliminating the per-turn HEF reload tax (see the
+    # ai_hailo_load metric). Released at session end() instead. DEFAULT FALSE:
+    # this assumes the Whisper + Qwen HEFs can coexist resident on the Hailo-10H;
+    # if they cannot, STT fails on turn 2. Only flip to true after the on-device
+    # HEF-coexistence spike passes. Revert by config edit if the chip misbehaves.
+    llm_warm_session: bool = False
     tts_noise_scale: float = 0.9      # Piper expressiveness (default 0.667)
     tts_noise_scale_w: float = 1.2    # Piper phoneme duration variance (default 0.8)
     ai_routing: dict = None  # set in __init__ to avoid mutable default
@@ -230,6 +238,35 @@ class Config:
         self.ha_url = os.environ.get("HA_URL", self.ha_url)
         self.ha_weather_entity = os.environ.get("HA_WEATHER_ENTITY", self.ha_weather_entity)
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", self.anthropic_api_key)
+
+        # 5. Load-time invariant: the local LLM timeout must sit below the
+        # inference hard timeout, or session.py's hard-timeout join kills the
+        # inference thread before the Ollama request can time out and fail over —
+        # producing an error_fallback turn instead of a clean cloud escalation.
+        # Warn-and-clamp rather than trust the two numbers being edited in sync.
+        # CAVEAT: for the *streaming* Ollama path (generate_stream) the requests
+        # timeout is per-read (inter-token gap), not a total-response budget, so
+        # a slow-but-steady stream can still exceed response_hard_timeout_s. This
+        # clamp only bounds the non-stream / connect case.
+        self._clamp_local_llm_timeout()
+
+    def _clamp_local_llm_timeout(self) -> None:
+        try:
+            hard = float(self.response_hard_timeout_s)
+            cur = float(self.local_llm_timeout)
+        except (TypeError, ValueError):
+            return
+        ceiling = hard - 2.0
+        if ceiling > 0 and cur > ceiling:
+            import sys
+            print(
+                f"[config] WARNING: local_llm_timeout ({cur:g}s) >= "
+                f"response_hard_timeout_s ({hard:g}s) - 2s; clamping to "
+                f"{ceiling:g}s so Ollama can fail over before the hard-timeout "
+                f"join kills the inference thread.",
+                file=sys.stderr,
+            )
+            self.local_llm_timeout = ceiling
 
     def _load_dotenv(self, path: str):
         """Minimal .env parser — no dependency on python-dotenv for config module."""

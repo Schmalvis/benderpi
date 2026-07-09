@@ -107,6 +107,15 @@ class _HailoLLMResponder:
         #      under a still-running generate_all().
         # Always taken non-blocking so a hung zombie never stalls the loop.
         self._infer_lock = threading.Lock()
+        # Zombie-lock observability: how many consecutive release_chip()/close()
+        # calls have been skipped because _infer_lock was held by an in-flight
+        # (likely zombie) generate_all(), and when that in-flight call started.
+        # A run of skips means a hung generate_all() is stranding the VDevice.
+        self._consecutive_release_skips = 0
+        self._infer_lock_held_since: float | None = None
+        # After this many consecutive skipped releases, emit a hailo_lock_stuck
+        # metric + error log so the watchdog surfaces a wedged NPU in STATUS.md.
+        self._lock_stuck_threshold = 3
 
     def inject_scene_context(self, text: str):
         """Store scene context to be prepended to the first user message of the session."""
@@ -128,13 +137,18 @@ class _HailoLLMResponder:
             self._last_failed_at = time.monotonic()
             return False
         try:
-            from hailo_platform import VDevice
-            from hailo_platform.genai import LLM
-            from hailo_apps.python.core.common.defines import SHARED_VDEVICE_GROUP_ID
-            params = VDevice.create_params()
-            params.group_id = SHARED_VDEVICE_GROUP_ID
-            self._vdevice = VDevice(params)
-            self._llm = LLM(self._vdevice, _HAILO_HEF)
+            # Timed so the per-turn HEF-reload tax is visible in metrics. In
+            # per-turn-release mode this fires on *every* AI turn (release_chip()
+            # nulls _available after each turn), so ai_hailo_load reveals exactly
+            # what a warm session (llm_warm_session=true) would save.
+            with metrics.timer("ai_hailo_load"):
+                from hailo_platform import VDevice
+                from hailo_platform.genai import LLM
+                from hailo_apps.python.core.common.defines import SHARED_VDEVICE_GROUP_ID
+                params = VDevice.create_params()
+                params.group_id = SHARED_VDEVICE_GROUP_ID
+                self._vdevice = VDevice(params)
+                self._llm = LLM(self._vdevice, _HAILO_HEF)
             self._available = True
             log.info("Hailo LLM ready: Qwen2.5-1.5B on Hailo-10H")
         except Exception as e:
@@ -173,9 +187,11 @@ class _HailoLLMResponder:
         if not self._infer_lock.acquire(blocking=False):
             if self.history and self.history[-1].get("role") == "user":
                 self.history.pop()
+            metrics.count("hailo_busy_lockout")
             log.warning("Hailo LLM busy (prior generate_all() still in flight) "
                         "— failing over to Ollama")
             raise RuntimeError("Hailo LLM busy")
+        self._infer_lock_held_since = time.monotonic()
         try:
             with metrics.timer("ai_hailo_call"):
                 result = self._llm.generate_all(
@@ -185,6 +201,7 @@ class _HailoLLMResponder:
                     max_generated_tokens=cfg.ai_max_tokens,
                 )
         finally:
+            self._infer_lock_held_since = None
             self._infer_lock.release()
 
         # Strip Qwen special tokens
@@ -218,26 +235,63 @@ class _HailoLLMResponder:
         self._available = None
         self._last_failed_at = None
 
-    def release_chip(self) -> None:
-        """Release the Hailo LLM + VDevice between sessions, freeing the KV-Cache
-        for STT.
+    def release_chip(self, *, warm: bool = False) -> None:
+        """Release the Hailo LLM + VDevice between turns/sessions, freeing the
+        KV-Cache for STT.
 
         Uses the public ``.release()`` method (Hailo reference pattern), LLM
         before its VDevice — never ``__exit__()`` + ``del`` + ``gc.collect()``,
         which risks a double-release via ``VDevice.__del__``.
+
+        ``warm=True`` (llm_warm_session mode): this is a *per-turn* call and we
+        deliberately do NOT release — the VDevice is held across turns so the
+        next AI turn skips the HEF reload. The device is released later by the
+        session's ``end()``, which calls with ``warm=False``. NOTE: warm mode
+        assumes the Whisper + Qwen HEFs can coexist resident on the Hailo-10H;
+        if they cannot, STT will fail on turn 2 (hardware-gated — see docs).
 
         Guarded by ``_infer_lock``: if a generate_all() call is still in flight
         (typically a zombie thread from a turn whose hard-timeout join gave up),
         this is a no-op — we log a warning and leave the device held rather than
         release it out from under active inference. Taken non-blocking so a hung
         zombie never stalls the conversation loop; the device is simply freed by
-        a later turn's release once the zombie finishes.
+        a later turn's release once the zombie finishes. Consecutive skips are
+        counted and, past a threshold, emit ``hailo_lock_stuck`` for the
+        watchdog — a run of skips means a hung generate_all() has stranded the
+        VDevice.
         """
+        if warm:
+            # Per-turn call in warm mode — keep the chip resident for the next
+            # turn. metrics let us confirm warm mode is actually engaging.
+            metrics.count("hailo_release_skipped", reason="warm_session")
+            return
         if not self._infer_lock.acquire(blocking=False):
+            self._consecutive_release_skips += 1
+            held_for = (
+                time.monotonic() - self._infer_lock_held_since
+                if self._infer_lock_held_since is not None else None
+            )
+            metrics.count("hailo_release_skipped", reason="infer_in_flight")
             log.warning("Hailo generate_all() still in flight — skipping VDevice "
-                        "release to avoid releasing it under active inference")
+                        "release to avoid releasing it under active inference "
+                        "(consecutive skips=%d, held_for=%s)",
+                        self._consecutive_release_skips,
+                        f"{held_for:.1f}s" if held_for is not None else "unknown")
+            if self._consecutive_release_skips >= self._lock_stuck_threshold:
+                metrics.count(
+                    "hailo_lock_stuck",
+                    skips=self._consecutive_release_skips,
+                    held_seconds=round(held_for, 1) if held_for is not None else None,
+                )
+                log.error("Hailo _infer_lock stuck: %d consecutive release skips, "
+                          "generate_all() held for %s — NPU likely wedged by a "
+                          "zombie inference; device stranded until it finishes",
+                          self._consecutive_release_skips,
+                          f"{held_for:.1f}s" if held_for is not None else "unknown")
             return
         try:
+            # Clean acquire — any prior zombie has finished; reset skip run.
+            self._consecutive_release_skips = 0
             llm_ref, vdev_ref = self._llm, self._vdevice
             self._llm = None
             self._vdevice = None
@@ -525,10 +579,14 @@ class LocalAIResponder:
         if self._hailo is not None:
             self._hailo.reset_state()
 
-    def release_chip(self) -> None:
-        """Release Hailo VDevice so STT can acquire the KV-Cache."""
+    def release_chip(self, *, warm: bool = False) -> None:
+        """Release Hailo VDevice so STT can acquire the KV-Cache.
+
+        ``warm=True`` marks a per-turn call in llm_warm_session mode — the chip
+        is kept resident and released later by the session's end() (warm=False).
+        """
         if self._hailo is not None:
-            self._hailo.release_chip()
+            self._hailo.release_chip(warm=warm)
 
     def warm_up(self) -> None:
         """Pre-load Ollama model in background at startup."""

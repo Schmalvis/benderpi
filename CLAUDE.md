@@ -140,6 +140,8 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `vlm_yolo_timeout_s` | `8` | Max seconds for YOLO/LLM inference in vlm.py |
 | `vlm_lazy_poll_s` | `0.05` | Non-blocking poll interval for lazy scene injection |
 | `response_hard_timeout_s` | `20` | Hard kill timeout for inference thread |
+| `local_llm_timeout` | `3` | Ollama request timeout. Load-time invariant: clamped to `response_hard_timeout_s - 2` (warn-and-clamp in `config.py`) so Ollama can fail over before the hard-timeout join kills the thread |
+| `llm_warm_session` | `false` | **Opt-in, hardware-gated.** Hold the Hailo LLM VDevice across turns (released at session `end()`) instead of after every AI turn — kills the per-turn HEF reload tax (see `ai_hailo_load` metric). Assumes Whisper + Qwen HEFs coexist on the Hailo-10H; if not, STT fails on turn 2. Only flip `true` after the on-device HEF-coexistence spike passes; revert by config edit if the chip misbehaves |
 | `http_timeout_s` | `10` | urlopen timeout for briefings + HA fetches |
 | `audio_chunk` | `512` | PyAudio buffer size (frames) |
 | `audio_rms_floor` | `200` | RMS floor for LED amplitude normalisation |

@@ -182,6 +182,27 @@ Tests: `tests/test_oww_smoothing.py` (new), `tests/test_oww_config.py` (updated)
 
 ---
 
+## 2026-07-09 — Warm Hailo LLM session + reload-tax metrics + lock hardening (code complete, warm mode hardware-gated)
+
+Fable review group #15. Cuts the per-turn Hailo HEF reload tax — but the headline feature ships **default-off** because it's gated on a hardware fact we can't verify off-device.
+
+**Metrics-first (pure wins, always on):**
+- `ai_local.py._load()` now wraps VDevice+LLM construction in `metrics.timer("ai_hailo_load")` — the per-turn HEF reload tax was previously *invisible* (it ran outside the `ai_hailo_call` timer). In per-turn-release mode this fires on every AI turn, so `ai_hailo_load` directly measures what warm mode would save.
+- New counters: `hailo_busy_lockout` (a turn hit an in-flight generate_all() and failed over to Ollama) and `hailo_release_skipped` (release deferred — `reason=warm_session` per-turn in warm mode, or `reason=infer_in_flight` when a zombie holds the lock).
+- **Zombie-lock alerting:** `_HailoLLMResponder` tracks consecutive skipped releases + a `_infer_lock_held_since` timestamp. After 3 consecutive skips it emits `hailo_lock_stuck` + an error log. `watchdog.py` raises an **error** alert on any `hailo_lock_stuck` (`hailo_lock_stuck_threshold`, default 1). All surfaced in STATUS.md's new "Hailo NPU (LLM)" section via `generate_status.py`.
+
+**Config invariant (`config.py`):** `local_llm_timeout` is now warn-and-clamped at load time to `response_hard_timeout_s - 2`. Prevents the inversion where the hard-timeout join kills the inference thread before Ollama can time out and cleanly fail over. Deployed config (25 < 45) was already safe; this makes it a load-time guarantee, not a coincidence. CAVEAT: for the *streaming* Ollama path the `requests` timeout is per-read (inter-token gap), not a total budget — a slow-but-steady stream can still exceed the hard timeout. The clamp only bounds the connect / non-stream case.
+
+**Warm session (opt-in, `llm_warm_session`, default `false`):** when true, `session.py` passes `warm=True` to the per-turn `release_chip()` (a no-op that keeps the VDevice resident), and `end()` calls `release_chip(warm=False)` to release once per session. `end()`'s release is `_infer_lock`-guarded, so a mid-session zombie leaves the device held — reclaimed by process-exit `close()` or the next STT load.
+
+**⚠️ STILL NEEDS ON-DEVICE WORK (an agent cannot do this):**
+1. **HEF-coexistence spike — this gates the whole warm feature.** Load Whisper HEF + Qwen HEF concurrently under the shared `"SHARED"` group and alternate transcribe/generate on the Hailo-10H. The existing per-turn mutual-release design (stt.py's settle window, "freeing the KV-Cache for STT" comments) *implies* the two HEFs may not coexist resident even when idle. If they can't, `llm_warm_session=true` will fail STT on turn 2. Do NOT flip the flag until this passes.
+2. **Measure the reload tax first.** Deploy with the flag off, read `ai_hailo_load` in STATUS.md over a few multi-turn sessions to quantify the saving before flipping.
+3. **Warm-mode soak.** With the flag on, run multi-turn conversations and deliberately induce a hard-timeout zombie mid-session; confirm `end()`'s skip-release doesn't strand the VDevice across *sessions* (it's a cross-session strand now, not cross-turn). Watch for `hailo_lock_stuck` in STATUS.md.
+4. Auto-deploy ships within ~5 min of merge to main; the flag defaults off so this is safe to land, but do the spike before any config edit that enables it.
+
+---
+
 ## Current Priorities
 - Monitor Ollama escalation rates
 - Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs

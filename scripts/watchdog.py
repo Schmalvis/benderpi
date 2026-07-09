@@ -213,6 +213,25 @@ def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
                 data={"exits": len(stall_exits), "threshold": threshold},
             ))
 
+    # Hailo LLM lock stuck — release_chip() skipped its VDevice release N+
+    # consecutive times because a generate_all() was still in flight. A zombie
+    # inference has wedged the NPU and stranded the shared device; STT on the
+    # next turn/session will contend for a device it can't get. Any occurrence
+    # is worth surfacing (the responder already emits this only past its own
+    # internal threshold).
+    lock_stuck = [e for e in events if e.get("type") == "count"
+                  and e.get("name") == "hailo_lock_stuck"]
+    if lock_stuck:
+        threshold = cfg.get("hailo_lock_stuck_threshold", 1)
+        if len(lock_stuck) >= threshold:
+            alerts.append(Alert(
+                severity="error", check="hailo_lock_stuck",
+                message=f"Hailo LLM lock stuck {len(lock_stuck)}x in the last {lookback}h "
+                        f"— a zombie generate_all() wedged the NPU and stranded the "
+                        f"shared VDevice; may need a service restart",
+                data={"events": len(lock_stuck), "threshold": threshold},
+            ))
+
     alerts.extend(check_session_liveness(cfg))
 
     return alerts
