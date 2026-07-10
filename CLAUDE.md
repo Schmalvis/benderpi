@@ -117,11 +117,13 @@ bender/
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes (converse) | Claude API key for AI fallback |
+| `ANTHROPIC_API_KEY` | Yes, unless `ai_backend: "local_only"` | Claude API key for AI fallback |
 | `HA_TOKEN` | Yes (converse) | Home Assistant Long-Lived Access Token |
 | `HA_URL` | Yes (converse) | HA base URL (default: `http://<ha-ip>:8123`) |
 | `HA_WEATHER_ENTITY` | Optional | Weather entity (default: `weather.forecast_home`) |
 | `BENDER_AI_MODEL` | Optional | Claude model for fallback (default: `claude-haiku-4-5-20251001`) |
+
+An empty secret is a valid degraded-but-running state (offline-first — see Design Philosophy above), not a crash. `Config.validate()` (`scripts/config.py`) runs at startup in both `wake_converse.py` and `scripts/web/app.py` and logs a loud `WARNING` for any secret that's empty *given the active config* — the failure mode it targets is silent degradation, not the missing secret itself. See `.env.example` for least-privilege setup of both tokens (scoped Anthropic workspace key with a spend limit; restricted non-admin HA user for `HA_TOKEN`).
 
 ---
 
@@ -255,6 +257,8 @@ Both refresh at service start (in a background thread) and lazily when TTL expir
 ## Home Assistant Control
 
 `scripts/handlers/ha_control.py` — dynamic entity discovery, no static config needed.
+
+**Least privilege:** `HA_TOKEN` should come from a dedicated restricted HA user (non-admin, entity access scoped to the light/switch/climate entities Bender controls), not your admin token — see `.env.example`.
 
 - Fetches all `light.*`, `switch.*`, `climate.*` entities from HA REST API (cached 60s)
 - Filters noise via `EXCLUDE_KEYWORDS` and `EXCLUDE_ENTITIES` sets
@@ -410,6 +414,13 @@ and `ha_url`/`local_llm_url` must be LAN/localhost http(s). Secrets (`ha_token`,
 returns the JSON Schema. Violations return 422 with per-field detail, surfaced by the
 Config editor. `config.py` has a matching defensive type guard (`_override_type_ok`) so a
 hand-edited bad `bender_config.json` skips the offending key instead of crashing at boot.
+
+Both PUT responses include `restart_required` (`true` for `/api/config`, `false` for
+`/api/config/watchdog`) — `cfg` (`scripts/config.py`) is an import-time singleton read once
+when `bender-converse` starts, so a `bender_config.json` write is inert for the running
+process until it restarts; `watchdog_config.json` is re-read from disk on every
+`generate_status.py` run, so it needs no restart. The Svelte Config page (`Config.svelte`)
+shows a dismissable banner with a "Restart Now" button when `restart_required` comes back true.
 
 ### Key files
 - `web/src/App.svelte` — root component with auth gate, sidebar, page router

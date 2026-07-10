@@ -304,6 +304,8 @@ def wait_for_wakeword(_oww_model=None):
 # ---------------------------------------------------------------------------
 
 def main():
+    for _secret in cfg.validate():
+        metrics.count("secrets_missing", secret=_secret)
     ai = AIResponder()
     ai_local = None
     if cfg.ai_backend != "cloud_only":

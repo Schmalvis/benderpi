@@ -171,6 +171,81 @@ class TestTypeCoercionGuard:
         assert "ignoring override" not in capsys.readouterr().err
 
 
+class TestLoadDotenv:
+    """_load_dotenv must warn per malformed line (with line number) rather
+    than silently drop the whole file, and never crash on a missing file."""
+
+    def test_malformed_line_warns_and_rest_still_parsed(self, tmp_path, capsys, monkeypatch):
+        from config import Config
+        env_path = tmp_path / ".env"
+        env_path.write_text("this line has no equals sign\nHA_TOKEN=good-token\n")
+        monkeypatch.delenv("HA_TOKEN", raising=False)
+        c = Config(config_path=str(tmp_path / "nonexistent.json"), env_path=str(env_path))
+        assert c.ha_token == "good-token"
+        err = capsys.readouterr().err
+        assert "malformed line" in err
+        assert ":1:" in err  # line-numbered
+
+    def test_missing_env_file_no_crash(self, tmp_path):
+        from config import Config
+        c = Config(
+            config_path=str(tmp_path / "nonexistent.json"),
+            env_path=str(tmp_path / "does-not-exist.env"),
+        )
+        assert c is not None
+
+    def test_comments_and_blank_lines_skipped_silently(self, tmp_path, capsys, monkeypatch):
+        from config import Config
+        env_path = tmp_path / ".env"
+        env_path.write_text("# a comment\n\nHA_TOKEN=abc\n")
+        monkeypatch.delenv("HA_TOKEN", raising=False)
+        c = Config(config_path=str(tmp_path / "nonexistent.json"), env_path=str(env_path))
+        assert c.ha_token == "abc"
+        assert "malformed" not in capsys.readouterr().err
+
+
+class TestValidate:
+    """Config.validate() -- warn-loudly-not-crash for empty required secrets,
+    scoped to what the active config actually needs."""
+
+    def test_hybrid_backend_warns_on_missing_anthropic_key(self, tmp_path, monkeypatch):
+        from config import Config
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("HA_TOKEN", raising=False)
+        c = Config(config_path=str(tmp_path / "nonexistent.json"), env_path="/dev/null")
+        c.ai_backend = "hybrid"
+        c.anthropic_api_key = ""
+        c.ha_token = "present"
+        missing = c.validate()
+        assert missing == ["anthropic_api_key"]
+
+    def test_local_only_backend_does_not_require_anthropic_key(self, tmp_path):
+        from config import Config
+        c = Config(config_path=str(tmp_path / "nonexistent.json"), env_path="/dev/null")
+        c.ai_backend = "local_only"
+        c.anthropic_api_key = ""
+        c.ha_token = "present"
+        missing = c.validate()
+        assert "anthropic_api_key" not in missing
+
+    def test_missing_ha_token_always_warns(self, tmp_path):
+        from config import Config
+        c = Config(config_path=str(tmp_path / "nonexistent.json"), env_path="/dev/null")
+        c.ai_backend = "local_only"
+        c.anthropic_api_key = ""
+        c.ha_token = ""
+        missing = c.validate()
+        assert "ha_token" in missing
+
+    def test_all_secrets_present_returns_empty(self, tmp_path):
+        from config import Config
+        c = Config(config_path=str(tmp_path / "nonexistent.json"), env_path="/dev/null")
+        c.ai_backend = "hybrid"
+        c.anthropic_api_key = "sk-test"
+        c.ha_token = "test-token"
+        assert c.validate() == []
+
+
 def test_vlm_defaults(tmp_path):
     from config import Config
     cfg = Config(config_path=str(tmp_path / "nonexistent.json"))

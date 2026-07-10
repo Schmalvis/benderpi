@@ -232,6 +232,21 @@ def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
                 data={"events": len(lock_stuck), "threshold": threshold},
             ))
 
+    # Missing secrets — Config.validate() logs+counts this at each service
+    # startup (wake_converse.py and web/app.py) when a required secret is
+    # empty for the active config. Surfaced here so it doesn't sit silently
+    # degraded, same failure mode as the 6-day mic outage.
+    secrets_missing = [e for e in events if e.get("type") == "count"
+                       and e.get("name") == "secrets_missing"]
+    if secrets_missing:
+        missing_names = sorted({e.get("secret", "?") for e in secrets_missing})
+        alerts.append(Alert(
+            severity="warning", check="secrets_missing",
+            message=f"Missing secret(s) at last startup: {', '.join(missing_names)} "
+                    f"— see .env.example for least-privilege setup",
+            data={"secrets": missing_names, "events": len(secrets_missing)},
+        ))
+
     alerts.extend(check_session_liveness(cfg))
 
     return alerts

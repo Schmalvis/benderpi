@@ -65,7 +65,10 @@ async def config_put(request: Request, body: dict = Body(...)):
     current = _load_json_file(_CONFIG_PATH)
     current.update(clean)
     _save_json_file(_CONFIG_PATH, current)
-    return {"status": "ok", "config": current}
+    # `cfg` (scripts/config.py) is an import-time singleton read once at
+    # process start — this write is inert for the running bender-converse
+    # process until it restarts.
+    return {"status": "ok", "config": current, "restart_required": True}
 
 
 @router.get("/api/config/schema")
@@ -93,7 +96,10 @@ async def config_watchdog_put(request: Request, body: dict = Body(...)):
     current = _load_json_file(_WATCHDOG_CONFIG_PATH)
     current.update(clean)
     _save_json_file(_WATCHDOG_CONFIG_PATH, current)
-    return {"status": "ok", "config": current}
+    # watchdog checks are re-read from disk each generate_status.py run, so
+    # this one takes effect immediately — no restart needed, unlike
+    # /api/config above.
+    return {"status": "ok", "config": current, "restart_required": False}
 
 
 @router.get("/api/config/volume")

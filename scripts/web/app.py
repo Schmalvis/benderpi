@@ -10,6 +10,8 @@ sys.path.insert(0, _SCRIPTS_DIR)
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
+from config import cfg
+from metrics import metrics
 from web.auth import require_configured_pin
 from web.routes.auth import router as auth_router
 from web.routes.health import router as health_router
@@ -28,6 +30,11 @@ _DIST_DIR = os.path.join(_BASE_DIR, "web", "dist")
 # 5-minute auto-pull restarts this service, so BENDER_WEB_PIN must be set in
 # /home/pi/bender/.env *before* the deploy lands or bender-web will crash-loop.
 require_configured_pin()
+
+# Loud-not-silent secrets check (same cfg singleton bender-converse uses,
+# reported here too since the web UI is its own process/entrypoint).
+for _secret in cfg.validate():
+    metrics.count("secrets_missing", secret=_secret)
 
 app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None)
 

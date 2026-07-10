@@ -16,8 +16,9 @@ export async function loadConfig() {
 
 export async function saveConfig() {
   const data = get(config);
-  await apiUpdateConfig(data);
+  const result = await apiUpdateConfig(data);
   savedConfig.set(structuredClone(data));
+  return result;
 }
 
 export function resetConfig() {

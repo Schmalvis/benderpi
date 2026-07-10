@@ -10,6 +10,15 @@ Loading order:
 import json
 import os
 
+# NOTE: this module deliberately never imports scripts/logger.py.
+# logger.get_logger() -> _init_root() does `from config import cfg` at call
+# time, and `cfg` is constructed at the bottom of this module -- so if
+# config.py imported logger.py (even indirectly), building the `cfg`
+# singleton below would re-enter this still-partially-initialised module
+# looking for an attribute that doesn't exist yet. Warnings emitted here use
+# plain stderr prints (matching _override_type_ok / _clamp_local_llm_timeout
+# below), not the `logging` module or scripts/logger.py.
+
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
 _DEFAULT_ENV_PATH = os.path.join(_BASE_DIR, ".env")
@@ -316,20 +325,83 @@ class Config:
             self.local_llm_timeout = ceiling
 
     def _load_dotenv(self, path: str):
-        """Minimal .env parser — no dependency on python-dotenv for config module."""
+        """Minimal .env parser — no dependency on python-dotenv for config module.
+
+        Parses line-by-line so one malformed line is a loud, line-numbered
+        warning rather than a silent parse of nothing (the previous
+        try/except wrapped the whole file: a single bad line anywhere would
+        quietly drop every secret in the file, indistinguishable from an
+        empty .env).
+        """
+        import sys
         try:
-            with open(path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip().strip("'\"")
-                    if value:
-                        os.environ.setdefault(key, value)
-        except Exception:
-            pass
+            f = open(path)
+        except OSError as e:
+            print(f"[config] WARNING: could not read {path}: {e}", file=sys.stderr)
+            return
+        with f:
+            for lineno, raw in enumerate(f, start=1):
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    print(
+                        f"[config] WARNING: {path}:{lineno}: malformed line "
+                        f"(missing '='), skipping: {raw.rstrip(chr(10))!r}",
+                        file=sys.stderr,
+                    )
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if not key:
+                    print(
+                        f"[config] WARNING: {path}:{lineno}: empty key, "
+                        f"skipping: {raw.rstrip(chr(10))!r}",
+                        file=sys.stderr,
+                    )
+                    continue
+                value = value.strip().strip("'\"")
+                if value:
+                    os.environ.setdefault(key, value)
+
+    def validate(self) -> list:
+        """Loud, non-fatal startup check for required-but-empty secrets,
+        given the *active* config (ai_backend, etc). Offline-first means an
+        empty secret is a valid degraded state -- what must not happen is
+        *silent* degradation (the failure mode behind the 6-day mic outage:
+        the wake loop kept reading zeroed frames without ever raising).
+
+        Returns the list of missing secret names (also printed as WARNINGs)
+        so callers can feed a `secrets_missing` metric/counter.
+        """
+        import sys
+        missing = []
+
+        # anthropic_api_key only matters when the config can actually reach
+        # cloud: local_only never touches it.
+        if self.ai_backend != "local_only" and not self.anthropic_api_key:
+            missing.append("anthropic_api_key")
+            print(
+                f"[config] WARNING: ANTHROPIC_API_KEY is empty but "
+                f"ai_backend={self.ai_backend!r} may fall back to cloud -- "
+                f"those turns will degrade to error_fallback instead of a "
+                f"Claude response. Set ANTHROPIC_API_KEY in .env, or set "
+                f"ai_backend to 'local_only' if that's intentional.",
+                file=sys.stderr,
+            )
+
+        # ha_token gates both HA device control and weather briefings.
+        if not self.ha_token:
+            missing.append("ha_token")
+            print(
+                "[config] WARNING: HA_TOKEN is empty -- Home Assistant "
+                "device control and weather briefings will not work (HA "
+                "REST calls will fail). Set HA_TOKEN in .env. See "
+                ".env.example for least-privilege token setup.",
+                file=sys.stderr,
+            )
+
+        return missing
 
 
 # Singleton — import as: from config import cfg

@@ -3,6 +3,12 @@
 
 Thin layer: parses intent, resolves entities via EntityRegistry + EntityMatcher,
 calls HA via HAClient. Pronoun state (last_entities) lives in the caller.
+
+HA_TOKEN least privilege: this module calls HA's REST API (GET /api/states,
+POST /api/services/<domain>/<service>) with whatever token is in .env. Do not
+point it at your HA admin user's token -- use a dedicated restricted HA user
+scoped to just the light/switch/climate entities BenderPi should touch. See
+.env.example for setup steps.
 """
 
 from __future__ import annotations

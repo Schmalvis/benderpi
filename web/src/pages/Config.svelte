@@ -2,10 +2,12 @@
   import { onMount } from 'svelte';
   import { config, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
   import { getWatchdogConfig, updateWatchdogConfig, getVisionPassive, enableVisionPassive, disableVisionPassive,
-           rebuildResponses, generateStatus, getVolume, setVolume } from '../lib/api.js';
+           rebuildResponses, generateStatus, getVolume, setVolume, restartService } from '../lib/api.js';
+  import { toast } from '../lib/stores/toast.js';
 
   let saving = false;
   let saveMsg = '';
+  let restartRequired = false;
   let watchdog = {};
   let watchdogDirty = false;
 
@@ -71,7 +73,8 @@
     saving = true;
     saveMsg = '';
     try {
-      await saveConfig();
+      const result = await saveConfig();
+      if (result && result.restart_required) restartRequired = true;
       if (watchdogDirty) {
         await updateWatchdogConfig(watchdog);
         watchdogDirty = false;
@@ -87,6 +90,19 @@
   function handleReset() {
     resetConfig();
     saveMsg = '';
+  }
+
+  let restarting = false;
+  async function handleRestartNow() {
+    restarting = true;
+    try {
+      await restartService();
+      toast.push('Service restarting…', 'success');
+      restartRequired = false;
+    } catch (e) {
+      toast.push('Restart failed', 'error');
+    }
+    restarting = false;
   }
 
   function markWatchdogDirty() {
@@ -189,6 +205,17 @@
 </script>
 
 <div class="max-w-2xl space-y-4 pb-24">
+
+  {#if restartRequired}
+    <div class="bg-warning/10 border border-warning text-warning rounded-lg px-4 py-3 flex items-center justify-between gap-3 text-sm">
+      <span>Config saved — bender-converse won't pick this up until it restarts (it reads config once at startup).</span>
+      <button
+        class="bg-warning text-bg-base font-medium px-3 py-1.5 rounded whitespace-nowrap hover:opacity-90 disabled:opacity-50 transition-opacity"
+        disabled={restarting} on:click={handleRestartNow}>
+        {restarting ? 'Restarting…' : 'Restart Now'}
+      </button>
+    </div>
+  {/if}
 
   <!-- General -->
   <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">
