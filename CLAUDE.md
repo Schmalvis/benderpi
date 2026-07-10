@@ -161,7 +161,7 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 - `mic_stall_reinit_threshold` (default `3`) — warns if the wake loop reinitialised the mic after a stall this many times in the lookback window (USB mic flapping).
 - `mic_stall_exit_threshold` (default `1`) — errors if the service exited for a systemd restart after an unrecoverable mic stall (mic likely needs a physical reseat).
 
-**systemd:** Service uses `Type=notify` + `WatchdogSec=120`, plus `TimeoutStopSec=20` / `TimeoutAbortSec=20` so a wedged process gets SIGKILLed instead of sticking in "deactivating". Requires `libsystemd-dev pkg-config` (apt) and `systemd-python` (pip). After updating the service file: `sudo cp systemd/bender-converse.service /etc/systemd/system/ && sudo systemctl daemon-reload`.
+**systemd:** Service uses `Type=notify` + `WatchdogSec=120`, plus `TimeoutStopSec=20` / `TimeoutAbortSec=20` so a wedged process gets SIGKILLed instead of sticking in "deactivating". `StartLimitIntervalSec=300` / `StartLimitBurst=5` caps crash-restart thrash — after 5 start attempts (automatic *or* manual, e.g. a `git_pull.sh` restart) in 300s the unit lands in "failed" and stops retrying; recover with `sudo systemctl reset-failed bender-converse && sudo systemctl start bender-converse`. Requires `libsystemd-dev pkg-config` (apt) and `systemd-python` (pip). After updating the service file: `sudo cp systemd/bender-converse.service /etc/systemd/system/ && sudo systemctl daemon-reload`. **Important:** auto-deploy (`scripts/git_pull.sh`) only pulls source files — it never installs unit files. Any change to `systemd/*.service` must be manually copied + `daemon-reload`ed on the Pi to take effect, even after the git pull lands.
 
 **Mic stall watchdog (MicReader):** All blocking mic reads (wake-word loop + STT recording) go through `audio.MicReader`, a daemon reader thread + queue with a `mic_read_timeout_s` timeout. A wedged USB read raises `MicStallError` (subclass of `RuntimeError`) on the consumer thread so the process can log, feed the systemd watchdog, and escalate instead of hanging forever. Escalation policy: reinit the mic up to `mic_stall_max_reinits` times, then `sys.exit(1)` and let systemd's `Restart=on-failure` recover. A startup `audio.mic_selftest()` reads ~1s of frames and WARNs (non-blocking) if the mic path looks wedged or silent.
 
@@ -317,7 +317,7 @@ venv/bin/python scripts/review_log.py --days 7
 
 ## Auto-Deploy
 
-Changes pushed to `main` are pulled automatically by a systemd timer on BenderPi.
+Changes pushed to `main` are pulled automatically by a systemd timer on BenderPi, via `scripts/git_pull.sh`.
 
 ```bash
 # Check auto-pull status
@@ -328,7 +328,16 @@ sudo journalctl -u bender-git-pull.service -n 20
 cd /home/pi/bender && git pull origin main
 ```
 
-The timer polls every 5 minutes. If the pull changes any Python files or `.env.example`, it restarts `bender-converse` automatically.
+The timer polls every 5 minutes. On every new commit, `git_pull.sh` runs a guarded pipeline before it's considered deployed:
+
+1. `py_compile` every changed `.py` file (syntax preflight).
+2. `pip install -r requirements.txt`, but only if `requirements.txt` changed in the pull.
+3. `sudo systemctl restart bender-converse` — blocking, bounded by a `timeout` (the service is `Type=notify` and only sends `READY=1` once the wake loop is actually listening, so a successful blocking restart *is* the health check).
+4. A short post-restart `systemctl is-active --quiet` check, to catch a crash immediately after `READY=1`.
+
+Any gate failing rolls the repo back to the previous commit (`git reset --hard`), restarts the service on the old commit, and writes `.git_pull_bad_sha` (gitignored, lives in `/home/pi/bender`, untouched by `reset --hard`) so the timer doesn't re-deploy the same broken commit every 5 minutes — it auto-clears once `origin/main` moves past that SHA. Failures are logged as loud `DEPLOY FAILED: ...` lines, grep-able via `journalctl -u bender-git-pull.service`. Test the gates without touching the real device: `bash scripts/test_git_pull.sh` (throwaway git remote + stubbed `sudo`/`systemctl`).
+
+**Unit files are not part of auto-deploy** — see the systemd note above; `systemd/*.service` changes need a manual `cp` + `daemon-reload` on the Pi.
 
 ---
 

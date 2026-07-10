@@ -45,6 +45,9 @@ timers.json
 .end_session
 .session_active.json
 
+# Auto-deploy bad-commit marker (written by scripts/git_pull.sh on rollback)
+.git_pull_bad_sha
+
 # Svelte web app
 web/node_modules/
 .worktrees/

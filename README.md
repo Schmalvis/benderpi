@@ -298,7 +298,7 @@ To train your own:
 
 ## Auto-Deploy
 
-A systemd timer (`bender-git-pull.timer`) polls GitHub every 5 minutes. If the branch has advanced, it pulls and restarts `bender-converse` automatically. Push to `main` → live on the Pi within 5 minutes.
+A systemd timer (`bender-git-pull.timer`) polls GitHub every 5 minutes. If the branch has advanced, `scripts/git_pull.sh` pulls and, behind a guarded pipeline (syntax preflight, conditional `pip install`, bounded restart, post-restart health check), restarts `bender-converse`. Push to `main` → live on the Pi within 5 minutes — or, if a gate fails, automatically rolled back to the last good commit instead. See `CLAUDE.md` for the full gate/rollback details. Unit file changes (`systemd/*.service`) are **not** picked up by auto-deploy and need a manual copy + `daemon-reload` on the Pi.
 
 ---
 

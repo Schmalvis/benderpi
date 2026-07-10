@@ -2,6 +2,12 @@
 Description=BenderPi voice assistant (converse mode)
 After=network-online.target sound.target
 Wants=network-online.target
+# Cap crash-restart thrash: after 5 restarts within 300s, systemd stops
+# retrying and leaves the unit in "failed" state instead of looping forever
+# (e.g. a bad deploy that passed the git_pull.sh gates but still crash-loops).
+# Recovery: `sudo systemctl reset-failed bender-converse && sudo systemctl start bender-converse`.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
