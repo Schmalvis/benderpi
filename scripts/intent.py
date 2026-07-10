@@ -16,6 +16,7 @@ Intents:
   WEATHER       — weather/forecast/rain
   NEWS          — news/headlines/what's happening
   HA_CONTROL    — Commands to control HA devices (lights, switches)
+  HA_STATUS     — Read-only questions about HA device state ("is the kitchen light on")
   TIME          — what time is it / how late is it
   VISION        — scene/room awareness queries (what do you see, who's in the room)
   UNKNOWN       — everything else → AI fallback
@@ -120,6 +121,38 @@ HA_CONTROL_PATTERNS = [
     r"\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|cabin|utility|ensuite|living room)\b.{0,30}\b(light|lamp|off|on|radiator|heating)\b",
     r"\b(light|lamp)\b.{0,30}\b(kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|utility|ensuite)\b",
 ]
+
+# Read-only status queries — "is the office light on", "are any lights on",
+# "what's the office temperature". Checked independently of HA_CONTROL_PATTERNS
+# so a status question with no imperative verb still routes to HA_STATUS.
+HA_STATUS_PATTERNS = [
+    r"\b(is|are|was|were)\b.{0,30}\b(light|lamp|radiator|heating|thermostat|trv|switch|plug)s?\b",
+    r"\bany (lights?|switches?) (on|off)\b",
+    r"\bwhat(?:'s| is) the (kitchen|office|bedroom|bathroom|hallway|conservatory|dining|lounge|garden|attic|cabin|utility|ensuite|living room|radiator|thermostat)\b.{0,15}\btemperature\b",
+    r"\b(been turned|turned itself|have been turned|has been turned|was turned|were turned)\b",
+    r"\b(did|has|have)\b.{0,30}\b(turn|turned)\b.{0,20}\b(light|lamp|radiator|heating)\b",
+]
+
+# Leading interrogatives + past-tense/perfect narration markers. STT often
+# drops the trailing "?", so we lean on these instead of punctuation to tell
+# a question/statement ("is the office light on", "the lights in the kitchen
+# have been turned on") apart from an imperative ("turn on the office light").
+_HA_INTERROGATIVE_LEAD_RE = re.compile(
+    r"^(is|are|was|were|did|does|do|has|have|what|why|when|which|any)\b",
+    re.IGNORECASE,
+)
+_HA_NARRATION_RE = re.compile(
+    r"\b(been turned|turned itself|have been|has been|was turned|were turned)\b",
+    re.IGNORECASE,
+)
+
+
+def is_ha_question_or_narration(text: str) -> bool:
+    """True if text reads as a question about — or narration of — device
+    state, rather than a command to change it. Used to keep HA_CONTROL from
+    firing (and toggling real devices) on questions/statements."""
+    t = text.strip().lower()
+    return bool(_HA_INTERROGATIVE_LEAD_RE.match(t) or _HA_NARRATION_RE.search(t))
 
 VISION_PATTERNS = [
     r"\bwhat (do you see|can you see)\b",
@@ -272,6 +305,10 @@ def _check_all_intents(t: str) -> list[str]:
     matched = []
     if _match_any(t, HA_CONTROL_PATTERNS):
         matched.append("HA_CONTROL")
+    if _match_any(t, HA_STATUS_PATTERNS) or (
+        _match_any(t, HA_CONTROL_PATTERNS) and is_ha_question_or_narration(t)
+    ):
+        matched.append("HA_STATUS")
     if _match_any(t, TIMER_PATTERNS):
         matched.append("TIMER")
     if _match_any(t, TIMER_CANCEL_PATTERNS):
@@ -307,8 +344,6 @@ def classify(text: str) -> tuple[str, str | None]:
     word_count = len(t.split())
 
     # Most specific first
-    if _match_any(t, HA_CONTROL_PATTERNS):
-        return ("HA_CONTROL", None)
     if _match_any(t, TIMER_PATTERNS):
         return ("TIMER", None)
     if _match_any(t, TIMER_CANCEL_PATTERNS):
@@ -323,8 +358,25 @@ def classify(text: str) -> tuple[str, str | None]:
     if _match_any(t, TIME_PATTERNS):
         timezone = _extract_time_timezone(text.strip())
         return ("TIME", timezone)
+
+    # DISMISSAL is a session-control intent and must win over HA_CONTROL —
+    # "bender, stop" must never be swallowed by a light/radiator pattern.
+    # (TIMER_CANCEL is checked above, so "stop the timer" isn't shadowed by
+    # DISMISSAL's bare \bstop\b pattern.)
     if _match_any(t, DISMISSAL_PATTERNS):
         return ("DISMISSAL", None)
+
+    # HA_CONTROL vs HA_STATUS — a question/narration about lights or
+    # radiators ("is the office light on", "the lights in the kitchen have
+    # been turned on") must never fire a real HA write call. Only genuine
+    # imperatives reach HA_CONTROL; everything else HA-shaped is read-only.
+    ha_related = _match_any(t, HA_CONTROL_PATTERNS)
+    ha_question = ha_related and is_ha_question_or_narration(t)
+    if ha_related and not ha_question:
+        return ("HA_CONTROL", None)
+    if ha_question or _match_any(t, HA_STATUS_PATTERNS):
+        return ("HA_STATUS", None)
+
     if _match_any(t, JOKE_PATTERNS):
         return ("JOKE", None)
     if _match_any(t, VISION_PATTERNS):
@@ -382,6 +434,11 @@ if __name__ == "__main__":
         "What's the weather like in Portugal right now?",
         "Is it raining in Paris?",
         "The lights in the kitchen have been turned on",
+        "Is the office light on?",
+        "Are any lights on?",
+        "What's the office temperature?",
+        "Turn on the office lights",
+        "Bender, stop",
         "How old are you?",
         "What do you eat?",
         "Do you like me?",

@@ -159,3 +159,54 @@ def test_vision_intent_patterns(text, expected_intent):
     from intent import classify
     intent, _ = classify(text)
     assert intent == expected_intent
+
+
+# === HA_CONTROL vs HA_STATUS vs DISMISSAL precedence ===
+#
+# HA_CONTROL issues real HA writes (toggles real lights/radiators), so a
+# question or narration about device state must never be misread as a
+# command, and a dismissal ("bender, stop") must always win over an
+# HA-shaped pattern.
+
+@pytest.mark.parametrize("text,expected_intent", [
+    # Imperatives — real commands, must stay HA_CONTROL
+    ("turn on the kitchen lights", "HA_CONTROL"),
+    ("turn off the office light", "HA_CONTROL"),
+    ("bedroom lights off", "HA_CONTROL"),
+    ("switch on the conservatory lights", "HA_CONTROL"),
+    ("set the office radiator to 20 degrees", "HA_CONTROL"),
+    # Questions / narration — read-only, must never toggle a real device
+    ("is the office light on", "HA_STATUS"),
+    ("are the kitchen lights on", "HA_STATUS"),
+    ("was the heating left on", "HA_STATUS"),
+    ("did you turn on the office lights", "HA_STATUS"),
+    ("the lights in the kitchen have been turned on", "HA_STATUS"),
+    ("the radiator turned itself off", "HA_STATUS"),
+    ("are any lights on", "HA_STATUS"),
+    ("what's the office temperature", "HA_STATUS"),
+])
+def test_ha_control_vs_status(text, expected_intent):
+    from intent import classify
+    intent, _ = classify(text)
+    assert intent == expected_intent
+
+
+@pytest.mark.parametrize("text", [
+    "bender, stop",
+    "bender stop",
+    "shut up bender",
+])
+def test_dismissal_wins_over_ha_control(text):
+    """DISMISSAL is a session-control intent and must always win, even if the
+    utterance happens to also look HA-shaped."""
+    from intent import classify
+    intent, _ = classify(text)
+    assert intent == "DISMISSAL"
+
+
+def test_timer_cancel_not_shadowed_by_dismissal_reorder():
+    """Moving DISMISSAL above HA_CONTROL must not let its bare \\bstop\\b
+    pattern swallow 'stop the timer' — TIMER_CANCEL must still win."""
+    from intent import classify
+    assert classify("stop the timer")[0] == "TIMER_CANCEL"
+    assert classify("cancel the pasta timer")[0] == "TIMER_CANCEL"

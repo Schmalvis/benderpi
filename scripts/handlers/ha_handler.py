@@ -11,22 +11,32 @@ log = get_logger("ha_handler")
 
 
 class HAHandler(Handler):
-    intents = ["HA_CONTROL"]
+    intents = ["HA_CONTROL", "HA_STATUS"]
 
     def __init__(self) -> None:
         self._registry, self._matcher, self._client = make_default(cfg)
         self._last_entities: list[dict] = []
 
     def handle(self, text: str, intent: str, sub_key: str | None = None) -> Response | None:
-        wav_path, self._last_entities = ha_control.control(
-            text,
-            registry=self._registry,
-            matcher=self._matcher,
-            client=self._client,
-            last_entities=self._last_entities,
-        )
+        if intent == "HA_STATUS":
+            wav_path, self._last_entities = ha_control.report_status(
+                text,
+                registry=self._registry,
+                matcher=self._matcher,
+                last_entities=self._last_entities,
+            )
+            method = "handler_ha_status"
+        else:
+            wav_path, self._last_entities = ha_control.control(
+                text,
+                registry=self._registry,
+                matcher=self._matcher,
+                client=self._client,
+                last_entities=self._last_entities,
+            )
+            method = "handler_ha"
         if not wav_path:
             log.warning("HAHandler: HA control returned no WAV")
             return None
-        return Response(text=text, wav_path=wav_path, method="handler_ha",
+        return Response(text=text, wav_path=wav_path, method=method,
                         intent=intent, sub_key=sub_key)

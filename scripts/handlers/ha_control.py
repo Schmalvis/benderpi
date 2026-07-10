@@ -19,6 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tts_generate
+from intent import is_ha_question_or_narration
 from logger import get_logger
 from metrics import metrics
 
@@ -57,6 +58,12 @@ FAILED_RESPONSES = [
     "The smart home isn't feeling very smart right now.",
     "Home Assistant call failed. I blame the humans who built this infrastructure.",
 ]
+STATUS_RESPONSES = [
+    "{summary}. Riveting update, I know.",
+    "{summary}. You're welcome for the play-by-play.",
+    "{summary}. Happy now?",
+]
+_ON_STATES = frozenset({"on", "heat", "heating", "auto", "heat_cool"})
 
 
 def _result_to_speech(result: dict) -> str:
@@ -102,7 +109,10 @@ def execute(
         temperature : float | None
         error       : None | "no_room" | "no_match" | "no_action" | "ha_failed"
     """
-    action = matcher.parse_action(user_text)
+    # Defense in depth: even if intent classification mis-routes a question
+    # here (e.g. "is the office light on"), don't let a bare "on"/"off"
+    # masquerade as a command — require an explicit "turn on"/"turn off" verb.
+    action = matcher.parse_action(user_text, allow_bare=not is_ha_question_or_narration(user_text))
     room_term = matcher.parse_room_term(user_text)
 
     if not room_term:
@@ -206,6 +216,85 @@ def control(
         last_entities=last_entities,
     )
     return tts_generate.speak(_result_to_speech(result)), matched
+
+
+def status(
+    user_text: str,
+    *,
+    registry: EntityRegistry,
+    matcher: EntityMatcher,
+    last_entities: list[dict] | None = None,
+) -> tuple[dict, list[dict]]:
+    """Read-only status query — reports cached EntityRegistry state, never
+    calls HA (no writes). Cache TTL means the answer can be up to
+    ha_entity_cache_ttl_s stale.
+
+    result_dict keys:
+        entities    : [{"entity_id", "friendly_name", "domain", "state"}]
+        room_display: str
+        error       : None | "no_room" | "no_match"
+    """
+    room_term = matcher.parse_room_term(user_text)
+
+    if not room_term:
+        return ({"entities": [], "room_display": "", "error": "no_room"}, [])
+
+    if room_term in PRONOUNS and last_entities:
+        matches = last_entities
+    else:
+        matches = matcher.match(room_term, registry.get())
+
+    if not matches:
+        return ({"entities": [], "room_display": room_term, "error": "no_match"}, [])
+
+    room_display = matches[0]["normalised"].title()
+
+    # If both a light/switch and a climate entity matched (e.g. "office"),
+    # prefer the non-climate reading unless climate is all that matched —
+    # mirrors execute()'s on/off preference.
+    non_climate = [e for e in matches if e["domain"] != "climate"]
+    if non_climate:
+        matches = non_climate
+
+    return (
+        {"entities": matches, "room_display": room_display, "error": None},
+        matches,
+    )
+
+
+def _status_to_speech(result: dict) -> str:
+    error = result.get("error")
+    if error == "no_room":
+        return random.choice(UNKNOWN_ROOM_RESPONSES)
+    if error == "no_match":
+        return (f"I can't find anything called {result['room_display']} in Home Assistant. "
+                "Try saying the room name differently.")
+    lines = []
+    for e in result["entities"]:
+        is_on = str(e.get("state", "")).lower() in _ON_STATES
+        lines.append(f"the {e['friendly_name']} is {'on' if is_on else 'off'}")
+    summary = "; ".join(lines) if lines else "I've got nothing on that"
+    return random.choice(STATUS_RESPONSES).format(summary=summary[0].upper() + summary[1:])
+
+
+def report_status(
+    user_text: str,
+    *,
+    registry: EntityRegistry,
+    matcher: EntityMatcher,
+    last_entities: list[dict] | None = None,
+) -> tuple[str, list[dict]]:
+    """Execute a read-only status query + wrap in Bender TTS.
+
+    Returns (wav_path, matched_entities), same shape as control().
+    """
+    result, matched = status(
+        user_text,
+        registry=registry,
+        matcher=matcher,
+        last_entities=last_entities,
+    )
+    return tts_generate.speak(_status_to_speech(result)), matched
 
 
 # ---------------------------------------------------------------------------

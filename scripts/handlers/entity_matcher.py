@@ -10,7 +10,10 @@ _NOISE_WORDS = frozenset({
 })
 
 _FILLER = re.compile(
-    r"\b(can\s+you|could\s+you|please|put\s+on|set|would\s+you)\b", re.I
+    r"\b(can\s+you|could\s+you|please|put\s+on|set|would\s+you|"
+    r"is|are|was|were|did|does|do|has|have|what'?s|what\s+is|why|when|which|"
+    r"been|turned|itself)\b",
+    re.I,
 )
 _ACTION_PHRASES = re.compile(
     r"\b(turn|switch)\s+(on|off)\b", re.I
@@ -96,14 +99,22 @@ class EntityMatcher:
         return [e for _, e in result]
 
     @staticmethod
-    def parse_action(text: str) -> str | None:
-        """Extract 'on' or 'off' from utterance. Returns None if ambiguous."""
+    def parse_action(text: str, *, allow_bare: bool = True) -> str | None:
+        """Extract 'on' or 'off' from utterance. Returns None if ambiguous.
+
+        allow_bare: when False, skip the bare on/off fallback below — used
+        for question/narration text ("is the office light on") where a lone
+        "on"/"off" describes state, not a command, and must not be treated
+        as an action to execute.
+        """
         text = text.lower()
         # Explicit compound phrases first (highest confidence)
         if re.search(r"\b(turn\s+on|switch\s+on|enable|activate)\b", text):
             return "on"
         if re.search(r"\b(turn\s+off|switch\s+off|disable|deactivate|kill|cut)\b", text):
             return "off"
+        if not allow_bare:
+            return None
         # Bare on/off: "bedroom lights off", "just the office on"
         if re.search(r"\bon\b", text):
             return "on"
