@@ -1,0 +1,11 @@
+[Unit]
+Description=BenderPi — pull latest from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/home/pi/bender/scripts/git_pull.sh
+StandardOutput=journal
+StandardError=journal

@@ -54,7 +54,6 @@ You'll need the following before setup:
 
 | Key | Where to get it |
 |---|---|
-| **Picovoice access key** | [console.picovoice.ai](https://console.picovoice.ai) — free tier available |
 | **Anthropic API key** | [console.anthropic.com](https://console.anthropic.com) |
 | **Home Assistant long-lived token** | HA → Profile → Long-Lived Access Tokens |
 | **Hugging Face token** | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — needed to download voice model and audio assets |
@@ -96,7 +95,6 @@ Stored in `.env` (created by `setup.sh` from `.env.example`):
 
 | Variable | Required | Description |
 |---|---|---|
-| `PORCUPINE_ACCESS_KEY` | Yes | Picovoice wake word key |
 | `ANTHROPIC_API_KEY` | Yes | Claude API key for AI fallback |
 | `HA_TOKEN` | Yes | Home Assistant long-lived access token |
 | `HA_URL` | Yes | HA base URL (e.g. `http://homeassistant.local:8123`) |

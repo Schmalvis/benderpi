@@ -1,5 +1,83 @@
 # BenderPi Handover Context
-Last updated: 2026-07-09
+Last updated: 2026-07-10
+
+---
+
+## 2026-07-10 — Fable review implementation session (branch `fable-review-fixes`)
+
+The Fable multi-agent review (`docs/benderpi-fable-review-2026-07-09.md`, 27 agents,
+88 findings → 15 prioritized groups) has been implemented end-to-end on
+`fable-review-fixes`. **Not yet merged to main or pushed** — do that deliberately,
+after re-reading the auth-hardening deploy-order warning just below, since a couple of
+these changes fail closed on missing config and auto-deploy will restart the live
+service within ~5 minutes of the merge landing.
+
+**What shipped, roughly in dependency order:**
+- **Mic-stall watchdog** (`3fd6fdf`) — all blocking mic reads (wake loop + STT) now go
+  through `audio.MicReader`, a daemon thread + queue with a read timeout; a wedged USB
+  read raises `MicStallError` instead of hanging forever, escalating to a bounded reinit
+  then `sys.exit(1)` for systemd to restart. Directly targets the failure mode below.
+- **Wake-word N-of-M smoothing + RMS sentinel + training sweep** (`c5d4450`) — see the
+  2026-07-09 wake-word section below for detail; still needs on-device threshold
+  calibration.
+- **STT confidence-gated hallucination filtering** (`999071b`).
+- **Hailo warm-LLM session mode** (`28bb70b`) — opt-in, default off; see the 2026-07-09
+  warm-Hailo section below.
+- **Web auth hardening** (`6c13e77`) — PIN → signed ~12h token, rate limiting, fails
+  closed on missing/placeholder PIN. **Deploy-order-sensitive — see the warning below.**
+- **Config PUT validation** (`b563476`) — typed pydantic schema for `PUT /api/config`.
+- **WM8960 access serialization** (`fb94907`) — `service_guard.py` centralises the
+  puppet/vision/mic-stream stop-restart race behind one lock; bounds two previously
+  unbounded web streams (camera MJPEG, mic websocket).
+- **hey_bender_v0.1 config default** (`1b33e40`) — committed config now points at the
+  trained model, fails loudly at startup if it's missing rather than silently falling
+  back to a bundled model.
+- **Secrets validation** (`cc7d81d`) — `Config.validate()` warns loudly on missing
+  secrets instead of degrading silently; per-line `.env` parse errors are no longer
+  swallowed.
+- **Auto-deploy hardening** (`1a44a7a`) — `git_pull.sh` now runs a syntax preflight +
+  bounded restart + post-restart health check, and rolls back to the last good commit
+  on any gate failure instead of shipping a broken pull to the live device.
+- **Test suite restored** (`8ab80db`) — broken imports fixed, `httpx` added to
+  `requirements.txt` (was only reaching the venv transitively via `anthropic`), plus new
+  coverage (audio RMS helpers, STT hallucination filtering, LED alert-flash race) and a
+  pre-push hook (`.githooks/pre-push`, `git config core.hooksPath .githooks` to enable).
+- **Intent ordering fix** (`d1475b7`) — DISMISSAL now takes priority over HA_CONTROL so
+  "stop" doesn't get swallowed as a device command (TIMER_CANCEL still checked first so
+  "stop the timer" isn't shadowed by DISMISSAL's bare `\bstop\b`).
+- **Log rotation + watchdog alert push** (`70dc13f`) — `metrics.jsonl` size-rotates
+  (10MB, 2 backups); `scripts/watchdog_notify.py` + `bender-watchdog.timer` (not
+  auto-installed — see Runtime Config section) actually runs `watchdog.py`'s checks on a
+  schedule and pushes alerts to HA (nothing did before this).
+- **Piper crash resilience + WAV cache** (`e0954fb`) — content-hash cache avoids
+  re-synthesizing identical text; pool recovers from a crashed Piper subprocess instead
+  of wedging TTS.
+- **Docs sync** (this commit) — recovered `bender-git-pull.{service,timer}` from the
+  live device into `systemd/` (previously existed nowhere in git — lost if the SD card
+  died), stripped dead Porcupine references from `setup.sh`/`README.md`, fixed a stale
+  `vlm.py` docstring (`BGR` → `RGB`), reconciled `CLAUDE.md`'s Project Structure /
+  Runtime Config / Web UI sections against the actual `scripts/` tree and shipped
+  features, marked `IMPLEMENTATION_PLAN.md`'s Hailo-NPU-LLM item shipped.
+
+**hey_bender_v0.1 wake-word model — recall is a known, open concern.** The trained
+custom model (superseding the interim `hey_jarvis` stand-in) evaluates at roughly
+**0.794 accuracy / 0.589 recall**. Recall this low means roughly 4 in 10 genuine "Hey
+Bender" attempts don't fire — the N-of-M smoothing above buys back some precision
+headroom to lower the detection threshold, but a real recall fix needs either a better
+training sweep (`scripts/train_hey_bender.py::sweep` exists for this — see the
+2026-07-09 wake-word section) or more/better training data. Don't mistake "user says
+'hey bender' and nothing happens" for a regression — check the loaded-model log line
+and recent `wake_score_log_interval_s` peak-score lines in journald before assuming
+something broke.
+
+**XVF3800 USB mic — the 6-day stall (recurring since ~Jul 3) is resolved two ways, not
+one.** A physical reseat of the USB connector on 2026-07-09 (~20:11) fixed the
+immediate hardware-level symptom (buffer overruns). Independently, the mic-stall
+watchdog above (`3fd6fdf`) landed as the software-side fix so a *future* wedged read —
+physical reseat or not — gets detected and escalated instead of silently killing wake
+word for days with a heartbeat that keeps lying. Treat both as necessary: the reseat
+fixed this specific incident, the watchdog is what catches the next one whether or not
+someone's around to notice the mic went quiet.
 
 ---
 
@@ -235,6 +313,12 @@ Fable review group #15. Cuts the per-turn Hailo HEF reload tax — but the headl
 ---
 
 ## Current Priorities
+- **Merge `fable-review-fixes` to `main` deliberately, not by habit.** Before merging:
+  set a real `BENDER_WEB_PIN` on the Pi (see the auth-hardening warning below — the web
+  service now fails closed), and budget for the on-device verification listed in each
+  2026-07-09 section below (wake-word threshold calibration, warm-Hailo-session HEF
+  coexistence spike, stream-token/WM8960-serialization checks). None of this was
+  testable off-device.
 - Monitor Ollama escalation rates
 - Monitor Hailo LLM KV-Cache on restart — retry cooldown should clear it within 60s if it occurs
 - Test timers: "Hey Bender, set a timer for pasta for 5 minutes"
@@ -285,7 +369,8 @@ Fable review group #15. Cuts the per-turn Hailo HEF reload tax — but the headl
 - **Hailo LLM KV-Cache conflict** — if KV-Cache is still locked after restart (e.g. from bender-web YOLO pipeline holding Hailo), bender-converse retries every 60s. Should self-heal; if not, `sudo systemctl restart bender-web` to release.
 - **`del self._vdevice` may not fully release Hailo VDevice** — `del` decrements Python refcount but Hailo SDK may hold internal refs. If KV-Cache lock recurs, check Hailo SDK for an explicit `release()`/`close()` API.
 - **Camera-busy check uses substring match** — `"busy" in str(e).lower()` works for today's libcamera EBUSY message. If future SDK versions change the wording it silently regresses. Deferred `CameraBusyError` typed exception in `scripts/camera.py` would fix this cleanly.
-- **ReSpeaker XVF3800 4-Mic Array** — now primary mic. Device discovery is by name (`mic_shared`/`seeed`), not hardcoded index — USB hotplug no longer breaks audio.
+- **ReSpeaker XVF3800 4-Mic Array** — now primary mic. Device discovery is by name (`mic_shared`/`seeed`), not hardcoded index — USB hotplug no longer breaks audio. The mic-stall watchdog (`audio.MicReader`, 2026-07-10) now catches a wedged read; a 6-day stall on this device was previously invisible to the heartbeat.
+- **hey_bender_v0.1 wake-word recall (~0.589)** — roughly 4 in 10 genuine "hey bender" attempts don't fire. N-of-M smoothing (2026-07-09) buys threshold headroom but doesn't fix the underlying model; needs a systematic training sweep (`train_hey_bender.py::sweep`) or more data. See the 2026-07-09 wake-word section.
 - Piper --json-input mode needs verification on Pi (using warm-up fallback)
 - Intent false positives reduced but not eliminated
 - Thinking sound timing: plays after get_response() returns, not during generation

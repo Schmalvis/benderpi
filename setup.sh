@@ -174,10 +174,6 @@ else
     echo " Configuration"
     echo "────────────────────────────────────────────────────────────"
 
-    prompt "Picovoice access key (get one free at console.picovoice.ai):"
-    read -r PORCUPINE_KEY
-    sed -i "s|^PORCUPINE_ACCESS_KEY=.*|PORCUPINE_ACCESS_KEY=${PORCUPINE_KEY}|" "$ENV_FILE"
-
     prompt "Anthropic API key (claude.ai → API keys):"
     read -r ANTHROPIC_KEY
     sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_KEY}|" "$ENV_FILE"

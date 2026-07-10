@@ -31,24 +31,25 @@ logs for model errors / re-probe STT pipeline.
 
 ## Phase 2 — High Impact (Hailo NPU)
 
-### P2: Run LLM on Hailo NPU (Qwen2.5-1.5B)
-**Discovery:** `Qwen2.5-1.5B-Instruct` is available as a hailo10h HEF in the
-GenAI Model Zoo (`app: voice_assistant`) — the same model we run via CPU Ollama.
-Running this on the NPU instead of CPU would:
-- Cut LLM inference from ~4–6s to estimated ~1–2s
-- Free the entire CPU for other tasks
-- Potentially eliminate the need for Ollama entirely
+### P2: Run LLM on Hailo NPU (Qwen2.5-1.5B) — SHIPPED
 
-**Steps:**
-1. Download: `hailo-download-resources --group voice_assistant --arch hailo10h`
-2. Review hailo-apps `voice_assistant` pipeline to understand API
-3. Wire into `ai_local.py` as a `HailoLLMResponder` alongside/replacing Ollama
-4. Benchmark against current CPU Ollama times
-5. Switch `ai_backend` default to `hailo` in `bender_config.json`
+**Status: done.** `ai_backend: "hybrid"` with Hailo GenAI as the primary local LLM,
+Ollama CPU as fallback, landed in `7736116` (`feat: Hailo on-chip LLM as primary AI
+backend`) and went through several rounds of hardening as real coexistence issues
+with Hailo STT surfaced on-device (KV-Cache contention causing STT/LLM to fight over
+the chip) — see `304cd45`, `4d3e5b4`, `922a1b4`, `001db30`, `e9700d2`, culminating in
+`9cd3d93` (`fix(hailo): harden STT+LLM VDevice coexistence, re-enable Hailo STT`),
+which is the commit to treat as "the coexistence problem is solved" for this feature.
 
-**Files:** `scripts/ai_local.py`, `scripts/responder.py`, `bender_config.json`
-**Effort:** 4–6 hrs
-**Risk:** Hailo LLM API may differ from Ollama's HTTP interface — needs investigation
+**Follow-on (this review cycle, `28bb70b`):** opt-in `llm_warm_session` config flag
+holds the Hailo LLM VDevice across conversation turns (released at session `end()`)
+instead of reloading the HEF after every AI turn — see `llm_warm_session` in
+CLAUDE.md's Runtime Config table for the tradeoff (+3–5s HEF reload avoided per turn,
+opt-in and hardware-gated because it assumes Whisper + Qwen HEFs coexist cleanly;
+default is still `false`).
+
+**Files:** `scripts/ai_local.py`, `scripts/responder.py`, `scripts/session.py`,
+`bender_config.json`
 
 ### P2: Parallelise STT + LLM warm-up
 Once LLM runs on Hailo alongside STT, both can share the device (VDevice shared

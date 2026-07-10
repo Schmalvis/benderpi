@@ -128,7 +128,7 @@ def describe_scene(
     """Describe a scene using Qwen2-VL-2B vision-language model.
 
     Args:
-        frame: BGR image as numpy array.
+        frame: RGB image as numpy array.
         prompt: Optional question / instruction. Defaults to a general description prompt.
         timeout: Max seconds to wait. Falls back to BENDER_VLM_TIMEOUT env var (default 60s).
 

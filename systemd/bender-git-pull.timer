@@ -1,0 +1,11 @@
+[Unit]
+Description=BenderPi — auto-pull timer (every 5 minutes)
+Requires=bender-git-pull.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=bender-git-pull.service
+
+[Install]
+WantedBy=timers.target

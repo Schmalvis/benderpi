@@ -86,10 +86,18 @@ bender/
 │   ├── watchdog_notify.py    — runs watchdog checks + pushes alerts to HA (bender-watchdog.timer), sweeps old logs
 │   ├── generate_status.py    — auto-generates STATUS.md from logs/metrics
 │   ├── leds.py               — WS2812B LED control (SPI)
-│   ├── wake.py               — clips-only mode (simple, no conversation)
-│   ├── wake_tts.py           — TTS-only mode (random lines on wake word)
-│   ├── git_pull.sh           — auto-pull script (called by systemd timer)
-│   ├── switch_mode.sh        — switch between clips/tts/converse modes
+│   ├── session.py            — ConversationSession: wake-to-goodbye lifecycle, greeting, turn dispatch, vision injection, IPC files
+│   ├── handler_base.py       — base classes/utilities shared by intent handlers
+│   ├── ai_local.py           — local LLM responder: Hailo NPU primary, Ollama CPU fallback
+│   ├── camera.py             — Picamera2 (IMX500) singleton, thread-safe ref-counted access
+│   ├── vision.py             — scene analysis orchestrator (composes camera.py + vlm.py)
+│   ├── vlm.py                — Qwen2-VL-2B vision-language scene description via Hailo
+│   ├── time_parser.py        — natural-language time expression parser (pure stdlib)
+│   ├── timers.py             — timer/alarm CRUD with file-based persistence
+│   ├── train_hey_bender.py   — Modal training pipeline for the custom "hey bender" openWakeWord model
+│   ├── deploy_hey_bender.sh  — pulls the trained hey_bender model from HF Hub, switches config over
+│   ├── latency_bench.py      — per-stage response pipeline latency benchmarking
+│   ├── git_pull.sh           — auto-pull script (called by bender-git-pull.timer; syntax preflight + auto-rollback)
 │   └── handlers/
 │       ├── ha_control.py     — dynamic HA entity control via REST API
 │       └── weather.py        — legacy weather handler (superseded by briefings.py)
@@ -142,8 +150,8 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `mic_stall_max_reinits` | `1` | In-process mic reinit attempts after a stall before `sys.exit(1)` → systemd restart |
 | `vlm_yolo_timeout_s` | `8` | Max seconds for YOLO/LLM inference in vlm.py |
 | `vlm_lazy_poll_s` | `0.05` | Non-blocking poll interval for lazy scene injection |
-| `response_hard_timeout_s` | `20` | Hard kill timeout for inference thread |
-| `local_llm_timeout` | `3` | Ollama request timeout. Load-time invariant: clamped to `response_hard_timeout_s - 2` (warn-and-clamp in `config.py`) so Ollama can fail over before the hard-timeout join kills the thread |
+| `response_hard_timeout_s` | `20` (code default), `45` (shipped in `bender_config.json`) | Hard kill timeout for inference thread |
+| `local_llm_timeout` | `3` (code default), `25` (shipped in `bender_config.json`) | Ollama request timeout. Load-time invariant: clamped to `response_hard_timeout_s - 2` (warn-and-clamp in `config.py`) so Ollama can fail over before the hard-timeout join kills the thread |
 | `llm_warm_session` | `false` | **Opt-in, hardware-gated.** Hold the Hailo LLM VDevice across turns (released at session `end()`) instead of after every AI turn — kills the per-turn HEF reload tax (see `ai_hailo_load` metric). Assumes Whisper + Qwen HEFs coexist on the Hailo-10H; if not, STT fails on turn 2. Only flip `true` after the on-device HEF-coexistence spike passes; revert by config edit if the chip misbehaves |
 | `http_timeout_s` | `10` | urlopen timeout for briefings + HA fetches |
 | `audio_chunk` | `512` | PyAudio buffer size (frames) |
@@ -156,6 +164,14 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `ha_exclude_keywords` | (list) | Entity name substrings to exclude from HA control |
 | `ha_exclude_entities` | (list) | Specific entity IDs to exclude from HA control |
 | `whisper_hallucinations` | (list) | Phrases Whisper hallucinates — filtered from STT output |
+| `oww_model_path` | `"models/hey_bender_v0.1.onnx"` | openWakeWord model file; wake loop fails loudly at startup if missing (never silently falls back to a bundled model) |
+| `oww_threshold` | `0.35` | Per-frame openWakeWord detection score threshold |
+| `oww_frames_required` | `2` | N-of-M smoothing: consecutive high-score frames required within `oww_window` to confirm a wake trigger (cuts single-frame ghost triggers) |
+| `oww_window` | `4` | Rolling frame window `oww_frames_required` is evaluated over |
+| `wake_rms_floor` | `30.0` | RMS input sentinel — frames below this are treated as near-silence for wake-score logging/diagnostics |
+| `stt_no_speech_prob_max` / `stt_avg_logprob_min` / `stt_compression_ratio_max` | `0.6` / `-1.0` / `2.4` | Whisper per-segment confidence gates; a transcript failing any of these (plus `whisper_hallucinations` phrase match) is treated as a hallucination and discarded rather than acted on |
+| `hailo_stt_enabled` | `true` | Route STT through the Hailo NPU (Whisper) rather than CPU faster-whisper |
+| `vlm_enabled` | `false` | Gate for Qwen2-VL scene description (`vlm.py`) — off by default due to Hailo KV-Cache contention with the LLM |
 
 `watchdog_config.json` keys:
 - `max_hours_without_session` (default `6`) — alerts if no conversation session detected in N hours.
@@ -207,16 +223,11 @@ NOT the full suite, see README's Testing section for why and how to enable it
 
 ---
 
-## Operating Modes
+## Service Management
 
-```bash
-bash scripts/switch_mode.sh converse   # full conversation (primary)
-bash scripts/switch_mode.sh clips      # original clips only
-bash scripts/switch_mode.sh tts        # TTS lines only
-bash scripts/switch_mode.sh status     # which service is active
-```
+`bender-converse` runs the full conversation loop and is the only operating mode —
+there is no separate clips-only or TTS-only mode.
 
-### Service management
 ```bash
 sudo systemctl status bender-converse
 sudo systemctl restart bender-converse
@@ -225,6 +236,10 @@ sudo journalctl -u bender-converse -f
 
 Service file: `/etc/systemd/system/bender-converse.service`  
 Important: `PYTHONUNBUFFERED=1` is set in the service so Python output appears in journald.
+
+Other services: `bender-web` (admin UI), `bender-watchdog.timer` (health checks + HA
+alert push, every 15 min), `bender-git-pull.timer` (auto-deploy poll, every 5 min —
+see Auto-Deploy below). Unit files live in `systemd/`.
 
 ---
 
@@ -458,6 +473,18 @@ process until it restarts; `watchdog_config.json` is re-read from disk on every
 `generate_status.py` run, so it needs no restart. The Svelte Config page (`Config.svelte`)
 shows a dismissable banner with a "Restart Now" button when `restart_required` comes back true.
 
+### WM8960 access serialization
+
+Puppet playback, vision auto-narrate, and the ambient mic websocket each independently
+stop/restart `bender-converse` to grab the single-rate WM8960 (see Critical audio
+constraint above) — running two concurrently used to race (a second stop/restart could
+stomp a still-playing first clip). `scripts/web/service_guard.py` centralises the
+stop → work → restart sequence behind one process-wide lock; a contending request gets
+`409 ServiceBusy` instead of racing. The camera MJPEG stream and mic websocket are also
+capped (previously unbounded) so a backgrounded browser tab that stops reading without
+closing the connection can't pin the capture device forever. Mutating web routes get
+audit logging.
+
 ### Key files
 - `web/src/App.svelte` — root component with auth gate, sidebar, page router
 - `web/src/lib/api.js` — centralised API client
@@ -467,6 +494,7 @@ shows a dismissable banner with a "Restart Now" button when `restart_required` c
 - `scripts/web/app.py` — FastAPI application (serves `web/dist/`)
 - `scripts/web/auth.py` — auth: `POST /api/auth/login` verifies the PIN (`hmac.compare_digest`) and issues an HMAC-signed ~12h token (sent as `X-Bender-Token`); mints ~60s stream tokens for the camera `<img>` stream + mic websocket; in-memory login rate-limit (429 on backoff); fails closed if `BENDER_WEB_PIN` is unset/placeholder
 - `scripts/web/routes/config_schema.py` — pydantic validation for config PUTs
+- `scripts/web/service_guard.py` — process-wide lock serializing WM8960 access (puppet/vision/mic-stream)
 - `systemd/bender-web.service` — systemd service file
 
 ---
@@ -482,7 +510,7 @@ shows a dismissable banner with a "Restart Now" button when `restart_required` c
 ### Add a new intent
 
 1. Add `_PATTERNS` list and classify check in `scripts/intent.py`
-2. Add handler branch in `scripts/wake_converse.py`
+2. Add handler branch in `scripts/responder.py` (the response priority chain — `wake_converse.py` is a thin orchestrator and no longer holds intent dispatch logic)
 3. Test: `venv/bin/python scripts/intent.py`
 
 ### Change the AI model
