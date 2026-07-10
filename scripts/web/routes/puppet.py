@@ -1,13 +1,13 @@
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import time
 
-from fastapi import APIRouter, Body, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from web.auth import require_stream_token_ws, require_token, verify_stream_token
+from web.service_guard import ServiceBusy, service_lease
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -17,8 +17,17 @@ sys.path.insert(0, _SCRIPTS_DIR)
 import audio
 import leds
 import vision as _vision
+from config import cfg
+from logger import get_logger
 
 _IS_LINUX = os.name != "nt"
+_audit = get_logger("audit")
+
+
+def _client_ip(request: Request | None) -> str:
+    if request is None or request.client is None:
+        return "?"
+    return request.client.host
 _WAV_DIR = os.path.join(_BASE_DIR, "speech", "wav")
 _INDEX_PATH = os.path.join(_BASE_DIR, "speech", "responses", "index.json")
 _FAVOURITES_PATH = os.path.join(_BASE_DIR, "favourites.json")
@@ -139,38 +148,27 @@ def _get_clips() -> list[dict]:
 # Audio helper
 # ---------------------------------------------------------------------------
 
-async def _puppet_play(wav_path: str) -> None:
-    """Play a WAV, stopping bender-converse first (WM8960 is single-rate)."""
-    if not _IS_LINUX:
+def _play_guarded(wav_path: str) -> None:
+    """Blocking: acquire the service guard (stopping bender-converse), play the
+    WAV, then restart. Runs in a worker thread — the guard is a sync lock held
+    for the whole stop/play/restart sequence so concurrent web actions serialise
+    instead of racing on the single-rate WM8960. Raises ServiceBusy if the guard
+    is already held (a play is in progress)."""
+    with service_lease():
         leds.set_talking()
-        await asyncio.to_thread(audio.play_oneshot, wav_path, leds.set_level, leds.all_off)
-        return
+        audio.play_oneshot(wav_path, leds.set_level, leds.all_off)
 
-    result = await asyncio.to_thread(
-        subprocess.run,
-        ["systemctl", "is-active", "bender-converse"],
-        capture_output=True, text=True, timeout=5,
-    )
-    was_running = result.stdout.strip() == "active"
 
-    if was_running:
-        await asyncio.to_thread(
-            subprocess.run,
-            ["sudo", "systemctl", "stop", "bender-converse"],
-            capture_output=True, text=True, timeout=15,
-        )
-        await asyncio.sleep(0.5)
+async def _puppet_play(wav_path: str) -> None:
+    """Play a WAV, serialised behind the process-wide service guard.
 
-    leds.set_talking()
+    Translates a busy guard into HTTP 409 so a second overlapping request fails
+    fast rather than stacking behind the in-flight clip.
+    """
     try:
-        await asyncio.to_thread(audio.play_oneshot, wav_path, leds.set_level, leds.all_off)
-    finally:
-        if was_running:
-            await asyncio.to_thread(
-                subprocess.run,
-                ["sudo", "systemctl", "start", "bender-converse"],
-                capture_output=True, text=True, timeout=15,
-            )
+        await asyncio.to_thread(_play_guarded, wav_path)
+    except ServiceBusy:
+        raise HTTPException(status_code=409, detail="Bender is already speaking — try again in a moment")
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +204,13 @@ async def puppet_clips():
 
 
 @router.post("/api/puppet/speak", dependencies=[Depends(require_token)])
-async def puppet_speak(body: dict = Body(...)):
+async def puppet_speak(request: Request, body: dict = Body(...)):
     text = body.get("text", "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="No text provided")
     if len(text) > 500:
         raise HTTPException(status_code=400, detail="Text too long (max 500 chars)")
+    _audit.info("puppet.speak from %s (%d chars)", _client_ip(request), len(text))
     import tts_generate
     wav_path = await asyncio.to_thread(tts_generate.speak, text)
     try:
@@ -225,7 +224,7 @@ async def puppet_speak(body: dict = Body(...)):
 
 
 @router.post("/api/puppet/clip", dependencies=[Depends(require_token)])
-async def puppet_clip(body: dict = Body(...)):
+async def puppet_clip(request: Request, body: dict = Body(...)):
     path = body.get("path", "").strip()
     if not path:
         raise HTTPException(status_code=400, detail="No path provided")
@@ -236,6 +235,7 @@ async def puppet_clip(body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="Clip not found")
+    _audit.info("puppet.clip %s from %s", path, _client_ip(request))
     await _puppet_play(resolved)
     return {"status": "ok", "path": path}
 
@@ -272,12 +272,20 @@ async def puppet_camera_stream(token: str = ""):
     if not available:
         raise HTTPException(status_code=503, detail="Camera not available")
 
+    max_s = float(getattr(cfg, "web_stream_max_s", 300.0))
+
     async def _generate():
         import io
         from PIL import Image
         cam = await asyncio.to_thread(_vision.acquire_camera)
+        deadline = time.monotonic() + max_s if max_s > 0 else None
         try:
             while True:
+                # Wall-clock cap: a backgrounded mobile tab that stops reading
+                # (but never cleanly closes) would otherwise pin the camera
+                # forever — the exact resource-silently-held failure shape.
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 frame = await asyncio.to_thread(cam.capture_array)
                 buf = io.BytesIO()
                 Image.fromarray(frame).save(buf, format="JPEG", quality=70)
@@ -296,12 +304,32 @@ async def puppet_mic_ws(websocket: WebSocket):
     """Stream ambient mic audio to operator (PCM 16 kHz mono S16_LE).
 
     Auth is a short-lived stream token in the ``token`` query param, validated
-    once at connection open (never per-frame)."""
+    once at connection open (never per-frame).
+
+    ``arecord -D default`` opens the same capture device the live wake loop is
+    reading, so this holds the process-wide service guard for the whole stream
+    (stopping bender-converse) — otherwise two readers contend for the single
+    device. The stream is bounded by a wall-clock cap and a per-send timeout so
+    a backgrounded tab that stops reading gets cut off instead of pinning
+    ``arecord`` (and the mic) indefinitely."""
     if not await require_stream_token_ws(websocket):
         return
 
+    # Acquire the guard before accepting — if a puppet clip is playing, fail the
+    # handshake fast rather than fighting over the device. Hold the same context
+    # manager object so we can release it (restart bender-converse) on close.
+    _lease_cm = service_lease()
+    try:
+        await asyncio.to_thread(_lease_cm.__enter__)
+    except ServiceBusy:
+        await websocket.close(code=4009)
+        return
+
     await websocket.accept()
+    _audit.info("puppet.mic_stream opened from %s", _client_ip(websocket))
     CHUNK = 4096
+    max_s = float(getattr(cfg, "web_mic_max_s", 120.0))
+    deadline = time.monotonic() + max_s if max_s > 0 else None
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -310,10 +338,13 @@ async def puppet_mic_ws(websocket: WebSocket):
             stderr=asyncio.subprocess.DEVNULL,
         )
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             chunk = await asyncio.wait_for(proc.stdout.read(CHUNK), timeout=5.0)
             if not chunk:
                 break
-            await websocket.send_bytes(chunk)
+            # Cut a stalled reader off instead of blocking here forever.
+            await asyncio.wait_for(websocket.send_bytes(chunk), timeout=5.0)
     except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
         pass
     finally:
@@ -323,3 +354,5 @@ async def puppet_mic_ws(websocket: WebSocket):
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 proc.kill()
+        # Release the guard (restarts bender-converse) off the event loop.
+        await asyncio.to_thread(_lease_cm.__exit__, None, None, None)

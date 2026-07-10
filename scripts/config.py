@@ -182,6 +182,13 @@ class Config:
     # Network timeouts
     http_timeout_s: float = 10.0  # timeout for all outbound HTTP calls (briefings + HA)
 
+    # Web UI stream lifecycle caps. Wall-clock ceilings on the two unbounded
+    # web streams so a backgrounded mobile tab that stops reading (but never
+    # cleanly closes) cannot pin the camera / arecord — and thus the single-rate
+    # mic — forever. 0 disables the cap.
+    web_stream_max_s: float = 300.0   # MJPEG camera stream hard cap (5 min)
+    web_mic_max_s: float = 120.0      # ambient mic websocket hard cap (2 min)
+
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides
         path = config_path or _DEFAULT_CONFIG_PATH

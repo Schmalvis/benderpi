@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import ValidationError
 from web.auth import require_token
 from web.routes.config_schema import (
@@ -21,6 +21,13 @@ _BASE_DIR = os.path.dirname(_SCRIPTS_DIR)
 sys.path.insert(0, _SCRIPTS_DIR)
 
 import leds
+from logger import get_logger
+
+_audit = get_logger("audit")
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
 
 _CONFIG_PATH = os.path.join(_BASE_DIR, "bender_config.json")
 _WATCHDOG_CONFIG_PATH = os.path.join(_BASE_DIR, "watchdog_config.json")
@@ -48,11 +55,13 @@ async def config_get():
 
 
 @router.put("/api/config")
-async def config_put(body: dict = Body(...)):
+async def config_put(request: Request, body: dict = Body(...)):
     try:
         clean = clean_bender_config(body)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors(include_url=False))
+    _audit.info("config.write bender_config keys=%s from %s",
+                sorted(clean.keys()), _client_ip(request))
     current = _load_json_file(_CONFIG_PATH)
     current.update(clean)
     _save_json_file(_CONFIG_PATH, current)
@@ -74,11 +83,13 @@ async def config_watchdog_get():
 
 
 @router.put("/api/config/watchdog")
-async def config_watchdog_put(body: dict = Body(...)):
+async def config_watchdog_put(request: Request, body: dict = Body(...)):
     try:
         clean = clean_watchdog_config(body)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors(include_url=False))
+    _audit.info("config.write watchdog_config keys=%s from %s",
+                sorted(clean.keys()), _client_ip(request))
     current = _load_json_file(_WATCHDOG_CONFIG_PATH)
     current.update(clean)
     _save_json_file(_WATCHDOG_CONFIG_PATH, current)

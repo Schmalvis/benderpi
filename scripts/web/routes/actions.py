@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from web.auth import require_token
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -13,8 +13,14 @@ _BASE_DIR = os.path.dirname(_SCRIPTS_DIR)
 sys.path.insert(0, _SCRIPTS_DIR)
 
 from config import cfg
+from logger import get_logger
 
 _IS_LINUX = os.name != "nt"
+_audit = get_logger("audit")
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
 _VENV_PYTHON = os.path.join(_BASE_DIR, "venv", "bin", "python")
 _PREBUILD_SCRIPT = os.path.join(_SCRIPTS_DIR, "prebuild_responses.py")
 
@@ -33,9 +39,10 @@ async def session_status_detail():
 
 
 @router.post("/api/actions/end-session")
-async def end_session():
+async def end_session(request: Request):
     if not os.path.exists(cfg.session_file):
         return {"status": "no_session"}
+    _audit.info("actions.end-session from %s", _client_ip(request))
     with open(cfg.end_session_file, "w") as f:
         f.write("")
     with open(cfg.abort_file, "w") as f:
@@ -72,7 +79,8 @@ async def service_status():
 
 
 @router.post("/api/actions/restart")
-async def action_restart():
+async def action_restart(request: Request):
+    _audit.info("actions.restart from %s", _client_ip(request))
     if not _IS_LINUX:
         return {"status": "ok", "message": "Simulated restart (not on Pi)"}
     try:
@@ -122,10 +130,11 @@ async def action_generate_status():
 
 
 @router.post("/api/actions/toggle-mode")
-async def action_toggle_mode(body: dict = Body(...)):
+async def action_toggle_mode(request: Request, body: dict = Body(...)):
     mode = body.get("mode", "").strip()
     if mode not in ("puppet_only", "converse"):
         raise HTTPException(status_code=400, detail="mode must be 'puppet_only' or 'converse'")
+    _audit.info("actions.toggle-mode -> %s from %s", mode, _client_ip(request))
     if not _IS_LINUX:
         return {"status": "ok", "mode": mode, "message": "Simulated (not on Pi)"}
     try:
