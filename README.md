@@ -304,7 +304,7 @@ A systemd timer (`bender-git-pull.timer`) polls GitHub every 5 minutes. If the b
 
 ## Notes for Contributors
 
-- **Audio device**: the WM8960 is a single-rate codec. `bender-converse` holds it at 16 kHz (porcupine mic). The web UI stops `bender-converse` before any audio playback and restarts it after. Keep this constraint in mind when modifying audio handling.
+- **Audio device**: the WM8960 is a single-rate codec. `bender-converse` holds it at 16 kHz (wake-word mic, openWakeWord). The web UI stops `bender-converse` before any audio playback and restarts it after. Keep this constraint in mind when modifying audio handling.
 - **PyAudio**: a single shared `pyaudio.PyAudio()` instance is created at module load in `audio.py`. Do not create additional instances — concurrent init causes PortAudio assertion failures.
 - **venv**: always use `--system-site-packages` — hardware libs (lgpio, adafruit-blinka) are installed system-wide and won't be found otherwise.
 - **Port variables**: host ports in service files must come from environment variables, never hardcoded.

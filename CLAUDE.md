@@ -462,5 +462,4 @@ sudo systemctl restart bender-converse
 - **Piper output is 22050Hz** — must be resampled before playback; `tts_generate.py` handles this
 - **BBC Nottingham RSS** — `feeds.bbci.co.uk/news/england/nottinghamshire/rss.xml` returns 404; use UK + England feeds instead
 - **BBC RSS CDATA** — `xml.etree.ElementTree` can't parse BBC's CDATA titles; use regex extraction
-- **openWakeWord model** — `models/hey_jarvis.onnx` is gitignored; after fresh venv setup, copy from `venv/lib/python3.13/site-packages/openwakeword/resources/models/hey_jarvis_v0.1.onnx`
-- **hey_jarvis is interim** — not "hey bender"; custom model training is a future task using openWakeWord's synthetic TTS training pipeline
+- **openWakeWord model** — committed default is `models/hey_bender_v0.1.onnx` (the trained "hey bender" model), gitignored like all `models/*`. Fresh clone / fresh Pi: run `bash scripts/deploy_hey_bender.sh` to download it from `Schmalvis/hey-bender-oww` on HF Hub. The wake loop fails loudly (logs an error and exits non-zero) at startup if the configured `oww_model_path` file is missing — it will never silently fall back to a bundled openWakeWord model. Training/retraining: `scripts/train_hey_bender.py` (see `docs/superpowers/plans/2026-06-12-hey-bender-wake-word.md`)

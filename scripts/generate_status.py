@@ -9,6 +9,7 @@ import subprocess
 from collections import Counter
 from datetime import datetime, timezone
 
+from config import cfg
 from logger import get_logger
 from watchdog import run_checks, _load_metrics
 
@@ -18,6 +19,21 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _METRICS_PATH = os.path.join(_BASE_DIR, "logs", "metrics.jsonl")
 _STATUS_PATH = os.path.join(_BASE_DIR, "STATUS.md")
 _LOG_PATH = os.path.join(_BASE_DIR, "logs", "bender.log")
+
+
+def _wake_model_status() -> dict:
+    """Report the active wake-word model path and whether it's present on disk.
+
+    Lightweight drift check: this is what the process will actually try to
+    load next restart, independent of what bender_config.json says elsewhere
+    got patched (e.g. by deploy_hey_bender.sh directly on the Pi).
+    """
+    path = cfg.oww_model_path
+    abs_path = path if os.path.isabs(path) else os.path.join(_BASE_DIR, path)
+    return {
+        "path": path,
+        "exists": os.path.isfile(abs_path),
+    }
 
 
 def _recent_git_log() -> str:
@@ -82,12 +98,14 @@ def generate_dict() -> dict:
     alert_count = len([a for a in alerts if a.severity in ("error", "warning")])
 
     recent = _recent_errors()
+    wake_model = _wake_model_status()
 
     return {
         "health": {
             "errors_7d": errors,
             "alert_count": alert_count,
         },
+        "wake_model": wake_model,
         "performance": {
             "stt_record_ms": avg_timer("stt_record"),
             "stt_transcribe_ms": avg_timer("stt_transcribe"),
@@ -140,6 +158,12 @@ def generate():
     local_pct = f"{usage['local_pct']}%" if usage["turns"] else "N/A"
     top_intents_str = ", ".join(f"{k} {v}" for k, v in usage["top_intents"].items()) or "N/A"
 
+    wake_model = data["wake_model"]
+    wake_model_line = (
+        f"- Wake model: `{wake_model['path']}` "
+        f"({'found' if wake_model['exists'] else '!!! MISSING — wake loop will exit non-zero at startup'})"
+    )
+
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     status = f"""# BenderPi Status Report
@@ -148,6 +172,7 @@ Generated: {now}
 ## Health
 - Errors (7d): {usage['errors']}
 - Watchdog alerts: {data['health']['alert_count']}
+{wake_model_line}
 
 ## Performance (7-day averages)
 - STT record: {fmt_timer(perf['stt_record_ms'])}
@@ -179,6 +204,14 @@ Generated: {now}
     with open(_STATUS_PATH, "w") as f:
         f.write(status)
     log.info("STATUS.md written to %s", _STATUS_PATH)
+    if wake_model["exists"]:
+        log.info("Active wake model: %s (found)", wake_model["path"])
+    else:
+        log.error(
+            "Active wake model: %s NOT FOUND on disk — wake loop will exit "
+            "non-zero at next start. Run scripts/deploy_hey_bender.sh.",
+            wake_model["path"],
+        )
 
 
 if __name__ == "__main__":

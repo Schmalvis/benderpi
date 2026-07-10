@@ -101,6 +101,15 @@ def _check_abort_on_chunk(level):
 
 
 def _load_oww_model(model_path: str):
+    if not os.path.isfile(model_path):
+        log.error(
+            "Wake word model not found at %s (oww_model_path in bender_config.json). "
+            "openWakeWord will NOT silently fall back to a bundled model — the "
+            "wake loop cannot start. Run `bash scripts/deploy_hey_bender.sh` on "
+            "the Pi to download it, or fix oww_model_path. Exiting.",
+            model_path,
+        )
+        sys.exit(1)
     from openwakeword.model import Model
     return Model(wakeword_model_paths=[model_path])
 

@@ -97,7 +97,7 @@ class Config:
     ai_routing: dict = None  # set in __init__ to avoid mutable default
 
     # Wake word (openWakeWord)
-    oww_model_path: str = "models/hey_jarvis.onnx"
+    oww_model_path: str = "models/hey_bender_v0.1.onnx"
     oww_threshold: float = 0.5
     # N-of-M temporal smoothing: fire only when >= oww_frames_required of the
     # last oww_window frame scores clear oww_threshold. Suppresses single-frame
