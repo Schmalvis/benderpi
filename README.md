@@ -296,6 +296,29 @@ To train your own:
 
 ---
 
+## Testing
+
+```bash
+venv/bin/pip install pytest pytest-mock   # dev-only, not in requirements.txt
+venv/bin/python -m pytest                 # full suite (tests/, configured via pytest.ini)
+venv/bin/python -m pytest --collect-only  # cheap import/collection check only
+```
+
+Tests mock out hardware (`pyaudio`, `board`/`busio`/`neopixel_spi`) at import time so the
+suite runs off-device without touching the mic, speaker, or LEDs.
+
+**Pre-push hook** — there's no CI runner, and auto-deploy ships a push to the live device
+within ~5 minutes, so a broken `import` in `tests/` used to go unnoticed until the next
+manual `pytest` run. `.githooks/pre-push` runs `pytest --collect-only` (catches broken
+imports across the whole suite) plus a small, fast, hardware-independent pure-unit subset
+(audio RMS helpers, STT hallucination filtering, HA entity matcher, LED alert-flash race).
+It intentionally does **not** run the full suite — keep it under ~10s or it'll get bypassed
+with `--no-verify`. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Auto-Deploy
 
 A systemd timer (`bender-git-pull.timer`) polls GitHub every 5 minutes. If the branch has advanced, `scripts/git_pull.sh` pulls and, behind a guarded pipeline (syntax preflight, conditional `pip install`, bounded restart, post-restart health check), restarts `bender-converse`. Push to `main` → live on the Pi within 5 minutes — or, if a gate fails, automatically rolled back to the last good commit instead. See `CLAUDE.md` for the full gate/rollback details. Unit file changes (`systemd/*.service`) are **not** picked up by auto-deploy and need a manual copy + `daemon-reload` on the Pi.

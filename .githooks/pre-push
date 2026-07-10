@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Pre-push gate: catch a broken test suite before it ships.
+#
+# BenderPi auto-deploys from `main` within ~5 minutes of a push (git-pull
+# timer on the device). There is no CI runner, so this hook is the only
+# thing standing between a broken import and a live restart of
+# bender-converse. Keep it FAST (<10s) — if it gets slow, it gets bypassed
+# with --no-verify and stops protecting anything.
+#
+# What it runs:
+#   1. `pytest --collect-only` across the whole suite — this alone catches
+#      the class of break that shipped silently before (test modules
+#      importing names that no longer exist, e.g. the ha_control ->
+#      entity_matcher API split). Collection is cheap even with ~500+ tests.
+#   2. A curated subset of fast, deterministic, hardware-independent
+#      pure-function unit tests — NOT the full suite. As of 2026-07, the
+#      full suite has pre-existing failures from other in-flight work
+#      (web routes refactor, vlm.py, etc.) that are tracked separately;
+#      gating every push on all of them would make this hook permanently
+#      red and guarantee it gets skipped. This subset is the modules
+#      behind the 6-day silent-mic incident (audio RMS, STT hallucination
+#      filtering) plus the HA entity matcher and the LED alert-flash race
+#      fix — all pure/mockable, no Hailo/network/SPI hardware touched.
+#
+# Install: `git config core.hooksPath .githooks` (see README/CLAUDE.md).
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+PY=venv/bin/python
+if [ ! -x "$PY" ]; then
+    PY=python3
+fi
+
+echo "[pre-push] collecting full test suite (import/collection check)..."
+if ! "$PY" -m pytest --collect-only -q; then
+    echo "[pre-push] FAILED: test collection is broken (an import failed)." >&2
+    echo "[pre-push] This would ship to the live device via auto-deploy. Fix before pushing." >&2
+    exit 1
+fi
+
+FAST_TESTS=(
+    tests/test_entity_matcher.py
+    tests/test_ha_control.py
+    tests/test_audio_pure.py
+    tests/test_stt_pure.py
+    tests/test_leds_alert.py
+    tests/test_mic_reader.py
+)
+
+echo "[pre-push] running fast pure-unit subset..."
+if ! "$PY" -m pytest -q "${FAST_TESTS[@]}"; then
+    echo "[pre-push] FAILED: fast unit tests are red." >&2
+    exit 1
+fi
+
+echo "[pre-push] OK."

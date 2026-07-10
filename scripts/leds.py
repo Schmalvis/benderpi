@@ -30,8 +30,21 @@ pixels  = neopixel_spi.NeoPixel_SPI(_spi, NUM_LEDS, brightness=BRIGHTNESS, auto_
 _mode = "off"  # "off", "listening", "talking"
 
 # Alert flash state
+#
+# set_alert_flash() used to gate thread creation on a lone `_alert_active`
+# bool plus a `not _alert_thread.is_alive()` check with no locking. Under
+# rapid on/off/on toggling (e.g. two timer alerts firing back-to-back, or a
+# double-click in the web UI) that check-then-start was not atomic: two
+# calls could both observe the previous thread as dead/exiting and each
+# spawn a fresh `_alert_loop` thread, leaving two loops fighting over the
+# same NeoPixel/SPI bus. A `threading.Lock` around start/stop plus a
+# `threading.Event` (instead of a plain bool the loop polls once per
+# sleep(0.2)) makes stop-and-join deterministic: off() blocks until the
+# previous loop has actually exited and blanked the strip before on() is
+# allowed to start a new one.
 _alert_thread = None
-_alert_active = False
+_alert_lock = threading.Lock()
+_alert_stop_event = threading.Event()
 
 
 def all_off():
@@ -83,26 +96,39 @@ def set_level(ratio, colour=None):
 
 
 def set_alert_flash(on: bool):
-    """Start/stop fast red-orange alternating flash for timer alerts."""
-    global _alert_thread, _alert_active
-    if on:
-        _alert_active = True
-        if _alert_thread is None or not _alert_thread.is_alive():
+    """Start/stop fast red-orange alternating flash for timer alerts.
+
+    Guarded by _alert_lock so concurrent/rapid toggles can't race: off()
+    signals the stop event and joins the running thread (bounded wait)
+    before returning, so a subsequent on() never overlaps with a still-
+    exiting previous loop.
+    """
+    global _alert_thread
+    with _alert_lock:
+        if on:
+            if _alert_thread is not None and _alert_thread.is_alive():
+                return  # already flashing — idempotent
+            _alert_stop_event.clear()
             _alert_thread = threading.Thread(target=_alert_loop, daemon=True)
             _alert_thread.start()
-    else:
-        _alert_active = False
+        else:
+            _alert_stop_event.set()
+            if _alert_thread is not None:
+                _alert_thread.join(timeout=1.0)
+                if _alert_thread.is_alive():
+                    log.warning("set_alert_flash: _alert_loop did not exit within 1s")
+                _alert_thread = None
 
 
 def _alert_loop():
     """Background thread that alternates red/orange on LEDs."""
     colours = [(255, 40, 0), (255, 140, 0)]  # red, orange
     idx = 0
-    while _alert_active:
+    while not _alert_stop_event.is_set():
         pixels.fill(colours[idx % 2])
         pixels.show()
         idx += 1
-        time.sleep(0.2)
+        _alert_stop_event.wait(0.2)
     # Turn off when done
     pixels.fill((0, 0, 0))
     pixels.show()

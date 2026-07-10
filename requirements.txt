@@ -21,6 +21,7 @@ scipy>=1.14.0
 
 # ── AI fallback ─────────────────────────────────────────────────────────────
 anthropic==0.84.0
+httpx  # anthropic pulls this in transitively, but ai_response.py also imports it directly
 
 # ── LED hardware (Raspberry Pi 5 / SPI NeoPixels) ───────────────────────────
 # Requires lgpio system package: sudo apt install python3-lgpio

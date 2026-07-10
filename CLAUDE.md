@@ -178,6 +178,24 @@ venv/bin/pip install -r requirements.txt
 
 Key packages: `openwakeword`, `faster-whisper`, `webrtcvad-wheels` (NOT `webrtcvad` — broken on Python 3.13), `PyAudio`, `anthropic`, `python-dotenv`, `scipy` (for TTS resampling).
 
+`anthropic` pulls in `httpx` as a dependency, but `ai_response.py` also imports `httpx`
+directly — if you hit `ModuleNotFoundError: httpx` in a fresh venv, `pip install httpx`
+(it's transitively required regardless, this just makes the direct import explicit).
+
+---
+
+## Testing
+
+`tests/` (pytest, configured via `pytest.ini`, `pythonpath = scripts`) mocks hardware
+(`pyaudio`, `board`/`busio`/`neopixel_spi`) at import time so it runs off-device.
+`pytest` itself is dev-only tooling, not in `requirements.txt` —
+`venv/bin/pip install pytest pytest-mock` once, then `venv/bin/python -m pytest`.
+
+A pre-push hook (`.githooks/pre-push`) runs `pytest --collect-only` (catches broken
+imports before they auto-deploy) plus a fast hardware-independent pure-unit subset —
+NOT the full suite, see README's Testing section for why and how to enable it
+(`git config core.hooksPath .githooks`).
+
 ---
 
 ## Operating Modes
