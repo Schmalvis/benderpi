@@ -103,6 +103,8 @@ class Config:
     llm_warm_session: bool = False
     tts_noise_scale: float = 0.9      # Piper expressiveness (default 0.667)
     tts_noise_scale_w: float = 1.2    # Piper phoneme duration variance (default 0.8)
+    tts_cache_dir: str = os.path.join(_BASE_DIR, "speech", "responses", "cache")  # sha256 content-hash WAV cache
+    tts_cache_max_mb: int = 100       # size cap for tts_cache_dir; oldest (by mtime) entries pruned first
     ai_routing: dict = None  # set in __init__ to avoid mutable default
 
     # Wake word (openWakeWord)

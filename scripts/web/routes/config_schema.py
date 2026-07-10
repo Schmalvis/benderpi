@@ -48,6 +48,7 @@ FORBIDDEN_KEYS = frozenset({
     "session_file",
     "end_session_file",
     "abort_file",
+    "tts_cache_dir",
 })
 
 # http(s) hosts we consider safe for ha_url / local_llm_url. LAN/localhost only —
