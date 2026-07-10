@@ -24,17 +24,12 @@ _fake_pyaudio_mod.paInt16 = 8          # arbitrary constant
 _fake_pyaudio_mod.PyAudio = MagicMock  # replaced per-test
 sys.modules.setdefault("pyaudio", _fake_pyaudio_mod)
 
-# Stub leds (still needed until audio.py no longer imports it — this test
-# verifies the NEW code path so we stub it defensively just in case).
-_fake_leds = types.ModuleType("leds")
-_fake_leds.set_level = MagicMock()
-_fake_leds.all_off = MagicMock()
-sys.modules.setdefault("leds", _fake_leds)
-
-# Stub neopixel / board transitively pulled in by leds on non-Pi hosts
-for _mod in ("neopixel", "board", "RPi", "RPi.GPIO", "lgpio",
-             "adafruit_blinka", "busio", "digitalio"):
-    sys.modules.setdefault(_mod, types.ModuleType(_mod))
+# audio.py imports neither leds nor any LED/GPIO hardware library (board,
+# busio, neopixel, RPi, lgpio, adafruit_blinka, digitalio) — so no stubs for
+# those are needed here. Stubbing them defensively via sys.modules.setdefault()
+# used to plant empty placeholder modules that won any race against other test
+# files' own (fuller-featured) stubs of the same names, since setdefault()
+# never overwrites — breaking those other files if this one collected first.
 
 # Ensure scripts/ is on the path (conftest also does this, but be explicit)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))

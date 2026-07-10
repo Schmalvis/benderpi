@@ -341,6 +341,7 @@ def main():
     except Exception as exc:
         log.debug("sd_notify not available: %s", exc)
     while True:
+        session = None
         try:
             # Check for fired timers before listening for wake word
             import timers as timers_mod
@@ -391,17 +392,32 @@ def main():
                     break
         except KeyboardInterrupt:
             log.info("Stopped.")
+            if session is not None:
+                session.end("interrupt")
             break
         except RuntimeError as exc:
             if "stalled" in str(exc):
-                log.error("Wake loop reinit after stall: %s", exc)
-                metrics.count("wake_loop_stall_reinit")
+                # wait_for_wakeword() fully handles its own stalls internally
+                # (reinit-then-exit) and never lets one escape here — a "stalled"
+                # RuntimeError reaching this handler is always a mid-conversation
+                # STT mic stall (audio.MicStallError from stt.listen_and_transcribe).
+                # Use a distinct metric name so this doesn't inflate
+                # wake_loop_stall_reinit, which the watchdog's
+                # mic_stall_reinit_threshold check treats as wake-loop-only signal.
+                log.error("STT mic stall mid-conversation, ending session: %s", exc)
+                metrics.count("stt_mic_stall_recovered")
+                if session is not None:
+                    session.end("mic_stall")
                 time.sleep(1.0)
                 continue
             log.exception("Unhandled RuntimeError in wake/session loop — continuing")
+            if session is not None:
+                session.end("error")
             time.sleep(2.0)
         except Exception as e:
             log.error("Error: %s", e)
+            if session is not None:
+                session.end("error")
             time.sleep(2)
 
 

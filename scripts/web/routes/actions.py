@@ -6,6 +6,7 @@ import sys
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from web.auth import require_token
+from web.service_guard import ServiceBusy, guard_lock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -78,18 +79,24 @@ async def service_status():
         return {"running": False, "uptime": "N/A (not on Pi)"}
 
 
+def _restart_converse_guarded() -> None:
+    with guard_lock():
+        subprocess.run(
+            ["sudo", "systemctl", "restart", "bender-converse"],
+            capture_output=True, text=True, timeout=30,
+        )
+
+
 @router.post("/api/actions/restart")
 async def action_restart(request: Request):
     _audit.info("actions.restart from %s", _client_ip(request))
     if not _IS_LINUX:
         return {"status": "ok", "message": "Simulated restart (not on Pi)"}
     try:
-        await asyncio.to_thread(
-            subprocess.run,
-            ["sudo", "systemctl", "restart", "bender-converse"],
-            capture_output=True, text=True, timeout=30,
-        )
+        await asyncio.to_thread(_restart_converse_guarded)
         return {"status": "ok"}
+    except ServiceBusy:
+        raise HTTPException(status_code=409, detail="Bender is busy (puppet/vision/mic in use) — try again in a moment")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -129,6 +136,11 @@ async def action_generate_status():
     return {"status": "ok"}
 
 
+def _toggle_mode_guarded(cmd: list[str]) -> None:
+    with guard_lock():
+        subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+
 @router.post("/api/actions/toggle-mode")
 async def action_toggle_mode(request: Request, body: dict = Body(...)):
     mode = body.get("mode", "").strip()
@@ -139,9 +151,9 @@ async def action_toggle_mode(request: Request, body: dict = Body(...)):
         return {"status": "ok", "mode": mode, "message": "Simulated (not on Pi)"}
     try:
         cmd = ["sudo", "systemctl", "stop" if mode == "puppet_only" else "start", "bender-converse"]
-        await asyncio.to_thread(
-            subprocess.run, cmd, capture_output=True, text=True, timeout=15,
-        )
+        await asyncio.to_thread(_toggle_mode_guarded, cmd)
         return {"status": "ok", "mode": mode}
+    except ServiceBusy:
+        raise HTTPException(status_code=409, detail="Bender is busy (puppet/vision/mic in use) — try again in a moment")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

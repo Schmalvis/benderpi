@@ -89,6 +89,32 @@ def _start_converse() -> None:
 
 
 @contextlib.contextmanager
+def guard_lock(acquire_timeout: float = DEFAULT_ACQUIRE_TIMEOUT):
+    """Serialise against :func:`service_lease` without its stop-before /
+    restart-after dance.
+
+    Use this when the caller performs its own explicit systemctl action
+    (restart / stop / start) that must not race puppet playback, the vision
+    auto-narrate, or the mic websocket for control of ``bender-converse`` --
+    e.g. the web UI's manual restart/toggle-mode buttons. Unlike
+    ``service_lease``, nothing is stopped or restarted on entry/exit; the
+    caller owns that.
+
+    Raises
+    ------
+    ServiceBusy
+        If the lock could not be acquired within ``acquire_timeout``.
+    """
+    acquired = _lock.acquire(timeout=acquire_timeout)
+    if not acquired:
+        raise ServiceBusy("bender-converse audio guard is busy")
+    try:
+        yield
+    finally:
+        _lock.release()
+
+
+@contextlib.contextmanager
 def service_lease(acquire_timeout: float = DEFAULT_ACQUIRE_TIMEOUT,
                   stop_converse: bool = True):
     """Serialise exclusive use of the audio hardware across web actions.

@@ -325,13 +325,16 @@ async def puppet_mic_ws(websocket: WebSocket):
         await websocket.close(code=4009)
         return
 
-    await websocket.accept()
-    _audit.info("puppet.mic_stream opened from %s", _client_ip(websocket))
     CHUNK = 4096
     max_s = float(getattr(cfg, "web_mic_max_s", 120.0))
-    deadline = time.monotonic() + max_s if max_s > 0 else None
     proc = None
     try:
+        # accept() lives inside this try/finally too — if it raises (e.g. the
+        # client disconnected between the token check and here), the lease
+        # must still be released in the finally below rather than stranded.
+        await websocket.accept()
+        _audit.info("puppet.mic_stream opened from %s", _client_ip(websocket))
+        deadline = time.monotonic() + max_s if max_s > 0 else None
         proc = await asyncio.create_subprocess_exec(
             "arecord", "-D", "default", "-f", "S16_LE", "-r", "16000", "-c", "1", "-",
             stdout=asyncio.subprocess.PIPE,
