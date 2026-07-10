@@ -280,6 +280,12 @@ class WatchdogConfigUpdate(BaseModel):
     mic_stall_reinit_threshold: int | None = None
     mic_stall_exit_threshold: int | None = None
     hailo_lock_stuck_threshold: int | None = None
+    log_retention_days: int | None = None
+    watchdog_renotify_hours: float | None = None
+    watchdog_quiet_hours_start: int | None = None
+    watchdog_quiet_hours_end: int | None = None
+    watchdog_notify_domain: str | None = None
+    watchdog_notify_service: str | None = None
 
     @field_validator("*")
     @classmethod
@@ -288,6 +294,13 @@ class WatchdogConfigUpdate(BaseModel):
         # a legitimate "alert on any error" setting, so allow 0.
         if v is not None and isinstance(v, (int, float)) and v < 0:
             raise ValueError(f"{info.field_name} must be >= 0")
+        return v
+
+    @field_validator("watchdog_quiet_hours_start", "watchdog_quiet_hours_end")
+    @classmethod
+    def _hour_of_day(cls, v):
+        if v is not None and not (0 <= v <= 23):
+            raise ValueError("quiet hour must be 0-23")
         return v
 
 

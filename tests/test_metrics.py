@@ -46,3 +46,42 @@ def test_multiple_events(tmp_path):
     m.count("c")
     lines = path.read_text().strip().split("\n")
     assert len(lines) == 3
+
+def test_rotation_on_size_threshold(tmp_path):
+    from metrics import MetricsWriter
+    path = tmp_path / "metrics.jsonl"
+    # Tiny threshold so a single write already trips rotation on the next call.
+    m = MetricsWriter(str(path), max_bytes=10, backup_count=2)
+    m.count("first")
+    assert path.exists()
+    assert not (tmp_path / "metrics.jsonl.1").exists()
+
+    m.count("second")  # first write already exceeded 10 bytes -> rotates before this write
+    assert (tmp_path / "metrics.jsonl.1").exists()
+    backup_event = json.loads((tmp_path / "metrics.jsonl.1").read_text().strip())
+    assert backup_event["name"] == "first"
+    live_event = json.loads(path.read_text().strip())
+    assert live_event["name"] == "second"
+
+def test_rotation_keeps_only_backup_count(tmp_path):
+    from metrics import MetricsWriter
+    path = tmp_path / "metrics.jsonl"
+    m = MetricsWriter(str(path), max_bytes=10, backup_count=2)
+    for i in range(5):
+        m.count(f"event{i}")
+    assert path.exists()
+    assert (tmp_path / "metrics.jsonl.1").exists()
+    assert (tmp_path / "metrics.jsonl.2").exists()
+    assert not (tmp_path / "metrics.jsonl.3").exists()
+
+def test_rotation_disabled_with_zero_backup_count(tmp_path):
+    from metrics import MetricsWriter
+    path = tmp_path / "metrics.jsonl"
+    m = MetricsWriter(str(path), max_bytes=10, backup_count=0)
+    m.count("first")
+    m.count("second")
+    assert not (tmp_path / "metrics.jsonl.1").exists()
+    # With backup_count=0, rotation just drops the old file -- only the
+    # latest write should remain live.
+    live_event = json.loads(path.read_text().strip())
+    assert live_event["name"] == "second"

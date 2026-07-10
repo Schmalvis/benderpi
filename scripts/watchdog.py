@@ -35,23 +35,34 @@ def _load_config(config_path: str = None) -> dict:
 
 
 def _load_metrics(path: str, lookback_hours: int) -> list[dict]:
+    """Load metrics events within lookback_hours, walking size-rotated
+    backups (path.1, path.2, ...) alongside the live file — metrics.py
+    rotates path -> path.1 -> path.2 once the live file passes
+    MetricsWriter.DEFAULT_MAX_BYTES, so a lookback window that spans a
+    rotation would otherwise silently lose its older half.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     events = []
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                event = json.loads(line)
-                ts = event.get("ts", "")
-                try:
-                    if datetime.fromisoformat(ts) >= cutoff:
+    for candidate in [path] + [f"{path}.{i}" for i in range(1, 10)]:
+        try:
+            with open(candidate) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    ts = event.get("ts", "")
+                    try:
+                        if datetime.fromisoformat(ts) >= cutoff:
+                            events.append(event)
+                    except Exception:
                         events.append(event)
-                except Exception:
-                    events.append(event)
-    except FileNotFoundError:
-        pass
+        except FileNotFoundError:
+            if candidate != path:
+                break  # backups are contiguous (.1, .2, ...); stop at the first gap
     return events
 
 
@@ -108,11 +119,17 @@ def check_session_liveness(cfg: dict, logs_dir: str | None = None) -> list:
     return []
 
 
-def run_checks(metrics_path: str = None, config: dict = None) -> list[Alert]:
-    """Run all health checks, return list of alerts."""
+def run_checks(metrics_path: str = None, config: dict = None, events: list[dict] = None) -> list[Alert]:
+    """Run all health checks, return list of alerts.
+
+    Pass pre-loaded `events` (e.g. from a caller that already called
+    _load_metrics() for its own use, like generate_status.py) to avoid
+    parsing metrics.jsonl twice per invocation.
+    """
     cfg = config or _load_config()
     lookback = cfg.get("lookback_hours", 168)
-    events = _load_metrics(metrics_path or _DEFAULT_METRICS, lookback)
+    if events is None:
+        events = _load_metrics(metrics_path or _DEFAULT_METRICS, lookback)
     alerts = []
 
     error_counts = [e for e in events if e.get("type") == "count" and e.get("name") == "error"]

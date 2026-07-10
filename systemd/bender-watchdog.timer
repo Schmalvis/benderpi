@@ -1,0 +1,10 @@
+[Unit]
+Description=Run BenderPi watchdog checks + alert push every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=bender-watchdog.service
+
+[Install]
+WantedBy=timers.target

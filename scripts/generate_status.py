@@ -62,7 +62,7 @@ def _recent_errors() -> list[str]:
 def generate_dict() -> dict:
     """Return status data as a structured dict (used by web UI and generate())."""
     events = _load_metrics(_METRICS_PATH, lookback_hours=168)
-    alerts = run_checks()
+    alerts = run_checks(events=events)
 
     def avg_timer(name) -> float | None:
         timers = [e for e in events if e.get("type") == "timer" and e.get("name") == name]

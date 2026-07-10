@@ -1,0 +1,12 @@
+[Unit]
+Description=BenderPi watchdog checks + alert push (one-shot, run by bender-watchdog.timer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/bender
+EnvironmentFile=/home/pi/bender/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/bender/venv/bin/python /home/pi/bender/scripts/watchdog_notify.py
