@@ -335,8 +335,23 @@ class MicReader:
         Closing a stream whose read() is currently wedged can itself block, so
         the close is done on a separate short-lived thread guarded by
         close_timeout_s. If it doesn't return in time we abandon it — the reader
-        thread is a daemon and won't keep the process alive."""
+        thread is a daemon and won't keep the process alive.
+
+        Before touching the stream at all, we join the reader thread so its
+        in-flight read() (if any) returns first. A live read() racing a
+        stop_stream()/close() from another thread on the same PortAudio/ALSA
+        stream is undefined behavior — observed in practice as a native
+        `snd_pcm_poll_descriptors_revents` assertion that SIGABRTs the whole
+        process. In the normal (non-stalled) case the reader thread's current
+        read() returns almost immediately, so this join adds negligible
+        latency; only a genuinely wedged stream burns the full timeout."""
         self._stop.set()
+        self._thread.join(timeout=close_timeout_s)
+        if self._thread.is_alive():
+            log.warning("MicReader.stop: reader thread still blocked after %.1fs "
+                        "(stream likely wedged) — closing stream from a separate "
+                        "thread anyway, accepting the small risk of a concurrent "
+                        "close vs. an abandoned in-flight read", close_timeout_s)
 
         def _close():
             try:
