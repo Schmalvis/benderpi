@@ -28,6 +28,7 @@ HEDGE_PHRASES = {
 # regardless of length. These always escalate to cloud.
 HARD_FAIL_PHRASES = {
     "as an ai", "language model",
+    "i'm not bender", "i am not bender", "i'm an ai", "i'm just a computer",
 }
 
 # A reply this short that also hedges is almost certainly a non-answer worth
