@@ -7,9 +7,12 @@ sys.path.insert(0, "scripts")
 import watchdog
 
 
+# Must match the real conversation_log schema ({"type": "session_start"}),
+# NOT {"event": ...} — a prior fixture/code mismatch on this key made the
+# check silently always report "no sessions" while the test still passed.
 def _write_log(tmp_path, ts):
     p = tmp_path / "2026-05-14.jsonl"
-    p.write_text(json.dumps({"event": "session_start", "ts": ts.isoformat()}) + "\n")
+    p.write_text(json.dumps({"type": "session_start", "ts": ts.isoformat()}) + "\n")
     return p
 
 
@@ -27,6 +30,10 @@ def test_liveness_warns_stale(tmp_path):
     assert len(alerts) == 1
     assert alerts[0].severity == "warning"
     assert alerts[0].check == "session_liveness"
+    # Must be the age-based message, proving the session_start was actually
+    # parsed (not the "no session_start events found" fallback that fires when
+    # the schema key is misread).
+    assert "No session in" in alerts[0].message
 
 
 def test_liveness_warns_no_logs(tmp_path):

@@ -81,7 +81,7 @@ def _find_latest_session_start(logs_dir: str):
                         ev = json.loads(line)
                     except Exception:
                         continue
-                    if ev.get("event") != "session_start":
+                    if ev.get("type") != "session_start":
                         continue
                     ts = ev.get("ts")
                     try:
