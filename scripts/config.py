@@ -171,17 +171,27 @@ class Config:
     wake_stall_seconds: float = 30.0    # raise RuntimeError if no PCM frames for this long
     wake_heartbeat_frames: int = 250    # emit heartbeat metric every N frames
 
-    # Wake loop input-sanity (RMS sentinel + score logging)
+    # Wake loop input-sanity (dead-feed sentinel + score logging)
     #   The 2026 XVF3800 incident had the mic feeding *zeros* (or near-zero
     #   garbage) for days: reads returned frames, so the stall detector never
-    #   fired, but the wake word could never trigger. The RMS sentinel watches
-    #   the rolling input level and, if it stays below wake_rms_floor for
-    #   wake_silence_alarm_s, escalates through the same reinit-then-exit path
-    #   as a hard stall. Floor must be calibrated against the mic's real noise
-    #   floor (a quiet room is NOT zero) — too high and it reinit-loops.
-    wake_rms_floor: float = 30.0        # rolling input RMS below this = presumed dead mic
-    wake_silence_alarm_s: float = 120.0 # seconds below floor before escalating (0 disables)
-    wake_score_log_interval_s: float = 60.0  # log max-score + RMS every N seconds (0 disables)
+    #   fired, but the wake word could never trigger. The dead-feed sentinel
+    #   watches per-frame input *stddev* and, if it stays below wake_std_floor
+    #   for wake_silence_alarm_s, escalates through the same reinit-then-exit
+    #   path as a hard stall. Stddev (not RMS) is the escalation signal because
+    #   both failure modes — a zeros feed AND a mic stuck at a constant DC
+    #   offset — read ~0 stddev, while a *live* mic in a quiet room still varies
+    #   (real ambient noise). An earlier RMS-floor sentinel (floor 30) mistook
+    #   quiet rooms (ambient RMS ~20-40) for dead mics and reinit-looped —
+    #   see the 2026-07-14 false-positive stall cluster.
+    wake_std_floor: float = 5.0         # per-frame input stddev below this = dead/stuck feed
+    wake_silence_alarm_s: float = 120.0 # seconds below std floor before escalating (0 disables)
+    #   wake_rms_floor is now advisory only: if the rolling input RMS sits below
+    #   it for wake_degraded_warn_s the loop logs ONE warning (possible quiet
+    #   room or gain collapse) but does NOT restart. Set wake_degraded_warn_s=0
+    #   to disable the warning entirely.
+    wake_rms_floor: float = 30.0        # advisory: rolling RMS below this = suspiciously quiet
+    wake_degraded_warn_s: float = 600.0 # seconds below rms floor before a log-only warning (0 disables)
+    wake_score_log_interval_s: float = 60.0  # log max-score + RMS + stddev every N seconds (0 disables)
 
     # Mic read watchdog (MicReader) — applies to all blocking mic reads
     mic_read_timeout_s: float = 10.0    # raise MicStallError if no frame arrives in this window

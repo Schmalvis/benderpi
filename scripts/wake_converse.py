@@ -160,9 +160,14 @@ def wait_for_wakeword(_oww_model=None):
     window = max(1, int(getattr(cfg, "oww_window", 1)))
     required = max(1, min(int(getattr(cfg, "oww_frames_required", 1)), window))
 
-    # Input-sanity (RMS sentinel + periodic score/RMS logging) config.
-    rms_floor = float(getattr(cfg, "wake_rms_floor", 0.0))
+    # Input-sanity config. Escalation (reinit→restart) keys off per-frame
+    # *stddev* (a dead zeros feed AND a mic stuck at constant DC both read ~0
+    # stddev; a live mic in a quiet room still varies). rms_floor is advisory
+    # only now — a low rolling RMS just emits one log-only warning.
+    std_floor = float(getattr(cfg, "wake_std_floor", 0.0))
     silence_alarm_s = float(getattr(cfg, "wake_silence_alarm_s", 0.0))
+    rms_floor = float(getattr(cfg, "wake_rms_floor", 0.0))
+    degraded_warn_s = float(getattr(cfg, "wake_degraded_warn_s", 0.0))
     score_log_interval_s = float(getattr(cfg, "wake_score_log_interval_s", 0.0))
 
     reinit_count = 0
@@ -182,10 +187,13 @@ def wait_for_wakeword(_oww_model=None):
         # Smoothing + sentinel state is per-stream: reset on every (re)open so a
         # stale score/level from before a session or reinit can never trigger.
         recent_hits = deque(maxlen=window)  # 1.0 if frame >= threshold else 0.0
-        last_rms_ok_ts = time.monotonic()   # last time input level cleared floor
+        last_std_ok_ts = time.monotonic()   # last frame whose stddev cleared std_floor
+        last_rms_ok_ts = time.monotonic()   # last frame whose RMS cleared the advisory floor
+        degraded_warned = False             # edge-trigger: warn once per low-RMS episode
         last_score_log_ts = time.monotonic()
         window_max_score = 0.0              # peak score since last periodic log
         window_max_rms = 0.0                # peak input RMS since last periodic log
+        window_max_std = 0.0                # peak input stddev since last periodic log
         try:
             while True:
                 try:
@@ -221,28 +229,52 @@ def wait_for_wakeword(_oww_model=None):
                     _feed_watchdog()
                     frames_since_hb = 0
 
-                # Input-level sanity: a mic feeding zeros/garbage still delivers
-                # frames (so the stall detector above never fires) but can never
-                # trigger the wake word — the 6-day XVF3800 failure. Track the
-                # rolling RMS; if it stays below the floor for the alarm window,
-                # escalate through the same reinit-then-exit path as a hard stall.
+                # Materialise the frame once (reused by the sentinel + predict).
+                pcm_np = np.frombuffer(pcm, dtype=np.int16)
+                if capture_channels == 2:
+                    pcm_np = pcm_np[::2]  # left channel only (stereo downmix)
+
+                # Dead/stuck-feed sentinel: a mic feeding zeros/garbage still
+                # delivers frames (so the stall detector above never fires) but
+                # can never trigger the wake word — the 6-day XVF3800 failure.
+                # Escalate on per-frame *stddev*, not RMS: a zeros feed AND a mic
+                # stuck at a constant DC offset both read ~0 stddev, whereas a
+                # live mic in a quiet room still varies (ambient noise). An
+                # RMS-floor sentinel here (floor 30) mistook quiet rooms for dead
+                # mics and reinit-looped — the 2026-07-14 false-positive cluster.
+                frame_std = float(np.std(pcm_np)) if pcm_np.size else 0.0
+                if frame_std > window_max_std:
+                    window_max_std = frame_std
+                if std_floor <= 0.0 or frame_std >= std_floor:
+                    last_std_ok_ts = now
+                elif silence_alarm_s > 0.0 and now - last_std_ok_ts > silence_alarm_s:
+                    metrics.count("wake_mic_silent",
+                                  silent_s=round(now - last_std_ok_ts, 1),
+                                  std_floor=std_floor)
+                    log.error("Wake mic dead: input stddev below %.1f for %.1fs "
+                              "(presumed dead/stuck mic feed)",
+                              std_floor, now - last_std_ok_ts)
+                    raise RuntimeError("wake loop stalled")
+
+                # Advisory-only: a low rolling RMS with healthy variance is a
+                # quiet room (normal) but can also be gain collapse. Log ONE
+                # warning per low episode (edge-triggered) — never restart.
                 frame_rms = audio.rms(pcm, 2)
                 if frame_rms > window_max_rms:
                     window_max_rms = frame_rms
                 if rms_floor <= 0.0 or frame_rms >= rms_floor:
                     last_rms_ok_ts = now
-                elif silence_alarm_s > 0.0 and now - last_rms_ok_ts > silence_alarm_s:
-                    metrics.count("wake_mic_silent",
-                                  silent_s=round(now - last_rms_ok_ts, 1),
+                    degraded_warned = False
+                elif (degraded_warn_s > 0.0 and not degraded_warned
+                        and now - last_rms_ok_ts > degraded_warn_s):
+                    metrics.count("wake_mic_degraded",
+                                  quiet_s=round(now - last_rms_ok_ts, 1),
                                   floor=rms_floor)
-                    log.error("Wake mic silent: input RMS below %.0f for %.1fs "
-                              "(presumed dead/garbage mic feed)",
-                              rms_floor, now - last_rms_ok_ts)
-                    raise RuntimeError("wake loop stalled")
+                    log.warning("Wake mic quiet: input RMS below %.0f for %.1fs "
+                                "(quiet room or gain collapse; not escalating)",
+                                rms_floor, now - last_rms_ok_ts)
+                    degraded_warned = True
 
-                pcm_np = np.frombuffer(pcm, dtype=np.int16)
-                if capture_channels == 2:
-                    pcm_np = pcm_np[::2]  # left channel only (stereo downmix)
                 try:
                     prediction = oww_model.predict(pcm_np)
                 except Exception as exc:  # a bad frame must not kill the loop
@@ -260,12 +292,14 @@ def wait_for_wakeword(_oww_model=None):
                 # "mic feeding garbage" (RMS near 0) without a live console.
                 if (score_log_interval_s > 0.0
                         and now - last_score_log_ts >= score_log_interval_s):
-                    log.info("Wake idle: peak score %.3f, peak RMS %.0f over last %.0fs",
-                             window_max_score, window_max_rms,
+                    log.info("Wake idle: peak score %.3f, peak RMS %.0f, peak std "
+                             "%.0f over last %.0fs", window_max_score,
+                             window_max_rms, window_max_std,
                              now - last_score_log_ts)
                     last_score_log_ts = now
                     window_max_score = 0.0
                     window_max_rms = 0.0
+                    window_max_std = 0.0
 
                 # N-of-M temporal smoothing: require multiple recent frames over
                 # threshold before firing, suppressing single-frame spikes.

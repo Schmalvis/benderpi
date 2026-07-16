@@ -55,14 +55,36 @@ for _name in (
 _stub("handlers.timer_alert", TimerAlertRunner=object)
 
 
-# A frame of full-scale-ish PCM so audio.rms() reports a healthy (non-zero)
-# level and the RMS sentinel stays quiet in the smoothing tests.
+# Helpers build frames with a known stddev/RMS so we can exercise the dead-feed
+# sentinel deterministically. The sentinel escalates on *stddev*, so a "healthy"
+# frame must VARY (a constant-value frame — even a loud one — is a stuck feed).
+def _varying_pcm(n_samples: int, amp: float, channels: int = 1) -> bytes:
+    """A sine-shaped frame: stddev ≈ RMS ≈ amp/√2 (mean ≈ 0)."""
+    mono = (np.sin(np.arange(n_samples) * 0.19) * amp).astype(np.int16)
+    frame = np.repeat(mono, channels) if channels > 1 else mono
+    return frame.tobytes()
+
+
+# Healthy live mic: loud AND varying (high stddev) — sentinel stays quiet.
 def _loud_pcm(n_samples: int, channels: int = 1) -> bytes:
+    return _varying_pcm(n_samples, 5000.0, channels)
+
+
+# Genuinely dead feed: all zeros → stddev 0 → escalates.
+def _silent_pcm(n_samples: int, channels: int = 1) -> bytes:
+    return np.zeros(n_samples * channels, dtype=np.int16).tobytes()
+
+
+# Stuck-at-DC feed: loud but constant → RMS high, stddev 0 → escalates
+# (the failure mode the old RMS-floor sentinel could NOT catch).
+def _dc_pcm(n_samples: int, channels: int = 1) -> bytes:
     return (np.ones(n_samples * channels, dtype=np.int16) * 5000).tobytes()
 
 
-def _silent_pcm(n_samples: int, channels: int = 1) -> bytes:
-    return np.zeros(n_samples * channels, dtype=np.int16).tobytes()
+# Quiet room: low-amplitude but varying → RMS ~25 (< 30 advisory floor) but
+# stddev ~25 (> 5 std floor) → must NOT escalate (the 2026-07-14 false positive).
+def _quiet_varying_pcm(n_samples: int, channels: int = 1) -> bytes:
+    return _varying_pcm(n_samples, 35.0, channels)
 
 
 def _wire_mic(monkeypatch, read_fn):
@@ -83,8 +105,10 @@ def _base_config(monkeypatch, **overrides):
         'oww_window': 4,
         'wake_stall_seconds': 30,
         'wake_heartbeat_frames': 250,
-        'wake_rms_floor': 30.0,
+        'wake_std_floor': 5.0,
         'wake_silence_alarm_s': 120.0,
+        'wake_rms_floor': 30.0,
+        'wake_degraded_warn_s': 600.0,
         'wake_score_log_interval_s': 60.0,
         'mic_read_timeout_s': 10.0,
         'mic_stall_max_reinits': 1,
@@ -212,11 +236,10 @@ def test_predict_exception_does_not_kill_loop(monkeypatch):
     assert calls[0] == 3
 
 
-def test_rms_sentinel_escalates_on_dead_mic(monkeypatch):
-    """Silent (zero-RMS) frames past the alarm window escalate to the stall path.
-
-    With mic_stall_max_reinits=0 the escalation calls sys.exit(1) after emitting
-    the wake_mic_silent metric — assert on SystemExit as proof it fired."""
+def test_std_sentinel_escalates_on_dead_mic(monkeypatch):
+    """Silent (zero-stddev) frames past the alarm window escalate to the stall
+    path. With mic_stall_max_reinits=0 the escalation calls sys.exit(1) after
+    emitting the wake_mic_silent metric — assert on SystemExit as proof."""
     from wake_converse import wait_for_wakeword
 
     # Fake monotonic clock so the alarm window elapses deterministically.
@@ -248,10 +271,83 @@ def test_rms_sentinel_escalates_on_dead_mic(monkeypatch):
     assert silent_calls[0] >= 1  # wake_mic_silent metric emitted
 
 
-def test_healthy_rms_never_triggers_sentinel(monkeypatch):
-    """Loud frames keep last_rms_ok fresh so the sentinel never fires even over
-    a long virtual run. Time is advanced in predict() (main thread) so each
-    processed loud frame resets the sentinel before the alarm window elapses."""
+def test_stuck_dc_feed_escalates(monkeypatch):
+    """A loud-but-constant (stuck-at-DC) feed has high RMS yet zero stddev — the
+    old RMS-floor sentinel would have missed it; the stddev sentinel catches it."""
+    from wake_converse import wait_for_wakeword
+
+    t = [0.0]
+    monkeypatch.setattr('wake_converse.time.monotonic', lambda: t[0])
+    monkeypatch.setattr('wake_converse.time.sleep', lambda *_: None)
+
+    silent_calls = [0]
+    import metrics as metrics_mod
+    orig_count = metrics_mod.metrics.count
+    def spy_count(name, **tags):
+        if name == "wake_mic_silent":
+            silent_calls[0] += 1
+        return orig_count(name, **tags)
+    monkeypatch.setattr(metrics_mod.metrics, 'count', spy_count)
+
+    def fake_read(n, exception_on_overflow=False):
+        t[0] += 1.0
+        return _dc_pcm(n)  # RMS 5000, stddev 0
+    _wire_mic(monkeypatch, fake_read)
+    _base_config(monkeypatch, wake_silence_alarm_s=5.0, mic_stall_max_reinits=0)
+
+    mock_model = MagicMock()
+    mock_model.predict.return_value = {'w': 0.0}
+
+    with pytest.raises(SystemExit):
+        wait_for_wakeword(_oww_model=mock_model)
+    assert silent_calls[0] >= 1
+
+
+def test_quiet_room_does_not_escalate(monkeypatch):
+    """A quiet-but-varying feed (RMS ~25 < 30 advisory floor, but stddev ~25 >
+    5 std floor) must NOT escalate — this is the 2026-07-14 false positive. It
+    should emit the log-only wake_mic_degraded metric and keep running."""
+    from wake_converse import wait_for_wakeword
+
+    t = [0.0]
+    monkeypatch.setattr('wake_converse.time.monotonic', lambda: t[0])
+
+    degraded_calls = [0]
+    import metrics as metrics_mod
+    orig_count = metrics_mod.metrics.count
+    def spy_count(name, **tags):
+        if name == "wake_mic_degraded":
+            degraded_calls[0] += 1
+        return orig_count(name, **tags)
+    monkeypatch.setattr(metrics_mod.metrics, 'count', spy_count)
+
+    def fake_read(n, exception_on_overflow=False):
+        return _quiet_varying_pcm(n)
+    _wire_mic(monkeypatch, fake_read)
+    # Advisory warning after 5s of low RMS; std floor still cleared by variance.
+    _base_config(monkeypatch, wake_silence_alarm_s=5.0, wake_degraded_warn_s=5.0)
+
+    calls = [0]
+    mock_model = MagicMock()
+    def fake_predict(arr):
+        calls[0] += 1
+        t[0] += 10.0  # advance past both windows between frames
+        if calls[0] > 50:
+            raise KeyboardInterrupt
+        return {'w': 0.1}  # never fires the wake word
+    mock_model.predict = fake_predict
+
+    # A quiet room must never escalate (no SystemExit/RuntimeError); the loop
+    # runs until the KeyboardInterrupt bail, having logged the advisory warning.
+    with pytest.raises(KeyboardInterrupt):
+        wait_for_wakeword(_oww_model=mock_model)
+    assert degraded_calls[0] >= 1  # advisory warning emitted, but no restart
+
+
+def test_healthy_signal_never_triggers_sentinel(monkeypatch):
+    """Loud varying frames keep the stddev sentinel fresh so it never fires even
+    over a long virtual run. Time is advanced in predict() (main thread) so each
+    processed frame resets the sentinel before the alarm window elapses."""
     from wake_converse import wait_for_wakeword
 
     t = [0.0]
@@ -272,8 +368,8 @@ def test_healthy_rms_never_triggers_sentinel(monkeypatch):
         return {'w': 0.1}  # never fires the wake word
     mock_model.predict = fake_predict
 
-    # RMS was already checked (and reset) before predict advances the clock, so a
-    # healthy loud frame keeps last_rms_ok current. Wrong behaviour would surface
-    # as a RuntimeError/SystemExit from the sentinel instead of KeyboardInterrupt.
+    # Stddev was already checked (and reset) before predict advances the clock,
+    # so a healthy varying frame keeps last_std_ok current. Wrong behaviour would
+    # surface as a RuntimeError/SystemExit instead of KeyboardInterrupt.
     with pytest.raises(KeyboardInterrupt):
         wait_for_wakeword(_oww_model=mock_model)

@@ -139,8 +139,10 @@ class BenderConfigUpdate(BaseModel):
     oww_threshold: float | None = None
     oww_frames_required: int | None = None
     oww_window: int | None = None
+    wake_std_floor: float | None = None
     wake_rms_floor: float | None = None
     wake_silence_alarm_s: float | None = None
+    wake_degraded_warn_s: float | None = None
 
     # --- Home Assistant ---
     ha_url: str | None = None
@@ -214,8 +216,9 @@ class BenderConfigUpdate(BaseModel):
         "ai_max_tokens", "local_llm_timeout", "oww_frames_required",
         "oww_window", "weather_ttl", "news_ttl", "briefings_weather_ttl_s",
         "briefings_news_ttl_s", "response_hard_timeout_s", "http_timeout_s",
-        "mic_read_timeout_s", "wake_rms_floor", "wake_silence_alarm_s",
-        "simple_intent_max_words", "timer_alert_max_seconds",
+        "mic_read_timeout_s", "wake_std_floor", "wake_rms_floor",
+        "wake_silence_alarm_s", "simple_intent_max_words",
+        "timer_alert_max_seconds",
     )
     @classmethod
     def _positive(cls, v, info):
