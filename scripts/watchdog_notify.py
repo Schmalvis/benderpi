@@ -51,6 +51,10 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOGS_DIR = os.path.join(_BASE_DIR, "logs")
 _STATE_PATH = os.path.join(_LOGS_DIR, ".watchdog_state.json")
 
+# Stable id for the single managed persistent_notification card, so re-pushes
+# update it in place (no pile-up) and it can be dismissed when alerts clear.
+_NOTIF_ID = "bender_watchdog"
+
 
 def _sweep_old_logs(retention_days) -> int:
     """Delete conversation logs (logs/YYYY-MM-DD.jsonl) older than
@@ -103,13 +107,19 @@ def _in_quiet_hours(cfg_dict: dict) -> bool:
     return hour >= start or hour < end  # window wraps midnight
 
 
-def _push_ha_notification(cfg_dict: dict, title: str, message: str) -> bool:
+def _push_ha_notification(cfg_dict: dict, title: str, message: str,
+                          notification_id: str | None = None) -> bool:
     domain = cfg_dict.get("watchdog_notify_domain", "persistent_notification")
     service = cfg_dict.get("watchdog_notify_service", "create")
     if not cfg.ha_url or not cfg.ha_token:
         log.warning("HA_URL/HA_TOKEN not configured -- cannot push watchdog alert")
         return False
     payload = {"title": title, "message": message}
+    # A stable notification_id makes persistent_notification.create update the
+    # same card in place instead of spawning a new one each push. Only add it
+    # for that domain -- notify.* services reject/ignore the field.
+    if notification_id and domain == "persistent_notification":
+        payload["notification_id"] = notification_id
     req = urllib.request.Request(
         f"{cfg.ha_url.rstrip('/')}/api/services/{domain}/{service}",
         data=json.dumps(payload).encode(),
@@ -132,21 +142,71 @@ def _push_ha_notification(cfg_dict: dict, title: str, message: str) -> bool:
         return False
 
 
-def main() -> int:
-    cfg_dict = _load_config()
+def _dismiss_ha_notification(cfg_dict: dict, notification_id: str) -> bool:
+    """Dismiss the managed persistent_notification card by id. Only meaningful
+    for the persistent_notification domain -- a real notify.* push can't be
+    recalled, so callers skip this path for those domains."""
+    domain = cfg_dict.get("watchdog_notify_domain", "persistent_notification")
+    if domain != "persistent_notification":
+        return False
+    if not cfg.ha_url or not cfg.ha_token:
+        log.warning("HA_URL/HA_TOKEN not configured -- cannot dismiss watchdog card")
+        return False
+    payload = {"notification_id": notification_id}
+    req = urllib.request.Request(
+        f"{cfg.ha_url.rstrip('/')}/api/services/persistent_notification/dismiss",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {cfg.ha_token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=float(cfg.http_timeout_s)) as r:
+            return r.status in (200, 201)
+    except Exception as e:
+        log.warning("HA persistent_notification.dismiss failed: %s", e)
+        return False
 
-    removed = _sweep_old_logs(cfg_dict.get("log_retention_days", 90))
-    if removed:
-        log.info("Retention sweep: removed %d log file(s) past retention", removed)
 
-    alerts = run_checks(config=cfg_dict)
+def _run_persistent_card(cfg_dict: dict, alerts: list, state: dict) -> int:
+    """persistent_notification path: keep ONE card (id _NOTIF_ID) in sync with
+    the current alert set. These cards are silent (no phone push), so we upsert
+    every run to reflect current state and dismiss the card the moment
+    everything clears -- no cooldown or quiet-hours gating needed."""
+    if not alerts:
+        rc = 0
+        if state.get("card_active"):
+            if _dismiss_ha_notification(cfg_dict, _NOTIF_ID):
+                log.info("Watchdog: all clear -- dismissed HA card")
+                state.pop("card_active", None)
+            else:
+                log.warning("Watchdog: all clear but failed to dismiss HA card")
+                rc = 1
+        else:
+            log.info("Watchdog: no alerts")
+        _save_state(state)
+        return rc
+
+    title = f"BenderPi: {len(alerts)} alert(s)"
+    message = "\n".join(f"[{a.severity.upper()}] {a.message}" for a in alerts)
+    sent = _push_ha_notification(cfg_dict, title, message, notification_id=_NOTIF_ID)
+    if sent:
+        state["card_active"] = True
+        log.info("Watchdog: synced HA card with %d alert(s)", len(alerts))
+    else:
+        log.error("Watchdog: failed to sync HA card with %d alert(s)", len(alerts))
+    _save_state(state)
+    return 0 if sent else 1
+
+
+def _run_push_notify(cfg_dict: dict, alerts: list, state: dict) -> int:
+    """notify.* (real phone push) path: a push can't be recalled, so gate it
+    behind the per-check renotify cooldown and quiet hours, exactly as before."""
     if not alerts:
         log.info("Watchdog: no alerts")
         return 0
 
     renotify_hours = float(cfg_dict.get("watchdog_renotify_hours", 12))
     now = datetime.now(timezone.utc)
-    state = _load_state()
     active_keys = set()
     to_send = []
 
@@ -196,6 +256,21 @@ def main() -> int:
 
     _save_state(state)
     return 0 if sent else 1
+
+
+def main() -> int:
+    cfg_dict = _load_config()
+
+    removed = _sweep_old_logs(cfg_dict.get("log_retention_days", 90))
+    if removed:
+        log.info("Retention sweep: removed %d log file(s) past retention", removed)
+
+    alerts = run_checks(config=cfg_dict)
+    state = _load_state()
+    domain = cfg_dict.get("watchdog_notify_domain", "persistent_notification")
+    if domain == "persistent_notification":
+        return _run_persistent_card(cfg_dict, alerts, state)
+    return _run_push_notify(cfg_dict, alerts, state)
 
 
 if __name__ == "__main__":
