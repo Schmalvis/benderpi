@@ -14,6 +14,7 @@
   "max_hours_without_session": 72,
   "mic_stall_reinit_threshold": 3,
   "mic_stall_exit_threshold": 1,
+  "mic_stall_lookback_hours": 24,
   "hailo_lock_stuck_threshold": 1,
   "log_retention_days": 90,
   "watchdog_renotify_hours": 12,

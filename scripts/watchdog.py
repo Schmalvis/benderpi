@@ -66,6 +66,26 @@ def _load_metrics(path: str, lookback_hours: int) -> list[dict]:
     return events
 
 
+def _recent(events: list[dict], hours: float) -> list[dict]:
+    """Sub-filter an already-loaded event list down to the last `hours`.
+
+    Used for checks that should reflect "is this actively happening" rather
+    than the general `lookback_hours` window -- a resolved mic-stall burst
+    would otherwise keep re-triggering its alert for the full 7-day window
+    it was loaded under.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    result = []
+    for e in events:
+        ts = e.get("ts", "")
+        try:
+            if datetime.fromisoformat(ts) >= cutoff:
+                result.append(e)
+        except Exception:
+            result.append(e)
+    return result
+
+
 def _find_latest_session_start(logs_dir: str):
     """Scan the 3 most recent YYYY-MM-DD.jsonl files for the latest session_start timestamp."""
     from glob import glob
@@ -202,15 +222,21 @@ def run_checks(metrics_path: str = None, config: dict = None, events: list[dict]
 
     # Mic stall reinits — the wake loop reinitialised the mic after a stall.
     # A few can happen on legitimate ALSA rate switches; a burst means the USB
-    # mic is flapping or wedging repeatedly.
-    stall_reinits = [e for e in events if e.get("type") == "count"
+    # mic is flapping or wedging repeatedly. Uses its own, shorter lookback
+    # (default 24h, not the general `lookback_hours`) so a resolved burst
+    # stops paging once it's no longer actively happening, instead of
+    # re-triggering the same alert on every 15-min watchdog tick for the
+    # rest of the 7-day window it was fixed within.
+    mic_stall_lookback = cfg.get("mic_stall_lookback_hours", 24)
+    mic_stall_events = _recent(events, mic_stall_lookback)
+    stall_reinits = [e for e in mic_stall_events if e.get("type") == "count"
                      and e.get("name") == "wake_loop_stall_reinit"]
     if stall_reinits:
         threshold = cfg.get("mic_stall_reinit_threshold", 3)
         if len(stall_reinits) >= threshold:
             alerts.append(Alert(
                 severity="warning", check="mic_stall_reinit",
-                message=f"Mic stall reinit {len(stall_reinits)}x in the last {lookback}h "
+                message=f"Mic stall reinit {len(stall_reinits)}x in the last {mic_stall_lookback}h "
                         f"(threshold {threshold}) — USB mic may be flapping/wedging",
                 data={"reinits": len(stall_reinits), "threshold": threshold},
             ))
@@ -218,14 +244,14 @@ def run_checks(metrics_path: str = None, config: dict = None, events: list[dict]
     # Mic stall exits — the process exited for a systemd restart after a mic
     # stall it couldn't recover in-process. This usually means the mic needed a
     # physical reseat.
-    stall_exits = [e for e in events if e.get("type") == "count"
+    stall_exits = [e for e in mic_stall_events if e.get("type") == "count"
                    and e.get("name") == "wake_loop_stall_exit"]
     if stall_exits:
         threshold = cfg.get("mic_stall_exit_threshold", 1)
         if len(stall_exits) >= threshold:
             alerts.append(Alert(
                 severity="error", check="mic_stall_exit",
-                message=f"Mic stall exit {len(stall_exits)}x in the last {lookback}h "
+                message=f"Mic stall exit {len(stall_exits)}x in the last {mic_stall_lookback}h "
                         f"— service restarted by systemd; mic likely needs a physical reseat",
                 data={"exits": len(stall_exits), "threshold": threshold},
             ))
