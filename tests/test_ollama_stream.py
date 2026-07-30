@@ -122,15 +122,22 @@ def test_local_ai_responder_stream_hailo_unavailable_falls_back(monkeypatch):
     assert "Bite my shiny metal response" in " ".join(sentences)
 
 
-def test_local_ai_responder_stream_hailo_success_yields_full_text():
-    """When Hailo succeeds, generate_stream yields the full text as one item."""
+def test_local_ai_responder_stream_hailo_yields_sentences_as_produced():
+    """Hailo now streams for real: sentences pass straight through as the model
+    produces them, rather than the whole reply arriving as one item.
+
+    This used to assert the opposite (`sentences == [full_text]`) because the
+    Hailo path faked streaming by calling generate_all() and yielding once —
+    which is what made first-audio latency ~15s.
+    """
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
     from ai_local import LocalAIResponder
     from unittest.mock import patch
 
     r = LocalAIResponder()
-    with patch.object(r._hailo, 'generate', return_value="Bite my shiny metal response!"):
+    produced = ["Bite my shiny metal ass!", "What do you want?"]
+    with patch.object(r._hailo, 'generate_stream', return_value=iter(produced)):
         sentences = list(r.generate_stream("Tell me something"))
 
-    assert sentences == ["Bite my shiny metal response!"]
+    assert sentences == produced, "each sentence must be forwarded separately"

@@ -216,6 +216,59 @@ still tested; those three calls simply become no-ops when residency is on. The
 one property residency has *not* proven is multi-week stability of a
 permanently-held VDevice, which is why the flag exists.
 
+### On-chip conversation context — read this before touching `ai_local.py`
+
+HailoRT keeps conversation context **on the chip** between `generate()` calls,
+and **rejects a system-role message on any call after the first**:
+
+```
+[HailoRT] [error] CHECK failed - System role messages can only be provided on the first prompt
+                                        -> HAILO_INVALID_OPERATION(6)
+```
+
+So the protocol is: **system prompt exactly once per context, then only the new
+user message.** Do not resend history — the chip already has it. Sending
+`[system, *history]` every turn (the pre-residency shape) raises on turn 2.
+
+This was invisible before residency because the LLM object was destroyed and
+rebuilt every turn, making every turn a fresh context. Holding it resident
+exposed the rule, and briefly shipped a bug where turn 2+ of a session failed
+over to Ollama (fixed same day).
+
+Not resending history is also *faster*, not just required: measured TTFT drops
+from **~1101ms on a fresh context to ~371ms** on later turns, because the model
+stops re-encoding the whole conversation each time.
+
+`_HailoLLMResponder` tracks `_context_fresh` / `_context_turns` instead of a
+message list. `clear_context()` is the only way back to a fresh context, and is
+called on: session end (`clear_history()`), a quality-gate rejection (so a
+rejected reply doesn't become context for the cloud-escalated turn), and every
+`ai_max_history` turns (on-chip context can only be cleared wholesale, so it is
+recycled rather than trimmed).
+
+### Hailo token streaming
+
+`LLM.generate()` **is** a token-streaming context manager on HailoRT 5.3 — an
+older comment in `ai_local.py` claiming otherwise was wrong. The Hailo path
+streams sentence-by-sentence into the same `ResponseStream` pipeline the Ollama
+and cloud paths use, so Piper starts speaking sentence 1 while the model is
+still decoding sentence 2.
+
+- `<|im_end|>` arrives as its own discrete token (verified on-device); it is
+  filtered per-token and stripped from the buffer, and a trailing partial
+  `<|…` fragment is dropped so it can never be spoken aloud.
+- Only the **first sentence** is quality-checked — hedges and character breaks
+  appear at the start, and once audio is playing it cannot be taken back.
+- Aborting mid-stream is safe (verified on-device): the `with` block closes the
+  completion and the next `generate()` works normally.
+- **Ollama failover applies only before the first sentence is yielded.** Once
+  audio is playing, a mid-stream Hailo failure ends the turn early rather than
+  splicing a second model's voice onto the first.
+
+Measured end-to-end on-device across a 5-turn session: first sentence in
+**665–3580ms (mean ~2.1s)**, versus a 14,563ms `ai_local_first_sentence_ms`
+median before. New metric: `ai_hailo_ttfs` (time to first spoken sentence).
+
 `watchdog_config.json` keys:
 - `max_hours_without_session` (code default `6`, shipped `72` in `watchdog_config.json`) — alerts if no conversation session detected in N hours. Raised to 72h because real usage is sparse (days between sessions), so 6h flagged normal idle as an anomaly. NB: `check_session_liveness` matches session_start events by `"type"` (the real `conversation_log.py` schema) — a prior `"event"`-key typo made it always report "no sessions found" regardless of activity.
 - `mic_stall_reinit_threshold` (default `3`) — warns if the wake loop reinitialised the mic after a stall this many times in `mic_stall_lookback_hours` (USB mic flapping).

@@ -3,6 +3,89 @@ Last updated: 2026-07-30
 
 ---
 
+## 2026-07-30 (2) — Hailo token streaming + on-chip context protocol fix
+
+Recommendation #2 of the Fable architecture review, plus a same-day fix to a bug
+that #1 (residency) introduced.
+
+### The bug residency introduced
+
+HailoRT keeps conversation context **on-chip** between `generate()` calls and
+**rejects a system-role message on any call after the first**:
+
+```
+[HailoRT] [error] CHECK failed - System role messages can only be provided on the first prompt
+```
+
+`_HailoLLMResponder.generate()` sent `[system, *history]` every turn. That was
+fine while the LLM object was destroyed and rebuilt per turn (every turn got a
+fresh context) — residency removed that reset, so **turn 2+ of any multi-turn AI
+session raised HAILO_INVALID_OPERATION(6) and fell over to Ollama**. Shipped in
+the morning, found and fixed the same day by the streaming spike.
+
+The fix is the correct protocol: system prompt once per context, then only the
+new user message. `_HailoLLMResponder` now tracks `_context_fresh` /
+`_context_turns` instead of keeping a message list (the chip *is* the history).
+`clear_context()` is called on session end, on a quality-gate rejection, and
+every `ai_max_history` turns to bound on-chip growth.
+
+**Not resending history is also a speed win, not just a constraint:** TTFT drops
+from ~1101ms on a fresh context to **~371ms** on later turns, because the model
+stops re-encoding the whole conversation.
+
+### Real token streaming
+
+`LLM.generate()` is a token-yielding context manager on HailoRT 5.3. The old
+comment in `ai_local.py` — "Hailo doesn't expose token-level streaming" — was
+simply false, and the path faked streaming with `generate_all()` + one yield.
+It now streams sentences into the existing `ResponseStream` pipeline.
+
+Details that took a spike to establish:
+- `<|im_end|>` arrives as its own discrete token; filtered per-token, stripped
+  from the buffer, and a trailing partial `<|…` fragment is dropped so it can
+  never be spoken.
+- Aborting mid-stream does **not** wedge the LLM — the next `generate()` is fine.
+- Ollama failover now only applies **before the first sentence is yielded**.
+  Mid-reply, the turn ends early rather than splicing a second model's voice on.
+- `_flush_sentence()` is now shared by the Hailo and Ollama paths, so sentence
+  segmentation (and therefore where TTS starts) is identical on both.
+
+### Measured on-device (real implementation, real hardware)
+
+5-turn sustained session plus a new session after `clear_history()`:
+
+```
+first-sentence latency: min 665ms  max 3580ms  mean 2125ms  (n=7)
+code failures: 0
+```
+
+Baseline `ai_local_first_sentence_ms` median was **14,563ms**. New metric
+`ai_hailo_ttfs` records time-to-first-sentence directly.
+
+One quality-gate rejection occurred mid-run and the responder recovered cleanly
+— that gate is load-bearing: the model does still occasionally open with an
+out-of-character "I'm an AI…", especially on identity questions.
+
+### Verification
+
+20 new tests (`tests/test_hailo_stream.py`) covering the context protocol,
+streaming, the quality gate, and failover semantics. Full suite 647 passed vs
+597 at the pre-#1 baseline, with an identical 64-failure set throughout (those
+64 are pre-existing on a dev box lacking `board`/blinka).
+
+`tests/test_ollama_stream.py::test_local_ai_responder_stream_hailo_success_yields_full_text`
+was rewritten — it asserted the old fake-streaming contract ("yields the full
+text as one item"), which is exactly what this change removes.
+
+### Note for future on-device work
+
+Now that the LLM is resident, **`bender-converse` holds the KV-Cache
+permanently**, so a second process cannot load an LLM or VLM while it runs
+(`HAILO_INVALID_OPERATION(6)`). Any LLM spike now needs
+`sudo systemctl stop bender-converse` first. Whisper is unaffected.
+
+---
+
 ## 2026-07-30 — Hailo residency: models held for the process lifetime
 
 **Status: implemented on `main` (uncommitted at time of writing), verified on-device,

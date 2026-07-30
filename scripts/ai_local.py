@@ -43,6 +43,35 @@ _HAILO_RETRY_COOLDOWN = 60  # seconds before retrying after init failure
 # either whitespace or end-of-string.
 _SENT_RE = re.compile(r'[.!?]["\']?(?:\s|$)')
 
+# Qwen's end-of-turn marker. Verified on-device (2026-07-30): HailoRT yields it
+# as its own discrete token rather than splitting it across token boundaries, so
+# an equality check is enough — but we also strip it from the buffer in case a
+# future runtime chunks differently.
+_IM_END = "<|im_end|>"
+
+# A trailing fragment of a special token ("<|im_", "<|") left in the buffer when
+# generation stops. Without this, a force-flush would speak the fragment aloud.
+_PARTIAL_SPECIAL_RE = re.compile(r'<\|[^>]*$')
+
+
+def _flush_sentence(buf: str, force: bool) -> tuple[str, str]:
+    """Extract one sentence from ``buf`` if a boundary is present.
+
+    Returns ``(sentence, remainder)``; ``sentence`` is "" when nothing is ready.
+    ``force=True`` (generation finished) flushes whatever is left.
+
+    Shared by the Hailo and Ollama streaming paths so sentence segmentation —
+    and therefore where TTS starts speaking — is identical on both.
+    """
+    m = _SENT_RE.search(buf)
+    if m:
+        return buf[:m.end()].strip(), buf[m.end():]
+    if force:
+        tail = _PARTIAL_SPECIAL_RE.sub("", buf).strip()
+        if tail:
+            return tail, ""
+    return "", buf
+
 
 class QualityCheckFailed(Exception):
     """Raised when local LLM response fails quality check."""
@@ -96,8 +125,17 @@ class _HailoLLMResponder:
         self._llm = None
         self._available = None  # None = not yet attempted
         self._last_failed_at: float | None = None
-        self.history: list[dict] = []
         self._scene_context: str = ""
+        # HailoRT maintains conversation context ON-CHIP between generate()
+        # calls, and rejects a system-role message on any call after the first:
+        #   "System role messages can only be provided on the first prompt"
+        #   -> HAILO_INVALID_OPERATION(6)
+        # So we do NOT keep or resend a message history here (the chip is the
+        # history). We only track whether the on-chip context is fresh and how
+        # many turns it holds. Before residency this was invisible: the LLM was
+        # destroyed and reloaded every turn, so every turn was a fresh context.
+        self._context_fresh = True
+        self._context_turns = 0
         # Held for exactly the duration of a self._llm.generate_all() call, from
         # whichever thread issues it. Its lifetime brackets "is the Hailo NPU
         # currently doing LLM inference" independent of caller thread or whether
@@ -176,60 +214,94 @@ class _HailoLLMResponder:
             self._last_failed_at = time.monotonic()
         return self._available
 
-    def _trim_history(self):
-        if len(self.history) > cfg.ai_max_history * 2:
-            self.history = self.history[-(cfg.ai_max_history * 2):]
+    def _reset_context(self) -> None:
+        """Wipe the on-chip conversation context so the next prompt may carry a
+        system message again. Cheap (no HEF reload) and the only supported way
+        to get back to a fresh context."""
+        if self._llm is not None:
+            try:
+                self._llm.clear_context()
+            except Exception as e:
+                log.warning("Failed to clear Hailo context cache: %s", e)
+        self._context_fresh = True
+        self._context_turns = 0
+
+    def _build_prompt(self, user_text: str) -> list:
+        """Build the message list for one turn under the on-chip-context rules.
+
+        The system prompt goes in exactly once per context; every later turn
+        sends only the new user message, because the chip already holds the
+        conversation. That is not just a constraint — it is measurably faster:
+        TTFT drops from ~1101ms on the first turn to ~371ms on later ones,
+        since the model is no longer re-encoding the whole history each time.
+
+        ``ai_max_history`` still bounds context growth: past that many turns we
+        recycle the context rather than let it grow without limit inside a very
+        long session.
+        """
+        limit = int(getattr(cfg, "ai_max_history", 6))
+        if limit > 0 and self._context_turns >= limit:
+            log.info("Hailo context reached %d turns — recycling", self._context_turns)
+            self._reset_context()
+
+        # Scene context rides on the first user message of the session.
+        if self._scene_context and self._context_turns == 0:
+            user_text = f"{self._scene_context} {user_text}"
+
+        messages = []
+        if self._context_fresh:
+            messages.append({
+                "role": "system",
+                "content": [{"type": "text", "text": BENDER_SYSTEM_PROMPT}],
+            })
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": user_text}],
+        })
+        return messages
+
+    def _acquire_or_fail(self) -> float:
+        """Take _infer_lock non-blocking, or raise so the caller fails over.
+
+        A prior generate call (typically a zombie thread abandoned by
+        session.py's hard-timeout join) may still be executing on this shared
+        _llm object; starting a second concurrent generation would corrupt the
+        on-chip context.
+        """
+        if self._infer_lock.acquire(blocking=False):
+            self._infer_lock_held_since = time.monotonic()
+            return self._infer_lock_held_since
+
+        held_for = (
+            time.monotonic() - self._infer_lock_held_since
+            if self._infer_lock_held_since is not None else None
+        )
+        metrics.count("hailo_busy_lockout",
+                      held_seconds=round(held_for, 1) if held_for is not None else None)
+        log.warning("Hailo LLM busy (prior generation still in flight, held_for=%s) "
+                    "— failing over to Ollama",
+                    f"{held_for:.1f}s" if held_for is not None else "unknown")
+        # In resident mode release_chip() never runs, so the consecutive-skip
+        # counter can no longer detect a wedged NPU. Detect it on elapsed time
+        # instead: a generation still in flight past twice the hard timeout is a
+        # zombie by definition, since session.py already gave up waiting for it.
+        # Keeps hailo_lock_stuck (and the watchdog check reading it) meaningful.
+        stuck_after = float(getattr(cfg, "response_hard_timeout_s", 20)) * 2
+        if held_for is not None and held_for > stuck_after:
+            metrics.count("hailo_lock_stuck", held_seconds=round(held_for, 1),
+                          source="generate")
+            log.error("Hailo _infer_lock stuck: generation in flight for %.1fs "
+                      "(> %.0fs) — NPU likely wedged by a zombie inference",
+                      held_for, stuck_after)
+        raise RuntimeError("Hailo LLM busy")
 
     def generate(self, user_text: str) -> str:
         if not self._load():
             raise RuntimeError("Hailo LLM not available")
 
-        # Prepend scene context to first user message of the session
-        if self._scene_context and len(self.history) == 0:
-            user_text = f"{self._scene_context} {user_text}"
+        messages = self._build_prompt(user_text)
 
-        self.history.append({
-            "role": "user",
-            "content": [{"type": "text", "text": user_text}],
-        })
-
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": BENDER_SYSTEM_PROMPT}]},
-            *self.history,
-        ]
-
-        # A prior generate_all() (e.g. a zombie thread abandoned by session.py's
-        # hard-timeout join) may still be executing on this shared _llm object.
-        # Acquire non-blocking: if inference is genuinely still in flight, do NOT
-        # start a second concurrent generate_all() — roll back the user turn and
-        # raise so the caller (LocalAIResponder) fails over to Ollama.
-        if not self._infer_lock.acquire(blocking=False):
-            if self.history and self.history[-1].get("role") == "user":
-                self.history.pop()
-            held_for = (
-                time.monotonic() - self._infer_lock_held_since
-                if self._infer_lock_held_since is not None else None
-            )
-            metrics.count("hailo_busy_lockout",
-                          held_seconds=round(held_for, 1) if held_for is not None else None)
-            log.warning("Hailo LLM busy (prior generate_all() still in flight, "
-                        "held_for=%s) — failing over to Ollama",
-                        f"{held_for:.1f}s" if held_for is not None else "unknown")
-            # In resident mode release_chip() never runs, so the consecutive-skip
-            # counter below can no longer detect a wedged NPU. Detect it here
-            # instead, on elapsed time: an inference still in flight past the
-            # hard timeout is a zombie by definition, since session.py already
-            # gave up waiting for it. Keeps hailo_lock_stuck (and the watchdog
-            # check that reads it) meaningful in both modes.
-            stuck_after = float(getattr(cfg, "response_hard_timeout_s", 20)) * 2
-            if held_for is not None and held_for > stuck_after:
-                metrics.count("hailo_lock_stuck", held_seconds=round(held_for, 1),
-                              source="generate")
-                log.error("Hailo _infer_lock stuck: generate_all() in flight for "
-                          "%.1fs (> %.0fs) — NPU likely wedged by a zombie inference",
-                          held_for, stuck_after)
-            raise RuntimeError("Hailo LLM busy")
-        self._infer_lock_held_since = time.monotonic()
+        self._acquire_or_fail()
         try:
             with metrics.timer("ai_hailo_call"):
                 result = self._llm.generate_all(
@@ -238,35 +310,121 @@ class _HailoLLMResponder:
                     seed=42,
                     max_generated_tokens=cfg.ai_max_tokens,
                 )
+            # The turn is now committed on-chip whatever we do with the text.
+            self._context_fresh = False
+            self._context_turns += 1
         finally:
             self._infer_lock_held_since = None
             self._infer_lock.release()
 
         # Strip Qwen special tokens
-        reply = result.split("<|im_end|>")[0].strip() if result else ""
-
-        self.history.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": reply}],
-        })
-        self._trim_history()
+        reply = result.split(_IM_END)[0].strip() if result else ""
 
         passed, reason = check_response_quality(reply)
         if not passed:
+            # The chip now holds a rejected assistant turn. Escalating to cloud
+            # without wiping it would leave that text as context for the next
+            # turn, so recycle rather than inherit it.
+            self._reset_context()
             raise QualityCheckFailed(reason, reply)
 
         metrics.count("ai_hailo_success")
         return reply
 
+    def generate_stream(self, user_text: str):
+        """Stream the reply sentence-by-sentence as the model produces it.
+
+        This is the real thing, not generate_all() wrapped in a one-item
+        generator: HailoRT's LLM.generate() is a context manager yielding
+        tokens, so Piper can start speaking sentence 1 while the model is still
+        decoding sentence 2. Measured on-device: TTFT 1101ms on a fresh context,
+        371ms thereafter, decoding ~5.6-6.9 tok/s (~3 words/s) against a speech
+        rate of ~2.5-3 words/s — so generation stays just ahead of playback.
+
+        Only the first sentence is quality-checked: hedges and character breaks
+        appear at the start, and once audio is playing we cannot take it back.
+        QualityCheckFailed is raised *before* anything is yielded so the caller
+        can escalate to cloud cleanly.
+
+        Aborting mid-stream (the caller abandoning this generator) is safe and
+        verified on-device: the `with` block closes the completion and the next
+        generate() works normally.
+        """
+        if not self._load():
+            raise RuntimeError("Hailo LLM not available")
+
+        messages = self._build_prompt(user_text)
+
+        self._acquire_or_fail()
+        started = time.monotonic()
+        buffer = ""
+        quality_checked = False
+        emitted = 0
+        try:
+            with self._llm.generate(
+                prompt=messages,
+                temperature=0.7,
+                seed=42,
+                max_generated_tokens=cfg.ai_max_tokens,
+            ) as gen:
+                # The turn is committed on-chip the moment generation starts, so
+                # mark it before consuming — an abort must not leave us thinking
+                # the context is still fresh and resend the system prompt.
+                self._context_fresh = False
+                self._context_turns += 1
+
+                done = False
+                for token in gen:
+                    if token == _IM_END:
+                        done = True
+                    else:
+                        buffer += token
+                        if _IM_END in buffer:
+                            buffer = buffer.split(_IM_END)[0]
+                            done = True
+
+                    while True:
+                        sentence, buffer = _flush_sentence(buffer, force=done)
+                        if not sentence:
+                            break
+                        if not quality_checked:
+                            quality_checked = True
+                            passed, reason = check_response_quality(sentence)
+                            if not passed:
+                                self._reset_context()
+                                raise QualityCheckFailed(reason, sentence)
+                            metrics._write({
+                                "type": "timer", "name": "ai_hailo_ttfs",
+                                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                            })
+                        emitted += 1
+                        yield sentence
+                    if done:
+                        break
+
+                # Anything left when the model stopped without a final boundary.
+                sentence, buffer = _flush_sentence(buffer, force=True)
+                if sentence:
+                    if not quality_checked:
+                        quality_checked = True
+                        passed, reason = check_response_quality(sentence)
+                        if not passed:
+                            self._reset_context()
+                            raise QualityCheckFailed(reason, sentence)
+                    emitted += 1
+                    yield sentence
+        finally:
+            self._infer_lock_held_since = None
+            self._infer_lock.release()
+
+        if emitted:
+            metrics.count("ai_hailo_success", streamed=True, sentences=emitted)
+
     def clear_history(self):
-        self.history = []
+        """Reset for a new session: wipe on-chip context and scene injection."""
         self._scene_context = ""
-        if self._llm is not None:
-            try:
-                self._llm.clear_context()
-                log.info("Hailo LLM context cache cleared")
-            except Exception as e:
-                log.warning("Failed to clear Hailo context cache: %s", e)
+        self._reset_context()
+        log.info("Hailo LLM context cache cleared")
 
     def reset_state(self) -> None:
         """Clear init-failure cooldown so next _load() retries Hailo immediately."""
@@ -486,18 +644,6 @@ class _OllamaResponder:
         collected: list[str] = []
         quality_checked = False
 
-        def _flush_sentence(buf: str, force: bool) -> tuple[str, str]:
-            """Extract one sentence from buf if boundary found (or force=True).
-            Returns (sentence, remainder)."""
-            m = _SENT_RE.search(buf)
-            if m:
-                sent = buf[:m.end()].strip()
-                rest = buf[m.end():]
-                return sent, rest
-            if force and buf.strip():
-                return buf.strip(), ""
-            return "", buf
-
         try:
             with requests.post(
                 f"{cfg.local_llm_url}/api/chat",
@@ -609,19 +755,30 @@ class LocalAIResponder:
             return self._ollama.generate(user_text)
 
     def generate_stream(self, user_text: str):
-        """Stream response as sentences. Hailo wraps full text as one item;
-        Ollama truly streams tokens into sentences as they form.
+        """Stream response as sentences. Both backends now stream for real —
+        Hailo via HailoRT's token generator, Ollama via its NDJSON stream.
 
         QualityCheckFailed propagates out — caller decides whether to escalate.
+
+        Ollama failover only applies *before* the first sentence is yielded.
+        Once audio is playing we cannot un-speak it and restart on another
+        backend, so a mid-stream Hailo failure ends the reply where it stands
+        rather than splicing a second model's voice onto the end of the first.
         """
+        yielded = False
         try:
-            # Hailo doesn't expose token-level streaming; generate fully then yield once.
-            text = self._hailo.generate(user_text)
-            yield text
+            for sentence in self._hailo.generate_stream(user_text):
+                yielded = True
+                yield sentence
             return
         except QualityCheckFailed:
             raise  # propagate directly — don't try Ollama for quality failures
         except Exception as e:
+            if yielded:
+                log.warning("Hailo stream failed mid-reply (%s) — ending turn "
+                            "early rather than restarting on Ollama", e)
+                metrics.count("ai_hailo_stream_truncated", error=str(e)[:120])
+                return
             log.info("Hailo unavailable for stream (%s) — falling back to Ollama", e)
 
         yield from self._ollama.generate_stream(user_text)
