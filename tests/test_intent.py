@@ -93,15 +93,17 @@ def test_any_alarms():
 
 
 class TestContextualIntent:
+    # Time moved out of CONTEXTUAL into its own TIME intent when the timers
+    # feature landed; TimeHandler/briefings now serve it. ContextualHandler's
+    # _handle_time and TIME_TEMPLATES are consequently unreachable dead code —
+    # noted in the 2026-07-30 review, not deleted here.
     def test_what_time(self):
-        intent, sub = classify("what time is it")
-        assert intent == "CONTEXTUAL"
-        assert sub == "time"
+        intent, _ = classify("what time is it")
+        assert intent == "TIME"
 
     def test_whats_the_time(self):
-        intent, sub = classify("what's the time")
-        assert intent == "CONTEXTUAL"
-        assert sub == "time"
+        intent, _ = classify("what's the time")
+        assert intent == "TIME"
 
     def test_what_date(self):
         intent, sub = classify("what's the date today")

@@ -278,6 +278,7 @@ def test_play_stream_oneshot_plays_all_clips_and_unlinks(tmp_path):
     mock_pa.open.return_value = mock_stream
 
     with patch.object(audio, "_pa", mock_pa), \
+         patch.object(audio, "get_output_device_index", return_value=None), \
          patch.object(audio, "_stream", None):
         audio.play_stream_oneshot(iter(paths))
 
@@ -304,6 +305,7 @@ def test_play_stream_oneshot_calls_on_done_once(tmp_path):
     mock_pa.open.return_value = mock_stream
 
     with patch.object(audio, "_pa", mock_pa), \
+         patch.object(audio, "get_output_device_index", return_value=None), \
          patch.object(audio, "_stream", None):
         audio.play_stream_oneshot(iter(paths), on_done=lambda: done_calls.append(1))
 
@@ -321,6 +323,7 @@ def test_play_stream_oneshot_empty_iterator(tmp_path):
     mock_pa.open.return_value = mock_stream
 
     with patch.object(audio, "_pa", mock_pa), \
+         patch.object(audio, "get_output_device_index", return_value=None), \
          patch.object(audio, "_stream", None):
         audio.play_stream_oneshot(iter([]), on_done=lambda: done.append(1))
 

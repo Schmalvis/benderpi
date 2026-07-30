@@ -32,7 +32,7 @@ def auth():
 def test_conversations_list_empty_dir():
     """Returns empty list when log dir does not exist."""
     client = get_client()
-    with patch("web.app._LOG_DIR", "/nonexistent/path"):
+    with patch("web.routes.logs._LOG_DIR", "/nonexistent/path"):
         resp = client.get("/api/logs/conversations", headers=auth())
     assert resp.status_code == 200
     assert resp.json() == {"dates": [], "files": []}
@@ -48,7 +48,7 @@ def test_conversations_list_returns_jsonl_files():
         open(os.path.join(tmpdir, "other.txt"), "w").close()      # not jsonl
 
         client = get_client()
-        with patch("web.app._LOG_DIR", tmpdir):
+        with patch("web.routes.logs._LOG_DIR", tmpdir):
             resp = client.get("/api/logs/conversations?days=7", headers=auth())
 
     assert resp.status_code == 200
@@ -70,7 +70,7 @@ def test_conversations_list_requires_pin():
 
 def test_conversations_date_not_found():
     client = get_client()
-    with patch("web.app._LOG_DIR", "/nonexistent/path"):
+    with patch("web.routes.logs._LOG_DIR", "/nonexistent/path"):
         resp = client.get("/api/logs/conversations/2026-01-01", headers=auth())
     assert resp.status_code == 404
 
@@ -102,7 +102,7 @@ def test_conversations_date_parses_events():
             f.write("\n".join(lines))
 
         client = get_client()
-        with patch("web.app._LOG_DIR", tmpdir):
+        with patch("web.routes.logs._LOG_DIR", tmpdir):
             resp = client.get(f"/api/logs/conversations/{date_str}", headers=auth())
 
     assert resp.status_code == 200
@@ -125,7 +125,7 @@ def test_conversations_date_skips_invalid_json():
             f.write('{"type": "turn", "session_id": "x"}\n')
 
         client = get_client()
-        with patch("web.app._LOG_DIR", tmpdir):
+        with patch("web.routes.logs._LOG_DIR", tmpdir):
             resp = client.get(f"/api/logs/conversations/{date_str}", headers=auth())
 
     assert resp.status_code == 200
@@ -144,7 +144,7 @@ def test_system_log_returns_lines():
 
     try:
         client = get_client()
-        with patch("web.app._BENDER_LOG", fname):
+        with patch("web.routes.logs._BENDER_LOG", fname):
             resp = client.get("/api/logs/system?lines=50", headers=auth())
         assert resp.status_code == 200
         lines = resp.json()["log"].splitlines()
@@ -162,7 +162,7 @@ def test_system_log_filters_by_level():
 
     try:
         client = get_client()
-        with patch("web.app._BENDER_LOG", fname):
+        with patch("web.routes.logs._BENDER_LOG", fname):
             resp = client.get("/api/logs/system?lines=50&level=ERROR", headers=auth())
         assert resp.status_code == 200
         lines = resp.json()["log"].splitlines()
@@ -180,7 +180,7 @@ def test_system_log_invalid_level():
 
 def test_system_log_missing_file_returns_empty():
     client = get_client()
-    with patch("web.app._BENDER_LOG", "/nonexistent/bender.log"):
+    with patch("web.routes.logs._BENDER_LOG", "/nonexistent/bender.log"):
         resp = client.get("/api/logs/system", headers=auth())
     assert resp.status_code == 200
     assert resp.json()["log"] == ""
@@ -202,7 +202,7 @@ def test_metrics_returns_events():
 
     try:
         client = get_client()
-        with patch("web.app._METRICS_LOG", fname):
+        with patch("web.routes.logs._METRICS_LOG", fname):
             resp = client.get("/api/logs/metrics?hours=24", headers=auth())
         assert resp.status_code == 200
         data = resp.json()["entries"]
@@ -224,7 +224,7 @@ def test_metrics_filters_by_name():
 
     try:
         client = get_client()
-        with patch("web.app._METRICS_LOG", fname):
+        with patch("web.routes.logs._METRICS_LOG", fname):
             resp = client.get("/api/logs/metrics?name=stt_transcribe&hours=24", headers=auth())
         assert resp.status_code == 200
         data = resp.json()["entries"]
@@ -249,7 +249,7 @@ def test_metrics_filters_by_time():
 
     try:
         client = get_client()
-        with patch("web.app._METRICS_LOG", fname):
+        with patch("web.routes.logs._METRICS_LOG", fname):
             resp = client.get("/api/logs/metrics?hours=24", headers=auth())
         assert resp.status_code == 200
         data = resp.json()["entries"]
@@ -262,7 +262,7 @@ def test_metrics_filters_by_time():
 
 def test_metrics_missing_file():
     client = get_client()
-    with patch("web.app._METRICS_LOG", "/nonexistent/metrics.jsonl"):
+    with patch("web.routes.logs._METRICS_LOG", "/nonexistent/metrics.jsonl"):
         resp = client.get("/api/logs/metrics", headers=auth())
     assert resp.status_code == 200
     assert resp.json()["entries"] == []
@@ -286,7 +286,7 @@ def test_download_rejects_non_log_filename():
 
 def test_download_rejects_missing_file():
     client = get_client()
-    with patch("web.app._LOG_DIR", "/tmp"):
+    with patch("web.routes.logs._LOG_DIR", "/tmp"):
         resp = client.get("/api/logs/download/2026-01-01.jsonl", headers=auth())
     assert resp.status_code == 404
 
@@ -299,7 +299,7 @@ def test_download_serves_jsonl():
             f.write('{"type": "session_start"}\n')
 
         client = get_client()
-        with patch("web.app._LOG_DIR", tmpdir):
+        with patch("web.routes.logs._LOG_DIR", tmpdir):
             resp = client.get(f"/api/logs/download/{fname}", headers=auth())
 
     assert resp.status_code == 200
@@ -312,7 +312,7 @@ def test_download_allows_bender_log():
             f.write("some log content\n")
 
         client = get_client()
-        with patch("web.app._LOG_DIR", tmpdir):
+        with patch("web.routes.logs._LOG_DIR", tmpdir):
             resp = client.get("/api/logs/download/bender.log", headers=auth())
 
     assert resp.status_code == 200

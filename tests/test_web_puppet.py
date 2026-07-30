@@ -36,8 +36,8 @@ def test_speak_returns_ok():
     mock_leds.all_off = lambda: None
     client = get_client()
     with patch.dict(sys.modules, {"tts_generate": mock_tts}), \
-         patch("web.app.audio", mock_audio), \
-         patch("web.app.leds", mock_leds), \
+         patch("web.routes.puppet.audio", mock_audio), \
+         patch("web.routes.puppet.leds", mock_leds), \
          patch("os.unlink"):
         resp = client.post("/api/puppet/speak", json={"text": "hello"}, headers=auth())
         assert resp.status_code == 200
@@ -65,7 +65,7 @@ def test_clips_returns_list():
 
 def test_favourite_toggle():
     client = get_client()
-    with patch("web.app._FAVOURITES_PATH", os.path.join(os.path.dirname(__file__), "_test_favs.json")):
+    with patch("web.routes.puppet._FAVOURITES_PATH", os.path.join(os.path.dirname(__file__), "_test_favs.json")):
         resp = client.post("/api/puppet/favourite",
                            json={"path": "speech/wav/hello.wav", "favourite": True},
                            headers=auth())

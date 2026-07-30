@@ -12,15 +12,25 @@
 #      the class of break that shipped silently before (test modules
 #      importing names that no longer exist, e.g. the ha_control ->
 #      entity_matcher API split). Collection is cheap even with ~500+ tests.
-#   2. A curated subset of fast, deterministic, hardware-independent
-#      pure-function unit tests — NOT the full suite. As of 2026-07, the
-#      full suite has pre-existing failures from other in-flight work
-#      (web routes refactor, vlm.py, etc.) that are tracked separately;
-#      gating every push on all of them would make this hook permanently
-#      red and guarantee it gets skipped. This subset is the modules
-#      behind the 6-day silent-mic incident (audio RMS, STT hallucination
-#      filtering) plus the HA entity matcher and the LED alert-flash race
-#      fix — all pure/mockable, no Hailo/network/SPI hardware touched.
+#   2. The FULL test suite (~18s on a Pi 5 dev box).
+#
+#      This used to be a curated 6-module subset, because the full suite had
+#      ~63 standing failures and gating on them would have made the hook
+#      permanently red and guaranteed it got skipped. Those failures were
+#      swept on 2026-07-30 — they were almost all stale assertions left by
+#      refactors (web-routes attribute moves, the vlm.py YOLO->VLM swap, the
+#      streaming method-label change), not hardware absence: 53 of them
+#      failed on the device too.
+#
+#      Keeping a red wall was not free. It hid two real defects:
+#      test_config_loads_defaults masked a whisper default raised tiny.en ->
+#      base.en (a 27s median CPU STT path), and test_watchdog's hardcoded
+#      2026-03-29 timestamps aged out of the 168h lookback in April, leaving
+#      every watchdog alerting check untested for four months. A green suite
+#      is the only version of this hook that protects anything.
+#
+#      If this ever goes red for reasons unrelated to your change, FIX THE
+#      TEST — do not re-introduce a subset.
 #
 # Install: `git config core.hooksPath .githooks` (see README/CLAUDE.md).
 
@@ -40,18 +50,11 @@ if ! "$PY" -m pytest --collect-only -q; then
     exit 1
 fi
 
-FAST_TESTS=(
-    tests/test_entity_matcher.py
-    tests/test_ha_control.py
-    tests/test_audio_pure.py
-    tests/test_stt_pure.py
-    tests/test_leds_alert.py
-    tests/test_mic_reader.py
-)
-
-echo "[pre-push] running fast pure-unit subset..."
-if ! "$PY" -m pytest -q "${FAST_TESTS[@]}"; then
-    echo "[pre-push] FAILED: fast unit tests are red." >&2
+echo "[pre-push] running full test suite..."
+if ! "$PY" -m pytest -q; then
+    echo "[pre-push] FAILED: the test suite is red." >&2
+    echo "[pre-push] This would ship to the live device via auto-deploy." >&2
+    echo "[pre-push] Fix the test — do not bypass with --no-verify." >&2
     exit 1
 fi
 

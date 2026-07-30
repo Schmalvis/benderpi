@@ -32,7 +32,7 @@ def test_config_get(tmp_path):
     cfg_data = {"whisper_model": "tiny.en", "speech_rate": 1.0}
     cfg_file = tmp_path / "bender_config.json"
     cfg_file.write_text(json.dumps(cfg_data))
-    with patch("web.app._CONFIG_PATH", str(cfg_file)):
+    with patch("web.routes.config._CONFIG_PATH", str(cfg_file)):
         resp = client.get("/api/config", headers=headers())
     assert resp.status_code == 200
     data = resp.json()
@@ -44,7 +44,7 @@ def test_config_put_merges(tmp_path):
     client = get_client()
     cfg_file = tmp_path / "bender_config.json"
     cfg_file.write_text(json.dumps({"whisper_model": "tiny.en", "speech_rate": 1.0}))
-    with patch("web.app._CONFIG_PATH", str(cfg_file)):
+    with patch("web.routes.config._CONFIG_PATH", str(cfg_file)):
         resp = client.put(
             "/api/config",
             json={"speech_rate": 0.8},
@@ -67,7 +67,7 @@ def test_config_watchdog_get(tmp_path):
     client = get_client()
     wd_file = tmp_path / "watchdog_config.json"
     wd_file.write_text(json.dumps({"error_rate_threshold": 0.05}))
-    with patch("web.app._WATCHDOG_CONFIG_PATH", str(wd_file)):
+    with patch("web.routes.config._WATCHDOG_CONFIG_PATH", str(wd_file)):
         resp = client.get("/api/config/watchdog", headers=headers())
     assert resp.status_code == 200
     assert resp.json()["error_rate_threshold"] == 0.05
@@ -77,7 +77,7 @@ def test_config_watchdog_put_merges(tmp_path):
     client = get_client()
     wd_file = tmp_path / "watchdog_config.json"
     wd_file.write_text(json.dumps({"error_rate_threshold": 0.05, "lookback_hours": 168}))
-    with patch("web.app._WATCHDOG_CONFIG_PATH", str(wd_file)):
+    with patch("web.routes.config._WATCHDOG_CONFIG_PATH", str(wd_file)):
         resp = client.put(
             "/api/config/watchdog",
             json={"lookback_hours": 48},
@@ -95,7 +95,7 @@ def test_config_watchdog_put_merges(tmp_path):
 def test_service_status_dev_mode():
     """On non-Linux (Windows dev), returns graceful fallback."""
     client = get_client()
-    with patch("web.app._IS_LINUX", False):
+    with patch("web.routes.actions._IS_LINUX", False):
         resp = client.get("/api/actions/service-status", headers=headers())
     assert resp.status_code == 200
     data = resp.json()
@@ -105,23 +105,27 @@ def test_service_status_dev_mode():
 
 def test_restart_dev_mode():
     client = get_client()
-    with patch("web.app._IS_LINUX", False):
+    with patch("web.routes.actions._IS_LINUX", False):
         resp = client.post("/api/actions/restart", json={}, headers=headers())
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 
 
 def test_refresh_briefings_dev_mode():
+    """This route does not consult _IS_LINUX — it calls briefings.refresh_all()
+    for real, which needs the Piper binary. Patching _IS_LINUX (as this test
+    used to) changed nothing and the route 500'd on any box without Piper."""
     client = get_client()
-    with patch("web.app._IS_LINUX", False):
+    with patch("briefings.refresh_all", return_value=None) as mock_refresh:
         resp = client.post("/api/actions/refresh-briefings", json={}, headers=headers())
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+    mock_refresh.assert_called_once()
 
 
 def test_toggle_mode_puppet_only():
     client = get_client()
-    with patch("web.app._IS_LINUX", False):
+    with patch("web.routes.actions._IS_LINUX", False):
         resp = client.post(
             "/api/actions/toggle-mode",
             json={"mode": "puppet_only"},
@@ -133,7 +137,7 @@ def test_toggle_mode_puppet_only():
 
 def test_toggle_mode_converse():
     client = get_client()
-    with patch("web.app._IS_LINUX", False):
+    with patch("web.routes.actions._IS_LINUX", False):
         resp = client.post(
             "/api/actions/toggle-mode",
             json={"mode": "converse"},

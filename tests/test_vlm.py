@@ -1,6 +1,11 @@
-"""Unit tests for scripts/vlm.py — YOLO + LLM pipeline.
+"""Unit tests for scripts/vlm.py — Qwen2-VL scene description.
 
 All Hailo hardware interaction is mocked; tests run offline.
+
+NB: vlm.py is currently dormant (`vlm_enabled: false`) because the on-chip
+KV-Cache is a singleton and the resident conversation LLM holds it — see the
+Hailo residency section in CLAUDE.md. These tests still run, so the module
+does not rot while it waits for a decision on its future.
 """
 from __future__ import annotations
 
@@ -28,11 +33,15 @@ def _make_hailo_mocks():
     mock_vdevice_cls.create_params.return_value = mock_params
     hp_mod.VDevice = mock_vdevice_cls
 
-    # hailo_platform.genai — LLM (not VLM)
+    # hailo_platform.genai — vlm.py uses VLM (it used LLM when these tests were
+    # written; the swap left every test here failing with an ImportError that
+    # describe_scene swallows into "", so they asserted against a silent no-op).
+    # Same generate_all/clear_context surface, so the mock is otherwise unchanged.
     hp_genai_mod = types.ModuleType("hailo_platform.genai")
     mock_llm_instance = mock.MagicMock()
     mock_llm_instance.generate_all.return_value = "a person sitting on a red chair"
     mock_llm_cls = mock.MagicMock(return_value=mock_llm_instance)
+    hp_genai_mod.VLM = mock_llm_cls
     hp_genai_mod.LLM = mock_llm_cls
 
     # hailo_apps defines
@@ -111,45 +120,38 @@ def _load_vlm_module(extra_sys_mods=None, coco_labels=None):
 
 class TestLazyInit:
     def test_import_does_not_init(self):
-        """HailoInfer and LLM must NOT be initialised at import time."""
-        vlm_mod, mock_yolo_cls, _, mock_llm_cls, _ = _load_vlm_module()
-        mock_yolo_cls.reset_mock()
-        mock_llm_cls.reset_mock()
-        mock_yolo_cls.assert_not_called()
-        mock_llm_cls.assert_not_called()
+        """The VLM must NOT be constructed at import time — it holds the
+        on-chip KV-Cache, which the resident conversation LLM also needs."""
+        vlm_mod, _, _, mock_vlm_cls, _ = _load_vlm_module()
+        mock_vlm_cls.reset_mock()
+        mock_vlm_cls.assert_not_called()
 
     def test_describe_scene_triggers_init(self):
-        """First call to describe_scene() should initialise HailoInfer and LLM."""
-        vlm_mod, mock_yolo_cls, _, mock_llm_cls, _ = _load_vlm_module()
+        """First call to describe_scene() should construct the VLM."""
+        vlm_mod, _, _, mock_vlm_cls, _ = _load_vlm_module()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         vlm_mod.describe_scene(frame)
-        mock_yolo_cls.assert_called_once()
-        mock_llm_cls.assert_called_once()
+        mock_vlm_cls.assert_called_once()
 
     def test_describe_scene_only_inits_once(self):
-        """HailoInfer and LLM should be initialised exactly once across multiple calls."""
-        vlm_mod, mock_yolo_cls, _, mock_llm_cls, _ = _load_vlm_module()
+        """The VLM should be constructed exactly once across multiple calls."""
+        vlm_mod, _, _, mock_vlm_cls, _ = _load_vlm_module()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        vlm_mod.describe_scene(frame)
-        vlm_mod.describe_scene(frame)
-        vlm_mod.describe_scene(frame)
-        assert mock_yolo_cls.call_count == 1
-        assert mock_llm_cls.call_count == 1
+        for _ in range(3):
+            vlm_mod.describe_scene(frame)
+        assert mock_vlm_cls.call_count == 1
 
 
 # ---------------------------------------------------------------------------
-# Tests: YOLO then LLM pipeline
+# Tests: VLM pipeline
+#
+# vlm.py no longer runs YOLO first. It used to detect objects and feed the class
+# names to a text LLM; it now sends the frame itself to a true VLM
+# (hailo_platform.genai.VLM). Tests for the detection stage were deleted rather
+# than rewritten — there is no YOLO reference left in vlm.py.
 # ---------------------------------------------------------------------------
 
 class TestPipeline:
-    def test_describe_scene_calls_yolo_then_llm(self):
-        """describe_scene() must call YOLO run() then LLM generate_all()."""
-        vlm_mod, _, mock_yolo_instance, _, mock_llm_instance = _load_vlm_module()
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        vlm_mod.describe_scene(frame)
-        mock_yolo_instance.run.assert_called_once()
-        mock_llm_instance.generate_all.assert_called_once()
-
     def test_returns_llm_response(self):
         """describe_scene() must return the LLM's response string."""
         vlm_mod, _, _, _, mock_llm_instance = _load_vlm_module()
@@ -184,15 +186,6 @@ class TestPipeline:
         all_args = str(call_kwargs)
         assert "What colour is the object?" in all_args
 
-    def test_detected_objects_appear_in_llm_call(self):
-        """Objects detected by YOLO should be passed to the LLM."""
-        labels = ["person"] + [f"class_{i}" for i in range(1, 80)]
-        vlm_mod, _, _, _, mock_llm_instance = _load_vlm_module(coco_labels=labels)
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        vlm_mod.describe_scene(frame)
-        call_args_str = str(mock_llm_instance.generate_all.call_args)
-        assert "person" in call_args_str
-
     def test_clear_context_called_after_inference(self):
         """llm.clear_context() must be called after each inference."""
         vlm_mod, _, _, _, mock_llm_instance = _load_vlm_module()
@@ -211,39 +204,6 @@ class TestPipeline:
 
 # ---------------------------------------------------------------------------
 # Tests: confidence threshold filtering
-# ---------------------------------------------------------------------------
-
-class TestConfidenceFiltering:
-    def test_objects_below_threshold_filtered_out(self):
-        """Detections below 0.5 confidence must not reach the LLM prompt."""
-        vlm_mod, _, mock_yolo_instance, _, mock_llm_instance = _load_vlm_module(
-            coco_labels=["person", "bicycle"] + [f"class_{i}" for i in range(2, 80)]
-        )
-
-        def _low_conf_run(input_batch, callback):
-            detections = [None] * 80
-            detections[0] = np.array([[0.1, 0.1, 0.9, 0.9, 0.3]])   # below threshold
-            detections[1] = np.array([[0.2, 0.2, 0.8, 0.8, 0.49]])  # also below
-            mock_binding = mock.MagicMock()
-            mock_binding.output.return_value.get_buffer.return_value = detections
-            import threading as _t
-            _t.Thread(
-                target=callback,
-                args=(mock.MagicMock(),),
-                kwargs={"bindings_list": [mock_binding]},
-                daemon=True,
-            ).start()
-
-        mock_yolo_instance.run.side_effect = _low_conf_run
-
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        vlm_mod.describe_scene(frame)
-        call_args_str = str(mock_llm_instance.generate_all.call_args)
-        assert "person" not in call_args_str
-        assert "bicycle" not in call_args_str
-        assert "nothing detected" in call_args_str
-
-
 # ---------------------------------------------------------------------------
 # Tests: timeout
 # ---------------------------------------------------------------------------

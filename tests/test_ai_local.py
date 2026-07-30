@@ -37,17 +37,36 @@ class TestCheckResponseQuality:
         assert passed is False
         assert reason == "hedge_phrase"
 
-    def test_hedge_as_an_ai(self):
+    def test_hard_fail_as_an_ai(self):
+        """Breaking character as an AI is a HARD fail, not a soft hedge: it
+        always escalates regardless of reply length, whereas a hedge only
+        escalates when the reply is short or single-sentence."""
         passed, reason = check_response_quality(
             "As an AI, I cannot help with that request.")
         assert passed is False
-        assert reason == "hedge_phrase"
+        assert reason == "hard_fail"
 
-    def test_hedge_language_model(self):
+    def test_hard_fail_language_model(self):
         passed, reason = check_response_quality(
             "I'm just a language model and can't do that.")
         assert passed is False
-        assert reason == "hedge_phrase"
+        assert reason == "hard_fail"
+
+    def test_hard_fail_beats_hedge_regardless_of_length(self):
+        """A long, multi-sentence reply survives a soft hedge but must NOT
+        survive a character break — that's the whole point of the split."""
+        long_hedge = ("I'm not sure about that one, meatbag. But who cares? "
+                      "Let me tell you about the time I bent a girder in half "
+                      "with my bare manipulators. Good times.")
+        passed, _ = check_response_quality(long_hedge)
+        assert passed is True, "long in-character hedge should pass"
+
+        long_break = ("As an AI, I should clarify something for you. "
+                      "But who cares? Let me tell you about the time I bent a "
+                      "girder in half. Good times.")
+        passed, reason = check_response_quality(long_break)
+        assert passed is False
+        assert reason == "hard_fail"
 
     def test_hedge_case_insensitive(self):
         passed, reason = check_response_quality("I'M NOT SURE about that.")

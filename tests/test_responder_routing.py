@@ -67,8 +67,12 @@ class TestRespondAIRouting:
         return ai
 
     def _mock_local_ai(self, reply="Local says bite my shiny metal ass!"):
+        """The local responder streams sentences; responder.py pulls the first
+        one eagerly and chains the rest. Mocking `generate` instead of
+        `generate_stream` silently exercises nothing — `_respond_ai` has not
+        called `generate` since the streaming refactor."""
         ai = MagicMock()
-        ai.generate.return_value = reply
+        ai.generate_stream.return_value = iter([reply])
         return ai
 
     @patch("responder.tts_generate")
@@ -84,8 +88,8 @@ class TestRespondAIRouting:
 
         resp = responder._respond_ai("hello bender", ai_cloud,
                                      "UNKNOWN", None, ai_local)
-        assert resp.method == "ai_local"
-        ai_local.generate.assert_called_once()
+        assert resp.method == "ai_local_stream"
+        ai_local.generate_stream.assert_called_once()
         ai_cloud.respond.assert_not_called()
 
     @patch("responder.tts_generate")
@@ -98,7 +102,7 @@ class TestRespondAIRouting:
 
         ai_cloud = self._mock_cloud_ai()
         ai_local = MagicMock()
-        ai_local.generate.side_effect = QualityCheckFailed("hedge_phrase", "I don't know")
+        ai_local.generate_stream.side_effect = QualityCheckFailed("hedge_phrase", "I don't know")
 
         resp = responder._respond_ai("who was the first king", ai_cloud,
                                      "UNKNOWN", None, ai_local)
@@ -115,7 +119,7 @@ class TestRespondAIRouting:
 
         ai_cloud = self._mock_cloud_ai()
         ai_local = MagicMock()
-        ai_local.generate.side_effect = requests.exceptions.Timeout()
+        ai_local.generate_stream.side_effect = requests.exceptions.Timeout()
 
         resp = responder._respond_ai("tell me something", ai_cloud,
                                      "UNKNOWN", None, ai_local)
@@ -132,7 +136,7 @@ class TestRespondAIRouting:
         resp = responder._respond_ai("hello", ai_cloud,
                                      "UNKNOWN", None, ai_local)
         assert resp.method == "ai_streaming"
-        ai_local.generate.assert_not_called()
+        ai_local.generate_stream.assert_not_called()
 
     @patch("responder.tts_generate")
     @patch("responder.cfg")
@@ -143,7 +147,7 @@ class TestRespondAIRouting:
 
         ai_cloud = self._mock_cloud_ai()
         ai_local = MagicMock()
-        ai_local.generate.side_effect = QualityCheckFailed(
+        ai_local.generate_stream.side_effect = QualityCheckFailed(
             "hedge_phrase", "I'm not sure but maybe...")
 
         resp = responder._respond_ai("something hard", ai_cloud,
@@ -162,7 +166,7 @@ class TestRespondAIRouting:
 
         ai_cloud = self._mock_cloud_ai()
         ai_local = MagicMock()
-        ai_local.generate.side_effect = requests.exceptions.ConnectionError("refused")
+        ai_local.generate_stream.side_effect = requests.exceptions.ConnectionError("refused")
 
         resp = responder._respond_ai("hello", ai_cloud,
                                      "UNKNOWN", None, ai_local)
@@ -193,5 +197,5 @@ class TestRespondAIRouting:
                                      "UNKNOWN", None, ai_local)
         assert resp.routing_log is not None
         assert resp.routing_log["scenario"] == "conversation"
-        assert resp.routing_log["final_method"] == "ai_local"
+        assert resp.routing_log["final_method"] == "ai_local_stream"
         assert resp.routing_log["quality_check_passed"] is True

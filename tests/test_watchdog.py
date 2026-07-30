@@ -1,5 +1,22 @@
-"""Tests for health watchdog."""
+"""Tests for health watchdog.
+
+NB: event timestamps MUST be generated relative to now, never hardcoded.
+Every check here filters events by `lookback_hours` (168h/7d), so a fixed
+timestamp silently ages out of the window and the test stops testing anything.
+That is not hypothetical: these tests were written with a literal
+"2026-03-29T10:00:00Z" and quietly lost all coverage of the watchdog's alerting
+checks in early April 2026 — the "assert len(alerts) > 0" ones started failing,
+and worse, `test_no_alerts_when_healthy` kept *passing* vacuously because zero
+events trivially produce zero alerts. Found 2026-07-30, ~4 months later.
+"""
 import json
+from datetime import datetime, timedelta, timezone
+
+
+def _recent_ts(hours_ago: float = 1.0) -> str:
+    """A timestamp comfortably inside the default 168h lookback window."""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+
 
 def _write_metrics(tmp_path, events):
     path = tmp_path / "metrics.jsonl"
@@ -9,9 +26,9 @@ def _write_metrics(tmp_path, events):
 def test_high_error_rate_triggers_alert(tmp_path):
     from watchdog import run_checks
     events = [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "error", "category": "tts"},
+        {"ts": _recent_ts(), "type": "count", "name": "error", "category": "tts"},
     ] * 10 + [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "intent", "intent": "GREETING"},
+        {"ts": _recent_ts(), "type": "count", "name": "intent", "intent": "GREETING"},
     ] * 10
     metrics_path = _write_metrics(tmp_path, events)
     config = {"error_rate_threshold": 0.05, "lookback_hours": 168}
@@ -23,7 +40,7 @@ def test_high_error_rate_triggers_alert(tmp_path):
 def test_no_alerts_when_healthy(tmp_path):
     from watchdog import run_checks
     events = [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "intent", "intent": "GREETING"},
+        {"ts": _recent_ts(), "type": "count", "name": "intent", "intent": "GREETING"},
     ] * 100
     metrics_path = _write_metrics(tmp_path, events)
     config = {"error_rate_threshold": 0.05, "lookback_hours": 168}
@@ -34,9 +51,9 @@ def test_no_alerts_when_healthy(tmp_path):
 def test_high_stt_empty_rate(tmp_path):
     from watchdog import run_checks
     events = [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "stt_empty", "pcm_bytes": 100},
+        {"ts": _recent_ts(), "type": "count", "name": "stt_empty", "pcm_bytes": 100},
     ] * 20 + [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "intent", "intent": "GREETING"},
+        {"ts": _recent_ts(), "type": "count", "name": "intent", "intent": "GREETING"},
     ] * 10
     metrics_path = _write_metrics(tmp_path, events)
     config = {"stt_empty_rate_threshold": 0.10, "lookback_hours": 168}
@@ -47,7 +64,7 @@ def test_high_stt_empty_rate(tmp_path):
 def test_high_latency_alert(tmp_path):
     from watchdog import run_checks
     events = [
-        {"ts": "2026-03-29T10:00:00Z", "type": "timer", "name": "stt_transcribe", "duration_ms": 5000},
+        {"ts": _recent_ts(), "type": "timer", "name": "stt_transcribe", "duration_ms": 5000},
     ] * 5
     metrics_path = _write_metrics(tmp_path, events)
     config = {"stt_latency_threshold_ms": 4000, "lookback_hours": 168}
@@ -60,9 +77,9 @@ def test_run_checks_accepts_preloaded_events(tmp_path):
     re-parsing metrics.jsonl a second time inside run_checks()."""
     from watchdog import run_checks
     events = [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "error", "category": "tts"},
+        {"ts": _recent_ts(), "type": "count", "name": "error", "category": "tts"},
     ] * 10 + [
-        {"ts": "2026-03-29T10:00:00Z", "type": "count", "name": "intent", "intent": "GREETING"},
+        {"ts": _recent_ts(), "type": "count", "name": "intent", "intent": "GREETING"},
     ] * 10
     config = {"error_rate_threshold": 0.05, "lookback_hours": 168}
     # No metrics_path given -- if run_checks() ignored `events` and tried to

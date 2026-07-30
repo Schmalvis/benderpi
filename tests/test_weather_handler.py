@@ -36,7 +36,11 @@ def test_handle_failure():
 
 def test_handle_passes_sub_key():
     """sub_key is forwarded to the Response."""
-    with patch("briefings.get_weather_wav", return_value="/tmp/weather.wav"):
+    # The handler calls get_weather_wav_for_location(sub_key), not
+    # get_weather_wav — mocking the latter let the call fall through to real
+    # Piper synthesis, which only "passed" on a box with the binary present.
+    with patch("briefings.get_weather_wav_for_location",
+               return_value="/tmp/weather.wav"):
         from handlers.weather_handler import WeatherHandler
 
         handler = WeatherHandler()
