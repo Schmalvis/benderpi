@@ -8,6 +8,7 @@ import time
 
 import requests
 
+import hailo_hub
 from ai_response import BENDER_SYSTEM_PROMPT
 from config import cfg
 from logger import get_logger
@@ -132,6 +133,23 @@ class _HailoLLMResponder:
             log.info("Hailo LLM init cooldown elapsed — retrying")
             self._available = None
 
+        # Resident mode (default): hailo_hub holds the LLM loaded for the life
+        # of the process, so this is a cached handle lookup rather than an ~8.4s
+        # HEF reload (see the ai_hailo_load metric, which the hub now emits once
+        # per process instead of once per AI turn). We borrow the handle; the
+        # hub owns teardown, so self._vdevice stays None and release_chip() is
+        # a no-op.
+        if hailo_hub.enabled():
+            llm = hailo_hub.get_llm()
+            if llm is None:
+                self._available = False
+                self._last_failed_at = time.monotonic()
+                return False
+            self._llm = llm
+            self._vdevice = None
+            self._available = True
+            return True
+
         if not os.path.exists(_HAILO_HEF):
             log.warning("Hailo LLM HEF not found: %s", _HAILO_HEF)
             self._available = False
@@ -188,9 +206,28 @@ class _HailoLLMResponder:
         if not self._infer_lock.acquire(blocking=False):
             if self.history and self.history[-1].get("role") == "user":
                 self.history.pop()
-            metrics.count("hailo_busy_lockout")
-            log.warning("Hailo LLM busy (prior generate_all() still in flight) "
-                        "— failing over to Ollama")
+            held_for = (
+                time.monotonic() - self._infer_lock_held_since
+                if self._infer_lock_held_since is not None else None
+            )
+            metrics.count("hailo_busy_lockout",
+                          held_seconds=round(held_for, 1) if held_for is not None else None)
+            log.warning("Hailo LLM busy (prior generate_all() still in flight, "
+                        "held_for=%s) — failing over to Ollama",
+                        f"{held_for:.1f}s" if held_for is not None else "unknown")
+            # In resident mode release_chip() never runs, so the consecutive-skip
+            # counter below can no longer detect a wedged NPU. Detect it here
+            # instead, on elapsed time: an inference still in flight past the
+            # hard timeout is a zombie by definition, since session.py already
+            # gave up waiting for it. Keeps hailo_lock_stuck (and the watchdog
+            # check that reads it) meaningful in both modes.
+            stuck_after = float(getattr(cfg, "response_hard_timeout_s", 20)) * 2
+            if held_for is not None and held_for > stuck_after:
+                metrics.count("hailo_lock_stuck", held_seconds=round(held_for, 1),
+                              source="generate")
+                log.error("Hailo _infer_lock stuck: generate_all() in flight for "
+                          "%.1fs (> %.0fs) — NPU likely wedged by a zombie inference",
+                          held_for, stuck_after)
             raise RuntimeError("Hailo LLM busy")
         self._infer_lock_held_since = time.monotonic()
         try:
@@ -261,6 +298,14 @@ class _HailoLLMResponder:
         watchdog — a run of skips means a hung generate_all() has stranded the
         VDevice.
         """
+        # Resident mode supersedes warm mode entirely: the chip is held for the
+        # life of the process, not the life of a session. (llm_warm_session was
+        # the right instinct at the wrong scope — with 1-2 turn sessions it
+        # still paid the 8.4s load on the first AI turn of nearly every session.)
+        # hailo_hub.close() releases at exit.
+        if hailo_hub.enabled():
+            metrics.count("hailo_release_skipped", reason="resident")
+            return
         if warm:
             # Per-turn call in warm mode — keep the chip resident for the next
             # turn. metrics let us confirm warm mode is actually engaging.
@@ -332,6 +377,20 @@ class _HailoLLMResponder:
             self._vdevice = None
             self._available = None
             self._last_failed_at = None
+            return
+        if hailo_hub.enabled():
+            # The hub owns the models and the VDevice; delegate teardown to it.
+            # Still inside the _infer_lock guard above, so we never release the
+            # device out from under a live generate call. close() is idempotent,
+            # so the hub's own atexit hook firing later is harmless.
+            try:
+                self._llm = None
+                self._vdevice = None
+                self._available = None
+                self._last_failed_at = None
+                hailo_hub.close()
+            finally:
+                self._infer_lock.release()
             return
         try:
             llm_ref, vdev_ref = self._llm, self._vdevice
@@ -576,8 +635,14 @@ class LocalAIResponder:
         self._hailo.close()
 
     def reset_hailo(self) -> None:
-        """Clear Hailo init-failure state so next generate() retries immediately."""
-        if self._hailo is not None:
+        """Clear Hailo init-failure state so next generate() retries immediately.
+
+        No-op in resident mode: the hub keeps the LLM loaded, so there is no
+        per-turn init state to clear, and clearing it would defeat the hub's own
+        60s init-retry cooldown — a genuinely dead accelerator would then cost an
+        ~8s failed init attempt on every turn instead of once a minute.
+        """
+        if self._hailo is not None and not hailo_hub.enabled():
             self._hailo.reset_state()
 
     def release_chip(self, *, warm: bool = False) -> None:

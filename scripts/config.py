@@ -93,13 +93,20 @@ class Config:
     local_llm_model: str = "qwen2.5:1.5b"
     local_llm_url: str = "http://localhost:11434"
     local_llm_timeout: int = 3
-    # Warm Hailo LLM session (opt-in, hardware-gated). When true, the Hailo
-    # VDevice is held across turns within a session instead of released after
-    # every AI turn — eliminating the per-turn HEF reload tax (see the
-    # ai_hailo_load metric). Released at session end() instead. DEFAULT FALSE:
-    # this assumes the Whisper + Qwen HEFs can coexist resident on the Hailo-10H;
-    # if they cannot, STT fails on turn 2. Only flip to true after the on-device
-    # HEF-coexistence spike passes. Revert by config edit if the chip misbehaves.
+    # Hold Whisper + Qwen resident on the Hailo-10H for the life of the process
+    # (hailo_hub.py) instead of releasing/reloading around every STT and LLM
+    # step. The HEF-coexistence question this was blocked on is resolved: an
+    # on-device spike (2026-07-30) ran Whisper-Small and Qwen2.5-1.5B on one
+    # shared VDevice with interleaved inference and no eviction, matching Hailo's
+    # own voice_assistant reference app. Removes a measured ~8.4s LLM reload per
+    # AI turn (ai_hailo_load) plus a ~2.5s Whisper reload per post-AI turn.
+    # Set false to restore the legacy per-turn release/reload path — the one
+    # unproven property is multi-week stability of a permanently-held VDevice.
+    hailo_resident: bool = True
+    # Superseded by hailo_resident (process-lifetime residency is strictly
+    # better: session-scoped warmth still paid the full HEF load on the first AI
+    # turn of every session, and sessions are typically 1-2 turns). Retained only
+    # for the legacy path when hailo_resident is false; ignored otherwise.
     llm_warm_session: bool = False
     tts_noise_scale: float = 0.9      # Piper expressiveness (default 0.667)
     tts_noise_scale_w: float = 1.2    # Piper phoneme duration variance (default 0.8)

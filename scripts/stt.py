@@ -24,6 +24,7 @@ import numpy as np
 import webrtcvad
 
 import audio as audio_mod
+import hailo_hub
 from config import cfg
 from logger import get_logger
 from metrics import metrics
@@ -55,7 +56,7 @@ WHISPER_HALLUCINATIONS = set(cfg.whisper_hallucinations)
 # ---------------------------------------------------------------------------
 
 _backend   = None   # "hailo" | "cpu"
-_vdevice   = None   # Hailo VDevice (held open for lifetime of process)
+_vdevice   = None   # Hailo VDevice — legacy mode only; None when hailo_hub owns it
 _s2t       = None   # Hailo Speech2Text instance
 _cpu_model = None   # faster-whisper fallback
 _cpu_only_model = None  # dedicated CPU model for prefer_cpu callers (never Hailo)
@@ -66,11 +67,41 @@ def _load_model():
     """Initialise Hailo Whisper-Small as primary STT, falling back to CPU on failure."""
     global _backend, _vdevice, _s2t, _cpu_model
     with _model_lock:
-        if _backend is not None:
+        if _backend == "hailo":
+            return
+        if _backend == "cpu":
+            # Re-offer the Hailo path before settling for CPU. In resident mode
+            # release() no longer resets _backend after every turn, so without
+            # this a single transient Hailo failure would pin the whole process
+            # to CPU faster-whisper — median ~19.8s per utterance, p90 75s — until
+            # a service restart. The hub's own 60s init cooldown makes this cheap
+            # when Hailo is genuinely down, and upgrades us back the moment it
+            # recovers.
+            if getattr(cfg, "hailo_stt_enabled", True) and hailo_hub.enabled():
+                s2t = hailo_hub.get_speech2text()
+                if s2t is not None:
+                    _s2t = s2t
+                    _vdevice = None
+                    _backend = "hailo"
+                    log.info("STT recovered: back on Hailo Speech2Text (resident)")
             return
 
-        # Hailo primary
-        if getattr(cfg, "hailo_stt_enabled", True) and os.path.exists(WHISPER_HEF):
+        # Resident mode (default): hailo_hub owns the VDevice and holds
+        # Speech2Text loaded for the life of the process, so this runs once at
+        # warm-up rather than before every transcription. _vdevice stays None —
+        # we borrow the handle, we do not own it, and release() must not free it.
+        if getattr(cfg, "hailo_stt_enabled", True) and hailo_hub.enabled():
+            s2t = hailo_hub.get_speech2text()
+            if s2t is not None:
+                _s2t = s2t
+                _vdevice = None
+                _backend = "hailo"
+                log.info("STT backend: Hailo Speech2Text (resident, via hailo_hub)")
+                return
+            log.warning("hailo_hub has no Speech2Text — falling back to CPU STT")
+
+        # Legacy per-turn acquire/release path (cfg.hailo_resident = false).
+        elif getattr(cfg, "hailo_stt_enabled", True) and os.path.exists(WHISPER_HEF):
             try:
                 from hailo_platform import VDevice
                 from hailo_platform.genai import Speech2Text, Speech2TextTask  # noqa: F401
@@ -366,6 +397,14 @@ def release() -> None:
     global _backend, _vdevice, _s2t
     with _model_lock:
         if _backend != "hailo":
+            return
+        # Resident mode: hailo_hub owns Speech2Text and the VDevice, and the LLM
+        # coexists with it on-chip (Whisper does not touch the KV-Cache), so
+        # there is nothing to free here. Returning early is the entire point of
+        # the change — this call used to cost a ~2.5s Whisper reload on the next
+        # turn. hailo_hub.close() releases at process exit.
+        if _vdevice is None and hailo_hub.enabled():
+            log.debug("STT release skipped — resident mode (hailo_hub owns the device)")
             return
         s2t_ref, vdev_ref = _s2t, _vdevice
         _s2t = _vdevice = None

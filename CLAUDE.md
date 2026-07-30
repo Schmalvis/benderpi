@@ -89,6 +89,7 @@ bender/
 │   ├── session.py            — ConversationSession: wake-to-goodbye lifecycle, greeting, turn dispatch, vision injection, IPC files
 │   ├── handler_base.py       — base classes/utilities shared by intent handlers
 │   ├── ai_local.py           — local LLM responder: Hailo NPU primary, Ollama CPU fallback
+│   ├── hailo_hub.py          — process-lifetime owner of the Hailo VDevice + resident Whisper/Qwen handles
 │   ├── camera.py             — Picamera2 (IMX500) singleton, thread-safe ref-counted access
 │   ├── vision.py             — scene analysis orchestrator (composes camera.py + vlm.py)
 │   ├── vlm.py                — Qwen2-VL-2B vision-language scene description via Hailo
@@ -152,7 +153,8 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `vlm_lazy_poll_s` | `0.05` | Non-blocking poll interval for lazy scene injection |
 | `response_hard_timeout_s` | `20` (code default), `45` (shipped in `bender_config.json`) | Hard kill timeout for inference thread |
 | `local_llm_timeout` | `3` (code default), `25` (shipped in `bender_config.json`) | Ollama request timeout. Load-time invariant: clamped to `response_hard_timeout_s - 2` (warn-and-clamp in `config.py`) so Ollama can fail over before the hard-timeout join kills the thread |
-| `llm_warm_session` | `false` | **Opt-in, hardware-gated.** Hold the Hailo LLM VDevice across turns (released at session `end()`) instead of after every AI turn — kills the per-turn HEF reload tax (see `ai_hailo_load` metric). Assumes Whisper + Qwen HEFs coexist on the Hailo-10H; if not, STT fails on turn 2. Only flip `true` after the on-device HEF-coexistence spike passes; revert by config edit if the chip misbehaves |
+| `hailo_resident` | `true` | Hold Whisper + Qwen resident on the Hailo-10H for the **life of the process** (`hailo_hub.py`) instead of releasing/reloading around every STT and LLM step. Removes a measured ~8.4s LLM HEF reload per AI turn (`ai_hailo_load`) plus a ~2.5s Whisper reload per post-AI turn. Set `false` to restore the legacy per-turn release path (still present and tested) — see the Hailo residency section below |
+| `llm_warm_session` | `false` | **Superseded by `hailo_resident`** and ignored unless it is `false`. Session-scoped warmth was the right instinct at the wrong scope: it still paid the full HEF load on the first AI turn of every session, and sessions are typically 1–2 turns |
 | `http_timeout_s` | `10` | urlopen timeout for briefings + HA fetches |
 | `audio_chunk` | `512` | PyAudio buffer size (frames) |
 | `audio_rms_floor` | `200` | RMS floor for LED amplitude normalisation |
@@ -174,7 +176,45 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `wake_degraded_warn_s` | `600.0` | Seconds of sub-`wake_rms_floor` rolling RMS before the log-only advisory warning fires, edge-triggered once per low episode (0 disables) |
 | `stt_no_speech_prob_max` / `stt_avg_logprob_min` / `stt_compression_ratio_max` | `0.6` / `-1.0` / `2.4` | Whisper per-segment confidence gates; a transcript failing any of these (plus `whisper_hallucinations` phrase match) is treated as a hallucination and discarded rather than acted on |
 | `hailo_stt_enabled` | `true` | Route STT through the Hailo NPU (Whisper) rather than CPU faster-whisper |
-| `vlm_enabled` | `false` | Gate for Qwen2-VL scene description (`vlm.py`) — off by default due to Hailo KV-Cache contention with the LLM |
+| `vlm_enabled` | `false` | Gate for Qwen2-VL scene description (`vlm.py`) — off by default because the VLM cannot be resident alongside the LLM (KV-Cache singleton, see below) |
+
+### Hailo residency (`scripts/hailo_hub.py`)
+
+**The resource model, established by on-device spike 2026-07-30:**
+
+```
+Whisper + (LLM XOR VLM), all resident, for the life of the process
+```
+
+Whisper and Qwen **can** be loaded at the same time — verified on-device
+(Whisper-Small + Qwen2.5-1.5B on one shared VDevice, interleaved STT→LLM→STT
+inference, STT latency with the LLM resident identical to STT alone). This
+matches Hailo's own reference app (`hailo_apps/python/gen_ai_apps/voice_assistant/`),
+which builds one `VDevice` in the `SHARED` group, constructs both `Speech2Text`
+and `LLM` on it, and holds both for the process lifetime.
+
+The real constraint is narrower than "one model at a time": the on-chip
+**KV-Cache is a singleton**. Whisper doesn't use it; the LLM and the VLM each
+need exclusive hold, so loading the VLM alongside the LLM fails with
+`HAILO_INVALID_OPERATION(6): KV-Cache is already in use`. That is the mechanical
+reason `vlm_enabled` is off — not superstition, and not fixable by ordering.
+
+`hailo_hub` owns the VDevice and both model handles. `stt.py` and `ai_local.py`
+borrow handles from it and never release them; `hailo_hub.close()` (registered
+via `atexit`, idempotent) tears down at process exit, models before the VDevice.
+Both models are pre-loaded on the startup warm-up thread, so neither the first
+wake word nor the first AI turn pays an init delay.
+
+**Proof it is working:** `ai_hailo_load` should appear **once per process**
+instead of once per AI turn, and `ai_hailo_stt_load` once per process. Both show
+up in STATUS.md with no new instrumentation. Measured on-device: STT load ~3.0s,
+LLM load ~9.7s — paid once at startup instead of per turn.
+
+**Rollback:** set `hailo_resident: false`. The legacy per-turn release/reload
+path (`stt.release()`, `release_chip()`, `reset_hailo()`) is still present and
+still tested; those three calls simply become no-ops when residency is on. The
+one property residency has *not* proven is multi-week stability of a
+permanently-held VDevice, which is why the flag exists.
 
 `watchdog_config.json` keys:
 - `max_hours_without_session` (code default `6`, shipped `72` in `watchdog_config.json`) — alerts if no conversation session detected in N hours. Raised to 72h because real usage is sparse (days between sessions), so 6h flagged normal idle as an anomaly. NB: `check_session_liveness` matches session_start events by `"type"` (the real `conversation_log.py` schema) — a prior `"event"`-key typo made it always report "no sessions found" regardless of activity.

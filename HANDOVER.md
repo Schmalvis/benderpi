@@ -1,5 +1,78 @@
 # BenderPi Handover Context
-Last updated: 2026-07-10
+Last updated: 2026-07-30
+
+---
+
+## 2026-07-30 — Hailo residency: models held for the process lifetime
+
+**Status: implemented on `main` (uncommitted at time of writing), verified on-device,
+NOT yet deployed.** Deploying means pushing to `main`, which auto-deploys within ~5
+minutes and restarts the live service — do it deliberately.
+
+### What changed
+
+New `scripts/hailo_hub.py` owns the Hailo VDevice and holds **Whisper-Small and
+Qwen2.5-1.5B resident for the life of the process**. `stt.py` and `ai_local.py` borrow
+handles from it. The per-turn release/reload choreography (`stt.release()`,
+`release_chip()`, `reset_hailo()`) is now a no-op when `hailo_resident` is true —
+the calls are still there, still tested, and still work when it's false.
+
+Both models pre-load on the existing startup warm-up thread, so neither the first wake
+word nor the first AI turn of a process pays an init cost.
+
+### Why this is safe now (it wasn't before)
+
+The blocker was "can Whisper and Qwen HEFs coexist on the Hailo-10H?" — the question
+that gated `llm_warm_session`, `vlm_enabled`, and any second model. **Answered: yes.**
+Hailo's own `voice_assistant` reference app builds one VDevice in the `SHARED` group,
+constructs both `Speech2Text` and `LLM` on it, and holds both for the process lifetime.
+Reproduced on BenderPi.
+
+The real constraint is narrower: the **KV-Cache is a singleton**. Whisper doesn't use
+it; LLM and VLM each need exclusive hold. So `Whisper + (LLM XOR VLM)`. That is the
+mechanical reason `vlm_enabled` stays off, and it also kills the idea of running a
+function-calling model *alongside* the chat model.
+
+### Expected win (measured, not estimated)
+
+- `ai_hailo_load` median **8,424ms on every AI turn** → once per process.
+- Whisper reload ~2.5s per post-AI turn → once per process. This one was previously
+  *invisible*: it ran untimed inside `listen_and_transcribe()` before the mic opened,
+  so it also delayed the start of recording. Now timed as `ai_hailo_stt_load`.
+- `ai_local_first_sentence_ms` median **14,563ms** should drop to ~4–6s even before
+  streaming lands.
+
+### Verification done
+
+- 27 new tests (`tests/test_hailo_hub.py`, `tests/test_hailo_resident_wiring.py`), all
+  passing. Full suite: 624 passed vs 597 at HEAD, with an **identical 64-failure set**
+  both before and after — those 64 are pre-existing on a dev box without `board`/blinka
+  and are unrelated to this change.
+- On-device smoke test against real hardware: both models resident on one shared
+  VDevice (STT load 2,989ms / LLM load 9,717ms), repeat getter calls cached with no
+  reload, Whisper inference working with the LLM resident, and `close()` releasing
+  models + the shared VDevice cleanly and idempotently. The live service was untouched
+  and healthy afterwards.
+
+### The one unproven thing
+
+Multi-week stability of a permanently-held VDevice. Spike-verified for minutes and
+backed by the vendor pattern, but only a soak proves weeks. That is exactly what
+`hailo_resident: false` is for — a one-config-edit rollback, no code change.
+
+**After deploy, check:** `ai_hailo_load` should appear once per process instead of once
+per AI turn (visible in STATUS.md, no new instrumentation needed). If the accelerator
+misbehaves, flip `hailo_resident` to false and restart.
+
+### Next
+
+This is recommendation #1 of `docs/benderpi-fable-architecture-review-2026-07-30.md`.
+**#2 is real Hailo token streaming** — `ai_local.py`'s comment claiming "Hailo doesn't
+expose token-level streaming" is **false** on HailoRT 5.3: `LLM.generate()` is a context
+manager that yields tokens (measured TTFT **1.1s** with the full Bender system prompt,
+6.9 tok/s). Today the Hailo path fakes streaming by calling `generate_all` and yielding
+once, which is most of the remaining first-sentence latency. #1 + #2 together take first
+audio from ~15.5s to ~3.5–5s.
 
 ---
 

@@ -36,6 +36,7 @@ import pyaudio
 import audio
 import tts_generate
 import stt
+import hailo_hub
 import briefings
 import leds
 import vision
@@ -356,8 +357,15 @@ def main():
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
     # Warm up Piper TTS (pre-loads ONNX model)
     tts_generate.warm_up()
-    # Pre-load STT model so first wake word has no init delay
-    threading.Thread(target=stt.warm_up, daemon=True, name="stt-warmup").start()
+    # Pre-load STT (and, in resident mode, the LLM) so neither the first wake
+    # word nor the first AI turn of this process pays an init delay. One thread,
+    # sequential: both models share a VDevice whose construction is serialised
+    # inside hailo_hub anyway, so racing them buys nothing.
+    def _warm_local_models():
+        stt.warm_up()
+        hailo_hub.warm_up(llm=(cfg.ai_backend != "cloud_only"))
+
+    threading.Thread(target=_warm_local_models, daemon=True, name="stt-warmup").start()
     # Clean up stale IPC files from previous crashes
     _cleanup_abort_files()
     _remove_session_file()
@@ -417,6 +425,11 @@ def main():
                     continue
                 last_heard = time.time()
                 log.info("Heard: %r", text)
+                # Both are no-ops in resident mode (cfg.hailo_resident, default):
+                # Whisper and Qwen stay loaded on one shared VDevice, so there is
+                # no device to hand over between STT and inference. In legacy
+                # mode these free the chip for the LLM and clear its init-failure
+                # cooldown so the next turn retries immediately.
                 stt.release()
                 if ai_local:
                     ai_local.reset_hailo()

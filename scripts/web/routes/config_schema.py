@@ -131,6 +131,7 @@ class BenderConfigUpdate(BaseModel):
     local_llm_model: str | None = None
     local_llm_url: str | None = None
     local_llm_timeout: float | None = None
+    hailo_resident: bool | None = None
     llm_warm_session: bool | None = None
     ai_routing: dict | None = None
 

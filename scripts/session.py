@@ -229,21 +229,18 @@ class ConversationSession:
             )
             return TurnResult(text=text, intent="TIMEOUT", method="error_fallback")
 
-        # Release the Hailo LLM's VDevice so STT can reacquire the shared
-        # "SHARED"-group device on the next loop iteration (mirrors stt.release()
-        # after each transcription). This turn's inference thread has finished
-        # (the timeout branch above returns early), but a *previous* turn's
-        # abandoned zombie thread may still be inside generate_all(): release_chip()
-        # is internally guarded by _HailoLLMResponder._infer_lock and is a safe
-        # no-op both while such a zombie holds the lock (device stays held — never
-        # released under active inference) and when Hailo never loaded (clip/
-        # handler/Ollama turns). The device is freed by a later turn's release once
-        # any zombie finishes.
+        # In resident mode (cfg.hailo_resident, the default) this is a no-op:
+        # hailo_hub holds Whisper and Qwen on one shared VDevice for the life of
+        # the process, so there is no device to hand back between turns. This
+        # call is what used to cost ~8.4s of HEF reload on the next AI turn.
         #
-        # In llm_warm_session mode we pass warm=True so this per-turn call keeps
-        # the chip resident (no HEF reload next turn); the VDevice is instead
-        # released in end(). Gated behind cfg.llm_warm_session (default false)
-        # because it assumes Whisper + Qwen HEFs coexist on the Hailo-10H.
+        # Legacy mode (hailo_resident=false) keeps the old behaviour: release the
+        # LLM's VDevice so STT can reacquire the shared "SHARED"-group device on
+        # the next loop iteration. That path is internally guarded by
+        # _HailoLLMResponder._infer_lock, so it is a safe no-op while a previous
+        # turn's abandoned zombie thread is still inside generate_all() (the
+        # device stays held rather than being released under active inference)
+        # and when Hailo never loaded at all (clip/handler/Ollama turns).
         if self._ai_local is not None:
             self._ai_local.release_chip(warm=cfg.llm_warm_session)
 
@@ -311,13 +308,16 @@ class ConversationSession:
         self._remove_session_file()
         audio.close_session()
         if self._ai_local:
-            # In warm mode the Hailo VDevice was held across the whole session
-            # (per-turn release_chip() was a warm no-op); release it now so it
-            # doesn't stay stranded across sessions. warm=False forces the real
-            # release, still guarded by _infer_lock — a mid-session zombie leaves
-            # the device held, but process-exit close() / the next STT load
-            # reclaim it. Harmless in non-warm mode (chip already released
-            # per-turn, so this is a no-op clean acquire + null refs).
+            # Resident mode: another no-op — the models outlive the session by
+            # design and are released by hailo_hub.close() at process exit. The
+            # KV-Cache still gets reset, by clear_history() below calling the
+            # LLM's clear_context(); that is what actually matters between
+            # sessions, not tearing the device down.
+            #
+            # Legacy warm mode: the VDevice was held across the whole session
+            # (per-turn release_chip() was a warm no-op), so release it now
+            # rather than leaving it stranded across sessions. warm=False forces
+            # the real release, still guarded by _infer_lock.
             self._ai_local.release_chip(warm=False)
             self._ai_local.clear_history()
 
