@@ -16,6 +16,8 @@
   "mic_stall_exit_threshold": 1,
   "mic_stall_lookback_hours": 24,
   "hailo_lock_stuck_threshold": 1,
+  "service_liveness_enabled": true,
+  "service_liveness_unit": "bender-converse",
   "log_retention_days": 90,
   "watchdog_renotify_hours": 12,
   "watchdog_quiet_hours_start": 23,

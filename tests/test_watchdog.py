@@ -149,3 +149,83 @@ def test_load_metrics_ignores_stale_backup_beyond_cutoff(tmp_path):
     events = _load_metrics(str(live), lookback_hours=168)
     names = {e["name"] for e in events}
     assert names == {"live_event"}
+
+
+# ---------------------------------------------------------------------------
+# Service liveness — the only non-metrics check
+# ---------------------------------------------------------------------------
+
+class TestServiceActive:
+    """A dead process emits no metrics, so every other check goes quiet exactly
+    when things are worst. This check exists because of a real 2026-07-30
+    outage: a failed deploy plus a failed rollback restart (systemd
+    StartLimitBurst exhausted) left bender-converse in `failed` with nothing to
+    report it, and session_liveness tolerates 72h of silence by design."""
+
+    def test_alerts_when_failed(self):
+        from watchdog import check_service_active
+        alerts = check_service_active({}, probe=lambda unit: "failed")
+        assert len(alerts) == 1
+        assert alerts[0].check == "service_inactive"
+        assert alerts[0].severity == "error"
+        assert alerts[0].data["state"] == "failed"
+
+    def test_failed_message_includes_recovery_hint(self):
+        """start-limit-hit is the likely cause and reset-failed is the cure —
+        an alert that doesn't say so costs the reader a search."""
+        from watchdog import check_service_active
+        alerts = check_service_active({}, probe=lambda unit: "failed")
+        assert "reset-failed" in alerts[0].message
+
+    def test_alerts_when_inactive(self):
+        from watchdog import check_service_active
+        alerts = check_service_active({}, probe=lambda unit: "inactive")
+        assert len(alerts) == 1
+        assert alerts[0].data["state"] == "inactive"
+
+    def test_quiet_when_active(self):
+        from watchdog import check_service_active
+        assert check_service_active({}, probe=lambda unit: "active") == []
+
+    def test_quiet_while_restarting(self):
+        """The 15-min timer can tick during a deploy restart; a bounded restart
+        is not an outage."""
+        from watchdog import check_service_active
+        assert check_service_active({}, probe=lambda unit: "activating") == []
+        assert check_service_active({}, probe=lambda unit: "reloading") == []
+
+    def test_quiet_when_probe_has_no_opinion(self):
+        """None = can't tell (no systemctl, unit not installed on this box).
+        A watchdog that alerts when blind is worse than one that stays quiet."""
+        from watchdog import check_service_active
+        assert check_service_active({}, probe=lambda unit: None) == []
+
+    def test_respects_disable_flag(self):
+        from watchdog import check_service_active
+        cfg = {"service_liveness_enabled": False}
+        assert check_service_active(cfg, probe=lambda unit: "failed") == []
+
+    def test_unit_name_is_configurable(self):
+        from watchdog import check_service_active
+        seen = []
+        check_service_active({"service_liveness_unit": "custom-unit"},
+                             probe=lambda unit: seen.append(unit) or "active")
+        assert seen == ["custom-unit"]
+
+    def test_probe_returns_none_for_uninstalled_unit(self):
+        """LoadState, not ActiveState, distinguishes 'not installed here' from
+        'installed and down' — both report ActiveState=inactive."""
+        from watchdog import _probe_unit_state
+        assert _probe_unit_state("definitely-not-a-real-unit-xyz") is None
+
+    def test_run_checks_includes_service_check(self, tmp_path):
+        """Wired into run_checks, not just callable in isolation."""
+        from watchdog import run_checks
+        metrics_path = _write_metrics(tmp_path, [
+            {"ts": _recent_ts(), "type": "count", "name": "intent", "intent": "GREETING"},
+        ])
+        alerts = run_checks(metrics_path=metrics_path,
+                            config={"lookback_hours": 168})
+        # On a box without the unit installed the probe has no opinion, so this
+        # asserts wiring + no false positive rather than a specific verdict.
+        assert not [a for a in alerts if a.check == "service_inactive"]

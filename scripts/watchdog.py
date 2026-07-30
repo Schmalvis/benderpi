@@ -139,6 +139,80 @@ def check_session_liveness(cfg: dict, logs_dir: str | None = None) -> list:
     return []
 
 
+def _probe_unit_state(unit: str) -> str | None:
+    """Return systemd's ActiveState for `unit`, or None if it can't be determined.
+
+    None means "no opinion" (systemctl missing, not a systemd box, call failed)
+    and must never be treated as unhealthy — a watchdog that cries wolf when it
+    cannot see is worse than one that stays quiet.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("systemctl"):
+        return None
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", unit, "-p", "LoadState", "-p", "ActiveState"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # Don't gate on returncode: `show` succeeds even for a dead unit, and
+        # for a missing one it still prints LoadState=not-found.
+        fields = dict(
+            line.split("=", 1)
+            for line in (out.stdout or "").splitlines() if "=" in line
+        )
+    except Exception as exc:                      # pragma: no cover - defensive
+        log.debug("systemctl probe failed for %s: %s", unit, exc)
+        return None
+
+    # LoadState separates "this box doesn't run the unit" from "the unit is
+    # installed and down". Both report ActiveState=inactive, so without this a
+    # dev box (or the test suite) would alert on a service it was never meant
+    # to run.
+    if fields.get("LoadState") != "loaded":
+        return None
+    return fields.get("ActiveState") or None
+
+
+# States that mean "not down". `activating`/`reloading` matter because the
+# watchdog timer can tick during a deploy restart, and a bounded restart is not
+# an outage.
+_HEALTHY_UNIT_STATES = {"active", "activating", "reloading"}
+
+
+def check_service_active(cfg: dict, probe=None) -> list:
+    """Alert if the conversation service is not running.
+
+    This is the one check that does not come from metrics, and it exists
+    because of a real outage on 2026-07-30: a deploy failed, `git_pull.sh`
+    rolled back, and its rollback restart *also* failed (systemd
+    StartLimitBurst=5/300s exhausted by repeated restarts during a work
+    session). bender-converse sat in `failed` with nothing to report it.
+    Nothing else here would have noticed: every other check reads metrics that
+    a dead process cannot emit, and `session_liveness` allows 72h of silence by
+    design because real usage is sparse. Absence of evidence looked exactly
+    like an idle house.
+
+    `probe` is injectable so tests never shell out.
+    """
+    if not cfg.get("service_liveness_enabled", True):
+        return []
+    unit = cfg.get("service_liveness_unit", "bender-converse")
+    state = (probe or _probe_unit_state)(unit)
+    if state is None or state in _HEALTHY_UNIT_STATES:
+        return []
+    hint = ""
+    if state == "failed":
+        hint = (" — if this is start-limit-hit, recover with "
+                f"`sudo systemctl reset-failed {unit} && sudo systemctl start {unit}`")
+    return [Alert(
+        severity="error", check="service_inactive",
+        message=f"{unit} is {state} — the wake word is not being listened for{hint}",
+        data={"unit": unit, "state": state},
+    )]
+
+
 def run_checks(metrics_path: str = None, config: dict = None, events: list[dict] = None) -> list[Alert]:
     """Run all health checks, return list of alerts.
 
@@ -291,5 +365,8 @@ def run_checks(metrics_path: str = None, config: dict = None, events: list[dict]
         ))
 
     alerts.extend(check_session_liveness(cfg))
+    # Deliberately last and deliberately not metrics-derived: a dead process
+    # emits no metrics, so this is the only check that can see its own absence.
+    alerts.extend(check_service_active(cfg))
 
     return alerts
