@@ -52,7 +52,20 @@ class Config:
     post_play_flush_ms: int = 200  # ms of mic buffer to discard after playback (reverb flush)
 
     # STT
+    # CPU faster-whisper model for NON-latency-critical transcription: web-UI
+    # file uploads via transcribe_file(prefer_cpu=True), where a human clicked a
+    # button and accuracy is worth more than a second. Measured on-device at
+    # 2,429ms median for a typical upload (n=12) — fine.
     whisper_model: str = "base.en"
+    # CPU faster-whisper model for LIVE conversation when Hailo STT is
+    # unavailable. Deliberately smaller than whisper_model: this path only runs
+    # when the accelerator is already down, and on this 4GB Pi base.en measured
+    # a median of 27,297ms per utterance (p90 75s, max 109s, n=825) against
+    # 845ms for tiny.en (n=156). That is not "less accurate" versus "more
+    # accurate", it is usable versus a dead-feeling assistant — and a 27s
+    # transcription also poisons the session silence-timeout logic.
+    # See docs/benderpi-fable-architecture-review-2026-07-30.md rec #4.
+    whisper_fallback_model: str = "tiny.en"
     # 0–3 scale; higher = more aggressive non-speech filtering. Deployed
     # bender_config.json overrides this to 1 (gentler) — the XVF3800 array's
     # noise floor made 3 clip the starts of quiet utterances. Default reconciled

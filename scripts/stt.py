@@ -133,12 +133,18 @@ def _load_model():
                         pass
                     _vdevice = None
 
-        # CPU fallback
+        # CPU fallback — uses whisper_fallback_model (smaller/faster), NOT
+        # whisper_model. This path only runs with the accelerator already down,
+        # and on a 4GB Pi base.en measured a 27.3s median per utterance against
+        # 845ms for tiny.en. A 27s transcription does not just feel dead, it also
+        # poisons the session silence-timeout logic in wake_converse.py.
         try:
             from faster_whisper import WhisperModel
-            _cpu_model = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8", cpu_threads=3)
+            _cpu_model = WhisperModel(_cpu_fallback_model_name(), device="cpu",
+                                      compute_type="int8", cpu_threads=3)
             _backend = "cpu"
-            log.info("STT backend: faster-whisper CPU (%s)", cfg.whisper_model)
+            log.warning("STT degraded to faster-whisper CPU (%s) — Hailo unavailable",
+                        _cpu_fallback_model_name())
             return
         except Exception as e:
             log.warning("faster-whisper init failed (%s)", e)
@@ -146,8 +152,18 @@ def _load_model():
         raise RuntimeError("No STT backend available")
 
 
+def _cpu_fallback_model_name() -> str:
+    """Model for the live-conversation CPU fallback. Falls back to
+    ``whisper_model`` if the key is absent, so an old bender_config.json that
+    predates the split still boots."""
+    return getattr(cfg, "whisper_fallback_model", None) or cfg.whisper_model
+
+
 def _active_model_name() -> str:
-    return "whisper-small-hailo" if _backend == "hailo" else cfg.whisper_model
+    """Model name for the stt_transcribe metric tag. Must track what actually
+    ran, or the latency data attributes CPU-fallback timings to the wrong model
+    — which is exactly how the 27s degraded path went unnoticed."""
+    return "whisper-small-hailo" if _backend == "hailo" else _cpu_fallback_model_name()
 
 
 # ---------------------------------------------------------------------------

@@ -119,6 +119,7 @@ class BenderConfigUpdate(BaseModel):
 
     # --- STT ---
     whisper_model: str | None = None
+    whisper_fallback_model: str | None = None
     vad_aggressiveness: int | None = None
     silence_frames: int | None = None
     max_record_seconds: int | None = None

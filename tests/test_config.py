@@ -8,7 +8,13 @@ def test_config_loads_defaults(tmp_path):
     from config import Config
     cfg = Config(config_path=str(tmp_path / "nonexistent.json"))
     assert cfg.sample_rate == 44100
-    assert cfg.whisper_model == "tiny.en"
+    # whisper_model is the NON-latency-critical CPU model (web file uploads);
+    # the live-conversation fallback is whisper_fallback_model and is smaller on
+    # purpose. This assertion said "tiny.en" and failed silently for a long time
+    # after the default was raised to base.en — which is how the 27s CPU
+    # degraded path went unnoticed. See test_whisper_fallback_default below.
+    assert cfg.whisper_model == "base.en"
+    assert cfg.whisper_fallback_model == "tiny.en"
     assert cfg.silence_timeout == 8.0
     assert cfg.ai_model == "claude-haiku-4-5-20251001"
     assert cfg.log_level == "INFO"
