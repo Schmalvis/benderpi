@@ -378,13 +378,17 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
     ok=False and WARNs — the mic may still recover (e.g. USB re-enumerates), so
     we never abort the service here. Emits a `mic_selftest` metric.
 
-    Checks:
+    Failure checks (ok=False):
       * read completed (no MicStallError) — mic not wedged
-      * read-rate ≈ real-time (elapsed within 3x of requested duration)
+      * at least one frame arrived
       * at least one frame had non-zero RMS (mic producing signal, not silence-
         only or all-zero frames)
 
-    Returns dict: {ok, reason, frames, elapsed_s, max_rms}.
+    Advisory (ok=True, slow=True): reads took >3x real time despite every frame
+    arriving with signal. That is host load starving this thread, not a mic
+    fault — see the reorder note in wake_converse.main().
+
+    Returns dict: {ok, reason, frames, elapsed_s, max_rms, slow}.
     """
     frame_ms = 30
     rate = 16000
@@ -403,7 +407,7 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
     capture_channels = 2 if "xvf_dsnoop" in device_name else 1
 
     result = {"ok": False, "reason": "unknown", "frames": 0,
-              "elapsed_s": 0.0, "max_rms": 0.0}
+              "elapsed_s": 0.0, "max_rms": 0.0, "slow": False}
     stream = None
     reader = None
     try:
@@ -434,10 +438,21 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
 
         if read_ok == 0:
             result["reason"] = "no frames read"
-        elif elapsed > 3.0 * duration_s:
-            result["reason"] = f"read-rate too slow ({elapsed:.2f}s for {duration_s:.1f}s of audio)"
         elif max_rms <= 0.0:
             result["reason"] = "all-zero frames (mic silent / disconnected?)"
+        elif elapsed > 3.0 * duration_s:
+            # Every frame arrived AND carried real signal, so the mic path is
+            # demonstrably working. Elapsed time here measures how fast *this
+            # thread* was scheduled to drain MicReader's queue — i.e. host load
+            # — not device health. Reporting that as a mic failure is what
+            # produced a "FAILED ... mic may recover" warning on every start
+            # while the mic was fine. Surfaced as a distinct slow_reads outcome
+            # instead: still visible and still counted, but not an accusation
+            # against the hardware.
+            result["ok"] = True
+            result["slow"] = True
+            result["reason"] = (f"slow_reads ({elapsed:.2f}s for {duration_s:.1f}s "
+                                f"of audio — host under load?)")
         else:
             result["ok"] = True
             result["reason"] = "ok"
@@ -456,8 +471,15 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
                 pass
 
     metrics.count("mic_selftest", ok=result["ok"], reason=result["reason"],
-                  frames=result["frames"], max_rms=result["max_rms"])
-    if result["ok"]:
+                  frames=result["frames"], max_rms=result["max_rms"],
+                  slow=result.get("slow", False))
+    if result["ok"] and result.get("slow"):
+        log.warning("Mic self-test OK but slow: %d frames in %.2fs, max_rms=%.0f "
+                    "— every frame arrived with signal, so the mic path is fine; "
+                    "the host was busy (mic: %s)",
+                    result["frames"], result["elapsed_s"], result["max_rms"],
+                    device_name or "default")
+    elif result["ok"]:
         log.info("Mic self-test OK: %d frames in %.2fs, max_rms=%.0f (mic: %s)",
                  result["frames"], result["elapsed_s"], result["max_rms"],
                  device_name or "default")

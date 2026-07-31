@@ -354,6 +354,25 @@ def main():
         except Exception as e:
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
+    # Clean up stale IPC files from previous crashes
+    _cleanup_abort_files()
+    _remove_session_file()
+    # Startup mic self-test — WARNs loudly if the mic path looks wedged/silent,
+    # but never blocks startup (the mic may re-enumerate and recover).
+    #
+    # Runs BEFORE the warm-up work below, deliberately. It used to run after,
+    # and once residency made warm-up load two HEFs (~3.0s Whisper + ~9.7s Qwen)
+    # the self-test was reading its 1s of audio while the box was saturated: it
+    # reported "read-rate too slow (12-15s for 1.0s of audio)" on every single
+    # start from 2026-07-30, with frames=33 and healthy RMS — i.e. a perfect mic
+    # path failing a wall-clock check. Pre-residency the same warning read 3.07s,
+    # tracking STT-only warm-up almost exactly. A startup check that cries wolf
+    # every boot trains people to ignore the one signal the 6-day silent-mic
+    # incident existed to give them, so it gets a quiet box to measure on.
+    try:
+        audio.mic_selftest()
+    except Exception as exc:
+        log.warning("Mic self-test raised unexpectedly: %s — continuing", exc)
     threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
     # Warm up Piper TTS (pre-loads ONNX model)
     tts_generate.warm_up()
@@ -366,15 +385,6 @@ def main():
         hailo_hub.warm_up(llm=(cfg.ai_backend != "cloud_only"))
 
     threading.Thread(target=_warm_local_models, daemon=True, name="stt-warmup").start()
-    # Clean up stale IPC files from previous crashes
-    _cleanup_abort_files()
-    _remove_session_file()
-    # Startup mic self-test — WARNs loudly if the mic path looks wedged/silent,
-    # but never blocks startup (the mic may re-enumerate and recover).
-    try:
-        audio.mic_selftest()
-    except Exception as exc:
-        log.warning("Mic self-test raised unexpectedly: %s — continuing", exc)
     log.info("Listening for 'Hey Bender'...")
     try:
         from systemd import daemon as _sd_daemon
