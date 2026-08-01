@@ -48,5 +48,8 @@ PYEOF
 echo "[3/3] Restarting bender-converse ..."
 sudo systemctl restart bender-converse
 
-echo "Done. Tune oww_threshold up (0.5 -> 0.65) in bender_config.json if you get phantom wakes."
+echo "Done. oww_threshold is 0.1 in bender_config.json: this model was trained on"
+echo "synthetic positives and scores ~0.25 on real voices (0.97 on synthetic), while"
+echo "non-wake audio stays under 0.03. Raise it if you get phantom wakes; if it stops"
+echo "firing for you, score your own voice before raising it further."
 echo "Tail logs with: sudo journalctl -u bender-converse -f"
