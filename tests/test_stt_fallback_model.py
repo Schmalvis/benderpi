@@ -22,8 +22,16 @@ sys.path.insert(0, "scripts")
 
 sys.modules.setdefault("pyaudio", types.SimpleNamespace(
     paInt16=8, PyAudio=lambda: types.SimpleNamespace()))
-sys.modules.setdefault("webrtcvad", types.SimpleNamespace(
-    Vad=lambda *a, **k: types.SimpleNamespace(is_speech=lambda *a: False)))
+# Only stub webrtcvad when it genuinely isn't installed. sys.modules.setdefault
+# checks whether the key is already *imported*, not whether the real package
+# exists -- so if this module imported first it silently handed a fake VAD to
+# every later test in the process (which is exactly what happened to
+# test_capture_wake_samples.py, whose trimming needs a real one).
+try:  # pragma: no cover - depends on the environment, not the code
+    import webrtcvad  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("webrtcvad", types.SimpleNamespace(
+        Vad=lambda *a, **k: types.SimpleNamespace(is_speech=lambda *a: False)))
 
 import stt
 from config import Config, cfg

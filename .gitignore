@@ -52,3 +52,7 @@ timers.json
 # Svelte web app
 web/node_modules/
 .worktrees/
+
+# Wake-word training captures — recordings of the household. Audio of real
+# people (and whatever is said near the device) never enters git, public or not.
+data/wake_samples/
