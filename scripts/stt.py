@@ -341,6 +341,7 @@ def _record_utterance() -> tuple[bytes, str]:
     )
 
     frames       = []
+    voiced       = []   # VAD-positive frames only — the speech-evidence sample
     started      = False
     start_time   = time.time()
     silent_count = 0
@@ -369,6 +370,7 @@ def _record_utterance() -> tuple[bytes, str]:
             if is_speech:
                 started      = True
                 silent_count = 0
+                voiced.append(data)
             elif started:
                 silent_count += 1
                 if silent_count >= cfg.silence_frames:
@@ -377,7 +379,13 @@ def _record_utterance() -> tuple[bytes, str]:
     finally:
         reader.stop()
 
-    return b"".join(frames), reason
+    voiced_rms = 0
+    if voiced:
+        arr = np.frombuffer(b"".join(voiced), dtype=np.int16).astype(np.float64)
+        if arr.size:
+            voiced_rms = int(np.sqrt(np.mean(arr * arr)))
+    stats = {"voiced_ms": len(voiced) * FRAME_MS, "voiced_rms": voiced_rms}
+    return b"".join(frames), reason, stats
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +457,7 @@ def listen_and_transcribe() -> str:
     _load_model()
 
     with metrics.timer("stt_record"):
-        pcm, term_reason = _record_utterance()
+        pcm, term_reason, cap = _record_utterance()
 
     # Directional signal for silence-timing tuning: "max_cap" means the utterance
     # was likely cut short mid-sentence (silence_frames/max_record_seconds too
@@ -463,6 +471,43 @@ def listen_and_transcribe() -> str:
 
     if len(pcm) < FRAME_BYTES * 3:
         metrics.count("stt_empty", pcm_bytes=len(pcm))
+        return ""
+
+    # Always record what the capture actually contained, whether or not it is
+    # rejected below. The Hailo backend returns text with no confidence signals
+    # (see _transcribe_cpu's docstring), so these two numbers are the *only*
+    # evidence available for tuning the gates -- guessing thresholds without
+    # them is how you end up with an assistant that ignores quiet speech.
+    metrics.count("stt_capture", reason=term_reason,
+                  backend=_backend or "unknown", **cap)
+
+    # A capture in which VAD never once fired is silence: no speech happened.
+    # Transcribing it anyway is pure hallucination risk for zero upside, and
+    # until now it *was* transcribed -- the length check above passes because a
+    # silence-only capture still runs the full max_record_seconds.
+    if term_reason == "no_speech":
+        metrics.count("stt_rejected", gate="no_speech", **cap)
+        log.info("Discarded a silence-only capture (VAD never fired)")
+        return ""
+
+    # Below this much voiced audio it is a transient -- a door, a clatter, a
+    # cough -- not an utterance. Deliberately permissive: "stop" and "bye" have
+    # to survive, and over-gating (a Bender that ignores you) feels far worse
+    # than the occasional answer to a noise. Tune from stt_capture metrics.
+    min_ms = int(getattr(cfg, "stt_min_speech_ms", 0))
+    if min_ms and cap["voiced_ms"] < min_ms:
+        metrics.count("stt_rejected", gate="min_speech_ms", threshold=min_ms, **cap)
+        log.info("Discarded capture with %dms of voiced audio (< %dms)",
+                 cap["voiced_ms"], min_ms)
+        return ""
+
+    # Off by default (0). Background chatter and a TV carry across a room at a
+    # much lower level than someone addressing the device, but the right floor
+    # is room-specific, so it ships disabled with the data to set it.
+    min_rms = int(getattr(cfg, "stt_min_speech_rms", 0))
+    if min_rms and cap["voiced_rms"] < min_rms:
+        metrics.count("stt_rejected", gate="min_speech_rms", threshold=min_rms, **cap)
+        log.info("Discarded capture at RMS %d (< %d)", cap["voiced_rms"], min_rms)
         return ""
 
     audio_array = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0

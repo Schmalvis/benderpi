@@ -88,6 +88,13 @@ class Config:
     stt_no_speech_prob_max: float = 0.6
     stt_avg_logprob_min: float = -1.0
     stt_compression_ratio_max: float = 2.4
+    # Capture-level gates, applied before transcription. These are the ONLY
+    # defence on the Hailo backend, which returns text with no per-segment
+    # confidence signals — the three thresholds above are CPU-path only.
+    # Added 2026-08-01 after a live session answered two captures of room noise
+    # ("So, So" / "I'm going to do the") as if they were questions.
+    stt_min_speech_ms: int = 250   # min voiced audio for a capture to count as an utterance
+    stt_min_speech_rms: int = 0    # 0 = off; voiced-audio level floor, room-specific
     hailo_stt_enabled: bool = True
     vlm_enabled: bool = True  # set False to skip Hailo VLM scene capture  # set False to use faster-whisper CPU only
 
