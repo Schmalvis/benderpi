@@ -36,6 +36,11 @@ HARD_FAIL_PHRASES = {
 # escalating; a longer hedged reply is probably Bender being Bender.
 _HEDGE_SHORT_MAX = 40
 
+# Chat-template / tool-calling scaffolding. Their presence means the reply has
+# derailed into template output, so it fails the quality gate and escalates.
+# Lowercase — matched against the lowercased reply.
+_CONTROL_TOKEN_MARKERS = ("<|", "<tool_call>", "</tool_call>", "<think>")
+
 _HAILO_HEF = "/usr/local/hailo/resources/models/hailo10h/Qwen2.5-1.5B-Instruct.hef"
 _HAILO_RETRY_COOLDOWN = 60  # seconds before retrying after init failure
 
@@ -99,6 +104,16 @@ def check_response_quality(text: str) -> tuple[bool, str]:
     if len(stripped) < 10:
         return False, "too_short"
     text_lower = stripped.lower()
+
+    # Control-token leakage — the local model has stopped answering and started
+    # emitting chat-template scaffolding or a hallucinated next turn. Escalating
+    # gets a real answer; tts_generate._sanitize_for_speech would only stop it
+    # being *pronounced*, leaving a truncated non-reply. Seen live 2026-08-01
+    # (session 5cfc5cd8 turn 4): "<tool_call>", "<|im_start|>user", and a whole
+    # invented dialogue, all of which passed this gate and were spoken aloud.
+    for marker in _CONTROL_TOKEN_MARKERS:
+        if marker in text_lower:
+            return False, "control_tokens"
 
     # Hard fails — always escalate.
     for phrase in HARD_FAIL_PHRASES:

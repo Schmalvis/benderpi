@@ -435,8 +435,78 @@ def _speak_single(text: str) -> str:
 
 _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
+# --- Speech sanitisation -----------------------------------------------------
+# Everything here reaches Piper, which will happily pronounce ":)" as "colon,
+# close paren" and read a chat-template token out letter by letter. The models
+# don't know their output is spoken, so this is the last line of defence.
+# Observed live 2026-08-01 (session 5cfc5cd8, turn 4): Qwen emitted an emoji,
+# a literal "[{'type': 'emoji', 'emoji': ':)'}]" blob, "<tool_call>", and a
+# hallucinated "<|im_start|>user" turn — all of it spoken aloud.
+
+# A chat-template or tool-calling token means the model stopped answering and
+# started hallucinating a new conversation turn. Everything from there on is
+# discarded, not cleaned — cleaning it would just speak the hallucination.
+_TRUNCATE_MARKERS = ("<|", "<tool_call>", "</tool_call>", "<think>", "</think>")
+
+_HTML_TAG_RE = re.compile(r'</?[a-zA-Z][^>]{0,120}>')
+# "[{'type': 'emoji', 'emoji': ':)'}]" — structured junk, never speech.
+_JSON_BLOB_RE = re.compile(r'\[\s*[\{\[].*?[\}\]]\s*\]', re.S)
+# ":)" ";-)" ":D" "=]" — but never "3:30" or "ratio 8:1" (word chars either side).
+_EMOTICON_RE = re.compile(r'(?<![\w])[:;=8][\-o\^\']?[\)\(\]\[dDpP/\\|3]+(?![\w])')
+_EMOJI_RE = re.compile(
+    '['
+    '\U0001F000-\U0001FAFF'   # pictographs, emoticons, symbols, supplemental
+    '\U00002600-\U000027BF'   # misc symbols + dingbats
+    '\U00002B00-\U00002BFF'   # arrows/misc
+    '\U0000FE00-\U0000FE0F'   # variation selectors
+    '\U0001F1E6-\U0001F1FF'   # regional indicators (flags)
+    ']+'
+)
+# Spoken when sanitisation removes *everything* — an audible, in-character
+# signal beats silence (looks like a hang) or a crash mid-turn.
+_EMPTY_FALLBACK = "My circuits glitched."
+
+
+def _sanitize_for_speech(text: str) -> str:
+    """Strip anything Piper would mispronounce: control tokens, tags, emoji.
+
+    Returns '' if nothing speakable survives — callers substitute
+    ``_EMPTY_FALLBACK`` rather than emitting silence.
+    """
+    if not text:
+        return ""
+    original = text
+
+    lowered = text.lower()
+    cut = min((i for i in (lowered.find(m) for m in _TRUNCATE_MARKERS) if i >= 0),
+              default=-1)
+    if cut >= 0:
+        text = text[:cut]
+
+    text = _JSON_BLOB_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _EMOJI_RE.sub(" ", text)
+    text = _EMOTICON_RE.sub(" ", text)
+    # Leftover markdown scaffolding: backticks, headers, list bullets, links.
+    text = re.sub(r'[`#]+', ' ', text)
+    text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    # A line reduced to punctuation ("... , !") is not speech.
+    if not re.search(r'[A-Za-z0-9]', text):
+        text = ""
+
+    if text != original.strip():
+        removed = len(original.strip()) - len(text)
+        log.warning("Sanitised %d chars of unspeakable content from TTS input: %r",
+                    removed, original[:120])
+        metrics.count("tts_sanitized", removed_chars=removed,
+                      emptied=not text, sample=original[:120])
+    return text
+
+
 def _preprocess_text(text: str) -> str:
     """Normalise text for natural TTS delivery."""
+    text = _sanitize_for_speech(text) or _EMPTY_FALLBACK
     # Strip markdown bold/italic
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
     # Em-dash and en-dash → comma pause
