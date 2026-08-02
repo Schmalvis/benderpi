@@ -184,18 +184,53 @@ def _prompt(msg: str) -> bool:
     return reply not in ("q", "quit", "stop")
 
 
+def existing_clips(mode: str, speaker: str, label: str) -> int:
+    """How many clips this condition already has on disk.
+
+    Capture is ~45 minutes of a person's time and is meant to be done in
+    sittings. Progress therefore lives on disk, not in the process: the file
+    count IS the resume point. Without this the tool restarted at condition 1
+    every run and overwrote earlier clips.
+    """
+    d = os.path.join(OUT_ROOT, mode, speaker)
+    if not os.path.isdir(d):
+        return 0
+    return len([f for f in os.listdir(d)
+                if f.startswith(f"{label}_") and f.endswith(".wav")])
+
+
+def _plan(items, mode: str, speaker: str, per_condition: int):
+    """(label, hint, done) per condition, and the totals for the header."""
+    rows = [(label, hint, existing_clips(mode, speaker, label))
+            for label, hint in items]
+    done = sum(min(d, per_condition) for _, _, d in rows)
+    return rows, done, per_condition * len(rows)
+
+
 def capture_prompted(args, items, mode: str) -> None:
     scorer = _Scorer()
     threshold = cfg.oww_threshold
     kept = fired = 0
     scratch = os.path.join(OUT_ROOT, ".scratch.wav")
 
-    for label, hint in items:
+    rows, done, total = _plan(items, mode, args.speaker, args.per_condition)
+    if done:
+        print(f"Resuming: {done}/{total} clips already recorded for "
+              f"{args.speaker}. Finished conditions are skipped.")
+    print(f"Quit any time with 'q'. Re-run this exact command to carry on.\n")
+
+    for label, hint, already in rows:
+        if already >= args.per_condition:
+            print(f"=== {label} — done ({already}) ===")
+            continue
         print(f"\n=== {label} — {hint} ===")
-        for n in range(1, args.per_condition + 1):
+        if already:
+            print(f"  ({already} already recorded, continuing)")
+        for n in range(already + 1, args.per_condition + 1):
             if not _prompt(f"  [{n}/{args.per_condition}] Enter to record "
                            f"(q to quit): "):
-                print("\nStopping early.")
+                print("\nStopped. Everything recorded so far is saved.")
+                _summarise(args, items, mode, threshold)
                 return
             print("  recording...", end="", flush=True)
             raw = _record(RECORD_S, scratch)
@@ -227,18 +262,66 @@ def capture_prompted(args, items, mode: str) -> None:
             print(f" saved  level={peak:5d}  score={score:.3f}  {verdict}"
                   + ("  <- " + "; ".join(flags) if flags else ""))
 
-    if kept:
-        print(f"\n{kept} clips. Current model would have woken on "
-              f"{fired}/{kept} ({100 * fired / kept:.0f}%) at threshold "
-              f"{threshold}. That is the number the retrain must beat.")
+    _summarise(args, items, mode, threshold)
+
+
+def _summarise(args, items, mode: str, threshold: float) -> None:
+    """Cumulative progress and baseline, read from the manifest.
+
+    Read from disk rather than from this run's counters, so the numbers mean
+    the same thing whether the capture took one sitting or five.
+    """
+    _, done, total = _plan(items, mode, args.speaker, args.per_condition)
+    print(f"\n{done}/{total} clips recorded for {args.speaker} ({mode}).")
+
+    path = os.path.join(OUT_ROOT, "manifest.jsonl")
+    scores = []
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if (e.get("mode") == mode and e.get("speaker") == args.speaker
+                        and e.get("current_model_score", -1) >= 0):
+                    scores.append(e["current_model_score"])
+    if scores and mode == "positive":
+        fired = sum(1 for s in scores if s >= threshold)
+        print(f"Current model would wake on {fired}/{len(scores)} "
+              f"({100 * fired / len(scores):.0f}%) at threshold {threshold}.")
+        print("That is the baseline the retrain must beat.")
+
+    if done < total:
+        print(f"\nTo carry on later, run the same command again:")
+        print(f"  venv/bin/python scripts/capture_wake_samples.py "
+              f"--speaker {args.speaker}"
+              + (f" --mode {mode}" if mode != "positive" else ""))
+
+
+def ambient_done() -> int:
+    """Minutes of ambient audio already captured. Same resume rule as above:
+    one file per minute, so the file count is the progress."""
+    d = os.path.join(OUT_ROOT, "ambient")
+    if not os.path.isdir(d):
+        return 0
+    return len([f for f in os.listdir(d) if f.endswith(".wav")])
 
 
 def capture_ambient(args) -> None:
     """Continuous household audio: the negative set that keeps FPs down."""
-    print(f"Recording {args.minutes} minutes of background audio.")
+    already = ambient_done()
+    if already >= args.minutes:
+        print(f"Ambient target already met: {already}/{args.minutes} minutes.")
+        print("Raise --minutes to capture more.")
+        return
+    if already:
+        print(f"Resuming: {already}/{args.minutes} minutes already captured.")
+    print(f"Recording {args.minutes - already} more minutes of background audio.")
     print("Talk, watch TV, cook — anything EXCEPT saying the wake word.")
+    print("Ctrl-C is safe: each completed minute is already on disk.")
     chunk_s = 60
-    for i in range(args.minutes):
+    for i in range(already, args.minutes):
         out = os.path.join(OUT_ROOT, "ambient", f"{i:03d}.wav")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         print(f"  minute {i + 1}/{args.minutes}...", flush=True)

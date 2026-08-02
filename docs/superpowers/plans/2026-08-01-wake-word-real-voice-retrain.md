@@ -93,6 +93,14 @@ venv/bin/python scripts/capture_wake_samples.py --mode ambient --minutes 20
 **Targets:** ~100 positives per speaker (10 conditions × 10), ~90 hard
 negatives, ~20 min ambient.
 
+**Capture resumes.** Stop whenever you like with `q` (or Ctrl-C in ambient
+mode) and re-run the identical command later. Progress lives on disk, not in
+the process — the tool counts the clips already recorded per condition, skips
+finished conditions, and continues numbering from where it stopped. Nothing is
+overwritten. Doing this in five ten-minute sittings is equivalent to one long
+one, and is probably better: voices tire, and a tired voice is not the voice
+the model needs to recognise.
+
 The 10 conditions span the generalisation envelope rather than piling up
 identical clips — distance (0.5m / 1.5m / 3m), level (quiet / normal / raised),
 rate (fast / drawn out), off-axis, over background noise, and walking past.

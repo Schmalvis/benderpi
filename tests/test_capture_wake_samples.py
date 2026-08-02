@@ -103,3 +103,66 @@ class TestOutputFormat:
         ignored = open(os.path.join(os.path.dirname(__file__),
                                     '..', '.gitignore')).read()
         assert "data/wake_samples/" in ignored
+
+
+class TestResume:
+    """Capture is ~45 minutes of a person's time and is explicitly meant to be
+    done across several sittings. Progress therefore lives on disk, not in the
+    process. Before this, a second run restarted at condition 1 and overwrote
+    the clips from the first."""
+
+    @pytest.fixture
+    def out_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cap, "OUT_ROOT", str(tmp_path))
+        return tmp_path
+
+    def _make(self, root, mode, speaker, label, n):
+        d = root / mode / speaker
+        d.mkdir(parents=True, exist_ok=True)
+        for i in range(1, n + 1):
+            (d / f"{label}_{i:03d}.wav").write_bytes(b"")
+
+    def test_counts_existing_clips(self, out_root):
+        self._make(out_root, "positive", "martin", "close_normal", 4)
+        assert cap.existing_clips("positive", "martin", "close_normal") == 4
+
+    def test_zero_when_nothing_recorded(self, out_root):
+        assert cap.existing_clips("positive", "martin", "close_normal") == 0
+
+    def test_labels_do_not_bleed_into_each_other(self, out_root):
+        """'mid_normal' and 'mid_normal_extra' must not share a count."""
+        self._make(out_root, "positive", "martin", "mid_normal", 3)
+        self._make(out_root, "positive", "martin", "mid_quiet", 5)
+        assert cap.existing_clips("positive", "martin", "mid_normal") == 3
+        assert cap.existing_clips("positive", "martin", "mid_quiet") == 5
+
+    def test_speakers_are_counted_separately(self, out_root):
+        self._make(out_root, "positive", "martin", "close_normal", 4)
+        assert cap.existing_clips("positive", "other", "close_normal") == 0
+
+    def test_plan_reports_progress(self, out_root):
+        self._make(out_root, "positive", "martin", "close_normal", 10)
+        self._make(out_root, "positive", "martin", "mid_normal", 3)
+        rows, done, total = _plan_for(out_root, per_condition=10)
+        assert total == 10 * len(cap.POSITIVE_CONDITIONS)
+        assert done == 13
+
+    def test_overshoot_does_not_inflate_progress(self, out_root):
+        """A condition redone by hand shouldn't report >100% complete."""
+        self._make(out_root, "positive", "martin", "close_normal", 25)
+        _, done, _ = _plan_for(out_root, per_condition=10)
+        assert done == 10
+
+    def test_ambient_resumes_from_file_count(self, out_root):
+        d = out_root / "ambient"
+        d.mkdir(parents=True)
+        for i in range(7):
+            (d / f"{i:03d}.wav").write_bytes(b"")
+        assert cap.ambient_done() == 7
+
+    def test_ambient_zero_when_absent(self, out_root):
+        assert cap.ambient_done() == 0
+
+
+def _plan_for(root, per_condition):
+    return cap._plan(cap.POSITIVE_CONDITIONS, "positive", "martin", per_condition)
