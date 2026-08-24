@@ -373,9 +373,15 @@ def main():
         audio.mic_selftest()
     except Exception as exc:
         log.warning("Mic self-test raised unexpectedly: %s — continuing", exc)
-    threading.Thread(target=briefings.refresh_all, daemon=True, name="briefings-refresh").start()
-    # Warm up Piper TTS (pre-loads ONNX model)
+    # Warm up Piper TTS (pre-loads ONNX model) BEFORE the briefings refresh
+    # thread below gets a chance to touch the Piper pool. Order matters: both
+    # used to race for the same cold PiperPool on startup, and on an RTC-wake
+    # boot that pool creation lands at the same moment the Hailo hub is
+    # loading two HEFs — the loser of that race hit the Piper synth timeout.
     tts_generate.warm_up()
+    _briefings_timer = threading.Timer(cfg.briefings_startup_delay_s, briefings.refresh_all)
+    _briefings_timer.daemon = True
+    _briefings_timer.start()
     # Pre-load STT (and, in resident mode, the LLM) so neither the first wake
     # word nor the first AI turn of this process pays an init delay. One thread,
     # sequential: both models share a VDevice whose construction is serialised

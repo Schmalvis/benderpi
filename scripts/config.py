@@ -230,6 +230,16 @@ class Config:
     # Network timeouts
     http_timeout_s: float = 10.0  # timeout for all outbound HTTP calls (briefings + HA)
 
+    # Startup briefings refresh delay. BenderPi sleeps overnight via an RTC
+    # timer and wakes cold at ~07:00 — the same moment wake_converse.py starts
+    # briefings.refresh_all() in a daemon thread. That thread's first Piper
+    # call used to race the main thread's own Piper pool warm-up (tts_generate
+    # .warm_up()) for the same cold PiperPool, on a box that is *also*
+    # concurrently loading two Hailo HEFs (~11s, see hailo_hub warm-up) — the
+    # loser hit the 10s Piper synth timeout most mornings (2026-08 incident).
+    # Delaying the startup refresh lets Piper + Hailo warm-up land first.
+    briefings_startup_delay_s: float = 45.0
+
     # Web UI stream lifecycle caps. Wall-clock ceilings on the two unbounded
     # web streams so a backgrounded mobile tab that stops reading (but never
     # cleanly closes) cannot pin the camera / arecord — and thus the single-rate
