@@ -34,7 +34,9 @@ glances is likely fleet monitoring. Bind glances to 127.0.0.1/tailscale instead.
 
 **Next:** batch 2 (session quality: H7 control tokens, H8 gate phrases, H9 sampling,
 M1 VAD onset, M2 idle timeout, M5 reset-after-with) then one evening of real use,
-capturing wake-word samples in the same sitting.
+capturing wake-word samples in the same sitting. Plan with exact code changes,
+tests, the on-device sampling spike and the evening script:
+`docs/superpowers/plans/2026-09-03-batch2-session-quality.md`.
 
 ---
 
