@@ -123,6 +123,8 @@ class BenderConfigUpdate(BaseModel):
     vad_aggressiveness: int | None = None
     silence_frames: int | None = None
     max_record_seconds: int | None = None
+    stt_onset_frames: int | None = None
+    stt_speech_onset_timeout_s: float | None = None
     hailo_stt_enabled: bool | None = None
 
     # --- AI backend ---
@@ -215,6 +217,7 @@ class BenderConfigUpdate(BaseModel):
 
     @field_validator(
         "silence_timeout", "silence_frames", "max_record_seconds",
+        "stt_onset_frames",
         "ai_max_tokens", "local_llm_timeout", "oww_frames_required",
         "oww_window", "weather_ttl", "news_ttl", "briefings_weather_ttl_s",
         "briefings_news_ttl_s", "response_hard_timeout_s", "http_timeout_s",

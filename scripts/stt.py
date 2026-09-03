@@ -301,8 +301,12 @@ def _filter_hallucination(text: str, source: str = "") -> str:
 # Recording with VAD
 # ---------------------------------------------------------------------------
 
-def _record_utterance() -> tuple[bytes, str]:
+def _record_utterance(flush: bool = True) -> tuple[bytes, str, dict]:
     """Record from mic until trailing silence or the hard record cap.
+
+    ``flush`` discards ``post_play_flush_ms`` of audio first. Pass ``False``
+    when re-entering after a rejected capture so the user's opening words are
+    not thrown away a second time.
 
     Returns ``(pcm_bytes, termination_reason)`` where ``termination_reason`` is
     one of:
@@ -343,18 +347,37 @@ def _record_utterance() -> tuple[bytes, str]:
     frames       = []
     voiced       = []   # VAD-positive frames only — the speech-evidence sample
     started      = False
-    start_time   = time.time()
+    start_time   = time.monotonic()
     silent_count = 0
+    onset_run    = 0    # consecutive VAD-positive frames seen before onset
     reason       = "max_cap"  # overwritten to "silence" on a clean VAD end
 
+    # Onset gate: one 30ms VAD-positive frame used to start a capture. A door
+    # slam or a consonant from across the room then ran 750ms of silence, got
+    # rejected by the 250ms gate, and the loop re-entered — reopening the
+    # stream and discarding 210ms of whatever the user had started saying.
+    # Live 2026-08-04: eight rejected 120ms captures in nine seconds.
+    onset_needed = max(1, int(getattr(cfg, "stt_onset_frames", 3)))
+    # A capture with no speech onset ends here instead of at max_record_seconds,
+    # so an idle window costs ~6s, not 15s, and 15s of background chatter is no
+    # longer transcribed.
+    onset_timeout = float(getattr(cfg, "stt_speech_onset_timeout_s", 6.0))
+
     try:
-        # Flush mic buffer — discard post-playback reverb before VAD starts
-        _flush_frames = max(1, round(cfg.post_play_flush_ms / FRAME_MS))
-        for _ in range(_flush_frames):
-            reader.read(read_timeout_s)
+        if flush:
+            # Flush mic buffer — discard post-playback reverb before VAD starts.
+            # Only meaningful right after Bender spoke; the caller passes
+            # flush=False when re-entering after a rejected transient.
+            _flush_frames = max(1, round(cfg.post_play_flush_ms / FRAME_MS))
+            for _ in range(_flush_frames):
+                reader.read(read_timeout_s)
 
         while True:
-            if time.time() - start_time > cfg.max_record_seconds:
+            elapsed = time.monotonic() - start_time
+            if not started and onset_timeout > 0 and elapsed > onset_timeout:
+                reason = "no_speech"
+                break
+            if elapsed > cfg.max_record_seconds:
                 # Cap reached. If speech was detected we cut it short mid-sentence;
                 # if not, it was a silence-only capture (no_speech).
                 reason = "max_cap" if started else "no_speech"
@@ -368,14 +391,24 @@ def _record_utterance() -> tuple[bytes, str]:
             frames.append(data)
             is_speech = vad.is_speech(data, SAMPLE_RATE)
             if is_speech:
-                started      = True
-                silent_count = 0
-                voiced.append(data)
-            elif started:
-                silent_count += 1
-                if silent_count >= cfg.silence_frames:
-                    reason = "silence"
-                    break
+                onset_run += 1
+                if not started:
+                    if onset_run >= onset_needed:
+                        started = True
+                        silent_count = 0
+                        # The onset frames are speech too — count them, so the
+                        # gate downstream sees the real voiced length.
+                        voiced.extend(frames[-onset_run:])
+                else:
+                    silent_count = 0
+                    voiced.append(data)
+            else:
+                onset_run = 0
+                if started:
+                    silent_count += 1
+                    if silent_count >= cfg.silence_frames:
+                        reason = "silence"
+                        break
     finally:
         reader.stop()
 
@@ -452,12 +485,17 @@ def release() -> None:
     log.info("STT: Hailo Speech2Text + VDevice released (KV-Cache free)")
 
 
-def listen_and_transcribe() -> str:
-    """Record one utterance and return the transcribed text."""
+def listen_and_transcribe(after_playback: bool = True) -> str:
+    """Record one utterance and return the transcribed text.
+
+    ``after_playback`` is True when Bender has spoken since the last capture;
+    it enables the post-playback reverb flush. The wake loop passes False on
+    re-entry after an empty or rejected capture.
+    """
     _load_model()
 
     with metrics.timer("stt_record"):
-        pcm, term_reason, cap = _record_utterance()
+        pcm, term_reason, cap = _record_utterance(flush=after_playback)
 
     # Directional signal for silence-timing tuning: "max_cap" means the utterance
     # was likely cut short mid-sentence (silence_frames/max_record_seconds too

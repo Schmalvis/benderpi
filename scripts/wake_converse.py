@@ -428,11 +428,18 @@ def main():
                 on_audio_chunk=_check_abort_on_chunk,
             )
             session.start()
-            last_heard = time.time()
+            # Monotonic: the device cold-boots daily and NTP steps the wall
+            # clock; a stepped time.time() here would end or extend sessions
+            # by the size of the step.
+            last_heard = time.monotonic()
+            # Bender just played the greeting, so the first capture flushes
+            # playback reverb. Re-entries after an empty capture do not.
+            played_since_capture = True
             while True:
                 leds.set_listening(True)
-                rec_start = time.time()
-                text = stt.listen_and_transcribe()
+                rec_start = time.monotonic()
+                text = stt.listen_and_transcribe(after_playback=played_since_capture)
+                played_since_capture = False
                 if not text:
                     # Anchor the silence timeout on when this recording STARTED, not on
                     # `now`. A slow CPU-whisper transcription can stall 20-110s on
@@ -447,7 +454,6 @@ def main():
                         session.end("timeout")
                         break
                     continue
-                last_heard = time.time()
                 log.info("Heard: %r", text)
                 # Both are no-ops in resident mode (cfg.hailo_resident, default):
                 # Whisper and Qwen stay loaded on one shared VDevice, so there is
@@ -458,6 +464,11 @@ def main():
                 if ai_local:
                     ai_local.reset_hailo()
                 result = session.handle_turn(text)
+                # The idle clock starts when Bender finishes replying, not when
+                # the user finished speaking — otherwise an 8s answer used up
+                # the whole silence_timeout before the user could respond.
+                last_heard = time.monotonic()
+                played_since_capture = True
                 if result.should_end:
                     session.end(result.end_reason or "end")
                     break

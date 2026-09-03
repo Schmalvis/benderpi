@@ -40,7 +40,7 @@ def capture(monkeypatch):
 
     def _install(reason, voiced_ms, voiced_rms=4000, seconds=3.0):
         pcm = b"\x01\x00" * int(stt.SAMPLE_RATE * seconds)
-        monkeypatch.setattr(stt, "_record_utterance", lambda: (
+        monkeypatch.setattr(stt, "_record_utterance", lambda flush=True: (
             pcm, reason, {"voiced_ms": voiced_ms, "voiced_rms": voiced_rms}))
         return calls
 

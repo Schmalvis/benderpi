@@ -95,6 +95,14 @@ class Config:
     # ("So, So" / "I'm going to do the") as if they were questions.
     stt_min_speech_ms: int = 250   # min voiced audio for a capture to count as an utterance
     stt_min_speech_rms: int = 0    # 0 = off; voiced-audio level floor, room-specific
+    # Consecutive VAD-positive 30ms frames before a capture "starts". One frame
+    # let door slams start 750ms captures that were then rejected and re-entered
+    # (eight in nine seconds, live 2026-08-04). 3 = 90ms of continuous voice.
+    stt_onset_frames: int = 3
+    # Seconds to wait for speech onset before giving up on a capture (0 = wait
+    # the full max_record_seconds). Bounds the idle cost of an empty window and
+    # stops 15s of background chatter reaching Whisper.
+    stt_speech_onset_timeout_s: float = 6.0
     hailo_stt_enabled: bool = True
     vlm_enabled: bool = True  # set False to skip Hailo VLM scene capture  # set False to use faster-whisper CPU only
 

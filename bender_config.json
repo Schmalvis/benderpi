@@ -213,6 +213,8 @@
     "do_not"
   ],
   "silence_frames": 25,
+  "stt_onset_frames": 3,
+  "stt_speech_onset_timeout_s": 6.0,
   "stt_no_speech_prob_max": 0.6,
   "stt_avg_logprob_min": -1.0,
   "stt_compression_ratio_max": 2.4,

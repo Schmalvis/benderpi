@@ -38,6 +38,14 @@ capturing wake-word samples in the same sitting. Plan with exact code changes,
 tests, the on-device sampling spike and the evening script:
 `docs/superpowers/plans/2026-09-03-batch2-session-quality.md`.
 
+Batch 2 progress:
+- **Commit 1 (M1, M2) done, not yet deployed:** `stt_onset_frames` (3) onset gate,
+  `stt_speech_onset_timeout_s` (6.0), flush only after playback, idle clock starts
+  after the reply, monotonic time in the session loop. 14 tests in
+  `tests/test_stt_onset.py`. Suite 846. Deploy together with commit 2 (one restart).
+- Commit 2 (H8, M5): pending.
+- Commit 3 (H7, H9): pending; needs the on-device sampling spike first.
+
 ---
 
 ## 2026-07-30 (2) — Hailo token streaming + on-chip context protocol fix
