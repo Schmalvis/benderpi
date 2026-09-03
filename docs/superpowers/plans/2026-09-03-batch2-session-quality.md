@@ -200,6 +200,29 @@ the 5-starts-per-300 s budget):
 - stream ends without `<|im_end|>` and a tail `"and then [{'ty"` → tail dropped;
   tail `"and that's it."` → yielded.
 
+#### Spike result (run 2026-09-03 15:41–15:49, service stopped ~10 min)
+
+64 samples: 5 single-turn prompts + one 3-turn context, × penalty {unset, 1.0,
+1.1, 1.3} × seeds {11, 22}, temperature 0.7, top_p 0.9, cap 80 tokens.
+
+| penalty | tokens (mean) | hit 80-cap | `<\|im_end\|>` | control tokens | repeated 4-grams | mean total ms | multi-turn similarity |
+|---|---|---|---|---|---|---|---|
+| unset | 44.9 | 25% | 100% | 0 | 3 | 7999 | 0.10 |
+| 1.0 | 26.1 | 12% | 100% | 0 | **27** | 5260 | **0.49** |
+| **1.1** | 44.9 | 25% | 100% | 0 | 3 | 8002 | 0.10 |
+| 1.3 | 34.9 | 19% | 94% | **1** | 0 | 6539 | 0.11 |
+
+- **Scale is HF-style** (1.0 = off). Same-seed texts: unset vs 1.1 identical
+  16/16, so 1.1 is HailoRT's default; unset vs 1.0 identical 4/16 with heavy
+  repetition ("You always do it. You always do it. You always do it."); 1.1 vs
+  1.3 identical 3/16, with one `<|…|>` derail and markdown (`**"Bender!"**`).
+- **Chosen: 1.1, pinned explicitly.**
+- TTFT 1468 ms fresh / 371 ms on later turns; ~6.7 tok/s. The 25% cap hits at
+  80 tokens were all transcript-style output (quotes, parentheticals, a
+  🐟 emoji) on "Tell me about the year 3000" and the seed-22 multi-turn; the
+  3-sentence stop ends those earlier and commit 2's cleaning strips the rest.
+- Identity bait ("Are you an AI?") stayed in character at every value.
+
 ### Extra — `scripts/review_log.py` (M20, S)
 
 `AI_METHODS = {"ai_local_stream", "ai_local_forced", "ai_streaming", "ai_fallback"}`

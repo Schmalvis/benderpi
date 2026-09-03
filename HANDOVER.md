@@ -51,7 +51,18 @@ Batch 2 progress:
   still holding `_infer_lock`; `_reset_context()` takes the lock non-blocking and
   defers via `_context_dirty` when a zombie generation holds it. One new system-prompt
   rule against self-quoting. 35 tests in `tests/test_reply_cleaning.py`. Suite 881.
-- Commit 3 (H7, H9): pending; needs the on-device sampling spike first.
+- **Commit 3 (H7, H9) done, not yet deployed:** `_hailo_sampling_kwargs()` (random
+  seed per call, `top_p` 0.9, `frequency_penalty` 1.1, `do_sample`, 80-token local
+  cap) shared by both Hailo call sites and mirrored to Ollama; stop after
+  `ai_max_sentences` (3); a chat-template token on any sentence stops decoding,
+  drops the sentence, clears the on-chip context (`ai_hailo_derailed`); a tail cut
+  mid-sentence by the cap is dropped once something has been said
+  (`ai_hailo_truncated_tail`). Spike result is in the batch-2 plan: the penalty
+  scale is HF-style, 1.1 is HailoRT's own default, 1.0 repeats, 1.3 derails.
+  16 tests in `tests/test_decode_control.py`. Suite 897.
+- `review_log.py` (M20): counts the live AI method names; the promotion list works again.
+- **Next:** push (one deploy), then the evening-of-use script in the plan, then
+  `capture_wake_samples.py` in the same sitting.
 
 ---
 

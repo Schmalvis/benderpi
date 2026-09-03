@@ -115,6 +115,14 @@ class Config:
     ai_model: str = "claude-haiku-4-5-20251001"
     ai_max_tokens: int = 150
     ai_max_history: int = 6
+    # Local-LLM decode control (Hailo, mirrored to the Ollama fallback). See
+    # the CLAUDE.md config table and the 2026-09-03 batch-2 plan for the
+    # measurements behind each value.
+    ai_temperature: float = 0.7
+    ai_hailo_top_p: float = 0.9
+    ai_hailo_frequency_penalty: float | None = 1.1   # None = not passed
+    ai_hailo_max_tokens: int = 80    # local cap; ai_max_tokens stays for cloud
+    ai_max_sentences: int = 3        # stop decoding after N spoken sentences (0 = off)
 
     # Local LLM
     ai_backend: str = "hybrid"  # "hybrid" | "local_only" | "cloud_only" (hybrid uses ai_routing per scenario)

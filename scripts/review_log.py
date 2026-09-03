@@ -12,6 +12,10 @@ Usage:
 import argparse
 import collections
 import glob
+
+# Turn methods that reached an LLM (local or cloud). The responder emits the
+# three stream names; "ai_fallback" is kept for logs written before streaming.
+AI_METHODS = {"ai_local_stream", "ai_local_forced", "ai_streaming", "ai_fallback"}
 import json
 import os
 from datetime import datetime, timedelta
@@ -21,7 +25,9 @@ LOG_DIR  = os.path.join(BASE_DIR, "logs")
 
 
 def load_turns(days: int | None) -> list[dict]:
-    pattern = os.path.join(LOG_DIR, "*.jsonl")
+    # Daily conversation logs only — metrics.jsonl (10MB, rotated) lives in the
+    # same directory and is not a conversation log.
+    pattern = os.path.join(LOG_DIR, "[0-9]*.jsonl")
     files = sorted(glob.glob(pattern))
     if days is not None:
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -47,7 +53,9 @@ def summarise(turns: list[dict]):
     # Method breakdown
     method_counts = collections.Counter(t["method"] for t in turns)
     intent_counts = collections.Counter(t["intent"] for t in turns)
-    ai_turns      = [t for t in turns if t["method"] == "ai_fallback"]
+    # Every method that reached an LLM. "ai_fallback" is the historical name;
+    # the live responder emits the three stream names.
+    ai_turns      = [t for t in turns if t.get("method") in AI_METHODS]
     error_turns   = [t for t in turns if t["method"] == "error_fallback"]
 
     total = len(turns)

@@ -131,6 +131,11 @@ class BenderConfigUpdate(BaseModel):
     ai_backend: str | None = None
     ai_model: str | None = None
     ai_max_tokens: int | None = None
+    ai_temperature: float | None = None
+    ai_hailo_top_p: float | None = None
+    ai_hailo_frequency_penalty: float | None = None
+    ai_hailo_max_tokens: int | None = None
+    ai_max_sentences: int | None = None
     local_llm_model: str | None = None
     local_llm_url: str | None = None
     local_llm_timeout: float | None = None
@@ -218,7 +223,7 @@ class BenderConfigUpdate(BaseModel):
     @field_validator(
         "silence_timeout", "silence_frames", "max_record_seconds",
         "stt_onset_frames",
-        "ai_max_tokens", "local_llm_timeout", "oww_frames_required",
+        "ai_max_tokens", "ai_hailo_max_tokens", "local_llm_timeout", "oww_frames_required",
         "oww_window", "weather_ttl", "news_ttl", "briefings_weather_ttl_s",
         "briefings_news_ttl_s", "response_hard_timeout_s", "http_timeout_s",
         "mic_read_timeout_s", "wake_std_floor", "wake_rms_floor",

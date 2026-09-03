@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -103,6 +104,48 @@ def _clean_sentence(sentence: str) -> str:
     if not re.search(r"[A-Za-z0-9]", s):
         return ""
     return s
+
+
+# A sentence that ends properly. A force-flushed tail that does not is the
+# token cap (or a derail) cutting the model off mid-sentence — "[{'ty" live.
+_ENDS_SENTENCE_RE = re.compile(r'[.!?]["\'”’]?$')
+
+
+def _hailo_sampling_kwargs() -> dict:
+    """Decode parameters for both Hailo call sites (keep them identical).
+
+    Replaces the fixed ``temperature=0.7, seed=42`` that made an identical
+    context produce an identical reply (three "I'm not going to be the same"
+    turns in a row, 2026-08-07) and the 150-token cap that turned a "1–3
+    sentence" persona into ~25s of decode. ``frequency_penalty`` is passed only
+    when configured; its scale was established by the 2026-09-03 on-device
+    spike (see docs/superpowers/plans/2026-09-03-batch2-session-quality.md).
+    """
+    kw = dict(
+        temperature=float(getattr(cfg, "ai_temperature", 0.7)),
+        top_p=float(getattr(cfg, "ai_hailo_top_p", 0.9)),
+        do_sample=True,
+        seed=random.randrange(1, 2 ** 31),
+        max_generated_tokens=int(getattr(cfg, "ai_hailo_max_tokens", 80)),
+    )
+    penalty = getattr(cfg, "ai_hailo_frequency_penalty", None)
+    if penalty is not None:
+        kw["frequency_penalty"] = float(penalty)
+    return kw
+
+
+def _ollama_options() -> dict:
+    """Ollama decode options, kept in step with the Hailo parameters so a
+    failover turn sounds like the same Bender."""
+    opts = {
+        "num_predict": int(getattr(cfg, "ai_hailo_max_tokens", 80)),
+        "temperature": float(getattr(cfg, "ai_temperature", 0.7)),
+        "top_p": float(getattr(cfg, "ai_hailo_top_p", 0.9)),
+    }
+    penalty = getattr(cfg, "ai_hailo_frequency_penalty", None)
+    if penalty is not None:
+        opts["repeat_penalty"] = float(penalty)
+    return opts
 
 
 def _flush_sentence(buf: str, force: bool) -> tuple[str, str]:
@@ -398,9 +441,7 @@ class _HailoLLMResponder:
             with metrics.timer("ai_hailo_call"):
                 result = self._llm.generate_all(
                     prompt=messages,
-                    temperature=0.7,
-                    seed=42,
-                    max_generated_tokens=cfg.ai_max_tokens,
+                    **_hailo_sampling_kwargs(),
                 )
             # The turn is now committed on-chip whatever we do with the text.
             self._context_fresh = False
@@ -455,9 +496,7 @@ class _HailoLLMResponder:
         try:
             with self._llm.generate(
                 prompt=messages,
-                temperature=0.7,
-                seed=42,
-                max_generated_tokens=cfg.ai_max_tokens,
+                **_hailo_sampling_kwargs(),
             ) as gen:
                 # The turn is committed on-chip the moment generation starts, so
                 # mark it before consuming — an abort must not leave us thinking
@@ -467,18 +506,40 @@ class _HailoLLMResponder:
 
                 done = False
                 failed: tuple[str, str] | None = None
+                ended_clean = False          # saw <|im_end|>: the model finished
+                derailed: str | None = None  # template output after the reply
+                capped = False               # stopped at ai_max_sentences
+                max_sentences = int(getattr(cfg, "ai_max_sentences", 3))
                 for token in gen:
                     if token == _IM_END:
+                        ended_clean = True
+                        done = True
+                    elif token.startswith("<|") or "<tool_call" in token:
+                        # A chat-template token other than <|im_end|>: the model
+                        # has started writing the *next* turn. Stop decoding
+                        # now rather than commit a hallucinated dialogue to the
+                        # on-chip context for the next six turns.
+                        derailed = token
                         done = True
                     else:
                         buffer += token
                         if _IM_END in buffer:
                             buffer = buffer.split(_IM_END)[0]
+                            ended_clean = True
                             done = True
 
                     while True:
-                        sentence, buffer = _flush_sentence(buffer, force=done)
+                        # Only a clean finish force-flushes here; a cap or a
+                        # derail leaves the tail for the punctuation rule below.
+                        sentence, buffer = _flush_sentence(buffer, force=ended_clean)
                         if not sentence:
+                            break
+                        low = sentence.lower()
+                        if any(m in low for m in _CONTROL_TOKEN_MARKERS):
+                            # Derail detected on a later sentence, not just
+                            # sentence 1 (which the gate below already covers).
+                            derailed = sentence
+                            done = True
                             break
                         sentence = _clean_sentence(sentence)
                         if not sentence:
@@ -497,12 +558,30 @@ class _HailoLLMResponder:
                             })
                         emitted += 1
                         yield sentence
+                        if max_sentences > 0 and emitted >= max_sentences:
+                            # "1-3 sentences" is the persona; stop decoding
+                            # instead of speaking a fourth. Leaving the `with`
+                            # aborts generation — verified safe on-device.
+                            capped = True
+                            done = True
+                            break
                     if done or failed is not None:
                         break
 
                 # Anything left when the model stopped without a final boundary.
-                if failed is None:
+                if failed is None and not capped:
                     sentence, buffer = _flush_sentence(buffer, force=True)
+                    if sentence and not ended_clean and emitted > 0 \
+                            and not _ENDS_SENTENCE_RE.search(sentence.strip()):
+                        # The token cap (or a derail) cut the model off
+                        # mid-sentence. Something has already been said, so
+                        # drop the fragment rather than speak "[{'ty".
+                        metrics.count("ai_hailo_truncated_tail",
+                                      reason="derailed" if derailed else "token_cap",
+                                      dropped=sentence[:120])
+                        log.info("Dropped unfinished tail after %d sentence(s): %r",
+                                 emitted, sentence[:120])
+                        sentence = ""
                     sentence = _clean_sentence(sentence) if sentence else ""
                     if sentence:
                         if not quality_checked:
@@ -516,8 +595,18 @@ class _HailoLLMResponder:
 
             # The completion is closed here and we still hold _infer_lock, so
             # the on-chip reset cannot race a live generation.
-            if failed is not None:
+            if capped:
+                metrics.count("ai_hailo_sentence_cap", sentences=emitted)
+            if derailed is not None:
+                metrics.count("ai_hailo_derailed", after_sentences=emitted,
+                              sample=derailed[:120])
+                log.warning("Hailo LLM derailed into template output after %d "
+                            "sentence(s): %r", emitted, derailed[:120])
+                if failed is None and emitted == 0:
+                    failed = ("control_tokens", derailed)
+            if derailed is not None or failed is not None:
                 self._reset_context(locked=True)
+            if failed is not None:
                 raise QualityCheckFailed(*failed)
         finally:
             self._infer_lock_held_since = None
@@ -713,7 +802,7 @@ class _OllamaResponder:
                         *self.history,
                     ],
                     "stream": False,
-                    "options": {"num_predict": cfg.ai_max_tokens},
+                    "options": _ollama_options(),
                 },
                 timeout=cfg.local_llm_timeout,
             )
@@ -760,7 +849,7 @@ class _OllamaResponder:
                         *self.history,
                     ],
                     "stream": True,
-                    "options": {"num_predict": cfg.ai_max_tokens},
+                    "options": _ollama_options(),
                 },
                 stream=True,
                 timeout=cfg.local_llm_timeout,
