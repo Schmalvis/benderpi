@@ -96,9 +96,29 @@ def create_timer(label: str, duration_seconds: float) -> dict:
     return entry
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Return ``dt`` as an aware UTC datetime.
+
+    ``time_parser.parse_alarm_time`` returns naive local wall-clock times.
+    Everything in this module compares against aware UTC, and Python raises
+    ``TypeError`` on a naive/aware comparison. Normalise at the boundary so a
+    voice-created alarm can never poison ``check_fired`` (which the main loop
+    calls on every pass, before the wake word).
+    """
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # interpret as local time
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_fires_at(value: str) -> datetime:
+    """Parse a persisted ``fires_at`` string, tolerating naive legacy entries."""
+    return _as_utc(datetime.fromisoformat(value))
+
+
 def create_alarm(label: str, fires_at: datetime) -> dict:
-    """Create an alarm that fires at a specific datetime."""
+    """Create an alarm that fires at a specific datetime (naive = local time)."""
     now = datetime.now(timezone.utc)
+    fires_at = _as_utc(fires_at)
     entry = {
         "id": _gen_id("a"),
         "label": label,
@@ -153,7 +173,7 @@ def dismiss_all_fired() -> int:
     with _lock:
         data = _load()
         for t in data:
-            fires_at = datetime.fromisoformat(t["fires_at"])
+            fires_at = _parse_fires_at(t["fires_at"])
             if fires_at <= now and not t["dismissed"]:
                 t["dismissed"] = True
                 count += 1
@@ -182,7 +202,7 @@ def list_timers() -> list[dict]:
             t for t in data
             if not (
                 t["dismissed"]
-                and datetime.fromisoformat(t["fires_at"]) < cutoff
+                and _parse_fires_at(t["fires_at"]) < cutoff
             )
         ]
         if len(data) != before:
@@ -194,7 +214,7 @@ def list_timers() -> list[dict]:
             if t["dismissed"]:
                 continue
             entry = dict(t)
-            fires_at = datetime.fromisoformat(entry["fires_at"])
+            fires_at = _parse_fires_at(entry["fires_at"])
             entry["remaining_s"] = max(0, (fires_at - now).total_seconds())
             result.append(entry)
 
@@ -208,7 +228,13 @@ def check_fired() -> list[dict]:
         data = _load()
         fired = []
         for t in data:
-            fires_at = datetime.fromisoformat(t["fires_at"])
+            # One malformed entry must not take the whole main loop down:
+            # check_fired() runs before every wake-word wait.
+            try:
+                fires_at = _parse_fires_at(t["fires_at"])
+            except (KeyError, TypeError, ValueError) as exc:
+                log.error("Skipping malformed timer entry %s: %s", t.get("id"), exc)
+                continue
             if fires_at <= now and not t["dismissed"]:
                 fired.append(dict(t))
     if fired:

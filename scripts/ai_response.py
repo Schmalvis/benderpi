@@ -145,10 +145,13 @@ class AIResponder:
                             buffer = buffer[m.end():]
                             if sentence:
                                 yield sentence
-            # Yield any remaining text after stream ends
+            # Yield the final sentence. The sentence regex needs trailing
+            # whitespace plus a capital, so the last sentence of every reply
+            # (and the whole of a one-sentence reply) is still in the buffer
+            # here. full_response already holds it: it accumulates per chunk.
             remaining = buffer.strip()
             if remaining:
-                full_response += remaining  # ensure history includes the final fragment
+                yield remaining
         except anthropic.AuthenticationError:
             full_response = "Whoever manages my account is out of credit. Sort it out. I'll be here, annoyed."
             yield full_response

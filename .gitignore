@@ -6,6 +6,17 @@
 *.token
 config.local.*
 .env
+.env.*
+!.env.example
+*.bak
+
+# HailoRT writes its log into the working directory
+hailort.log
+**/hailort.log
+
+# Session-local tooling state
+memory/
+.understand-anything/
 
 # Python
 __pycache__/

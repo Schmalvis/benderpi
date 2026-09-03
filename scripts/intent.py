@@ -341,6 +341,10 @@ def classify(text: str) -> tuple[str, str | None]:
     Returns (intent_name, sub_key_or_None).
     """
     t = text.strip().lower()
+    # Whisper emits trailing punctuation ("Okay.", "Great!"). The AFFIRMATION
+    # and several DISMISSAL patterns are ^...$ anchored, so without this
+    # strip a one-word thanks cost a 3–8s LLM turn instead of a clip.
+    t = re.sub(r"[.!?,]+$", "", t).strip()
     word_count = len(t.split())
 
     # Most specific first

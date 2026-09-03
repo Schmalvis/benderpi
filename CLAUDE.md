@@ -550,7 +550,18 @@ pi ALL=(ALL) NOPASSWD: /bin/systemctl stop bender-converse
 pi ALL=(ALL) NOPASSWD: /bin/systemctl start bender-converse
 pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bender-web
 pi ALL=(ALL) NOPASSWD: /bin/systemctl status bender-converse
+# /etc/sudoers.d/bender-web-reset-failed — lets service_guard recover from
+# start-limit-hit (every puppet play is a stop+start; the unit allows 5 per 300s)
+pi ALL=(ALL) NOPASSWD: /bin/systemctl reset-failed bender-converse
 ```
+
+**journald on the Pi:** Raspberry Pi OS ships
+`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` (`Storage=volatile`),
+so the journal lived in RAM and every 22:00 shutdown erased it — `DEPLOY FAILED`
+lines, tracebacks and HailoRT errors were gone by the next morning. The device now
+has `/etc/systemd/journald.conf.d/50-persistent.conf` (`Storage=persistent`,
+`SystemMaxUse=200M`). The drop-in **must sort after `40-`** or the vendor file wins.
+Not part of auto-deploy; re-apply on a fresh Pi.
 
 ### Features
 - **Puppet mode** — type text for Bender to speak, soundboard with favourites, volume control

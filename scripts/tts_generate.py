@@ -495,8 +495,11 @@ def _sanitize_for_speech(text: str) -> str:
     if not re.search(r'[A-Za-z0-9]', text):
         text = ""
 
-    if text != original.strip():
-        removed = len(original.strip()) - len(text)
+    # Compare against the whitespace-normalised original: collapsing a
+    # double space is not "unspeakable content" and must not warn.
+    normalised_original = re.sub(r'\s+', ' ', original).strip()
+    if text != normalised_original:
+        removed = len(normalised_original) - len(text)
         log.warning("Sanitised %d chars of unspeakable content from TTS input: %r",
                     removed, original[:120])
         metrics.count("tts_sanitized", removed_chars=removed,
@@ -504,9 +507,15 @@ def _sanitize_for_speech(text: str) -> str:
     return text
 
 
-def _preprocess_text(text: str) -> str:
-    """Normalise text for natural TTS delivery."""
-    text = _sanitize_for_speech(text) or _EMPTY_FALLBACK
+def _preprocess_text(text: str, empty_fallback: str = _EMPTY_FALLBACK) -> str:
+    """Normalise text for natural TTS delivery.
+
+    ``empty_fallback`` is what a sentence becomes when nothing speakable
+    survives sanitising. Whole-reply callers want the in-character fallback
+    line; the streaming path passes ``""`` so an emoji-only or tag-only
+    sentence is skipped instead of spoken.
+    """
+    text = _sanitize_for_speech(text) or empty_fallback
     # Strip markdown bold/italic
     text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
     # Em-dash and en-dash → comma pause
@@ -615,6 +624,13 @@ def speak_from_iter(sentence_iter):
     try:
         with ThreadPoolExecutor(max_workers=3) as pool:
             for sentence in sentence_iter:
+                # Sanitise per sentence: this is the only path live LLM
+                # output takes to Piper, and the model emits emoji, chat-
+                # template tokens and JSON fragments mid-stream. A sentence
+                # with nothing speakable left is skipped, not spoken.
+                sentence = _preprocess_text(sentence, empty_fallback="")
+                if not sentence:
+                    continue
                 # Submit this sentence's TTS immediately
                 pending.append(pool.submit(_speak_single, sentence))
                 # If we have a backlog, yield the oldest completed future

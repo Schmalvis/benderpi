@@ -124,7 +124,8 @@ class ConversationSession:
         self._write_session_file(0)
         audio.open_session()
 
-        self._ai.clear_history()
+        if self._ai:
+            self._ai.clear_history()
         if self._ai_local:
             self._ai_local.clear_history()
 
@@ -220,7 +221,11 @@ class ConversationSession:
             log.error("Inference exceeded %.1fs hard timeout", float(cfg.response_hard_timeout_s))
             audio.abort()
             metrics.count("inference_hard_timeout")
-            err_wav = os.path.join(_BASE_DIR, "speech", "responses", "error_timeout.wav")
+            # prebuild_responses.py writes this clip under promoted/; the old
+            # path one level up never existed on the device, so a hard
+            # timeout was a silent turn.
+            err_wav = os.path.join(_BASE_DIR, "speech", "responses", "promoted",
+                                   "error_timeout.wav")
             if os.path.exists(err_wav):
                 audio.play(err_wav, on_chunk=self._on_chunk, on_done=leds.all_off)
             self._session_log.log_turn(
@@ -333,7 +338,8 @@ class ConversationSession:
             timeout=float(cfg.vlm_yolo_timeout_s) if block else 0.0,
         )
         if ctx:
-            self._ai.inject_scene_context(ctx)
+            if self._ai:
+                self._ai.inject_scene_context(ctx)
             if self._ai_local:
                 self._ai_local.inject_scene_context(ctx)
             log.info("Vision context injected: %s", ctx)

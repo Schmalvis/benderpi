@@ -214,10 +214,13 @@ def get_weather_text() -> str:
         wind_line += f" {round(precip)} percent chance of rain."
 
     comment = WEATHER_COMMENTS.get(condition_raw.lower(), "Typical. Just absolutely typical.")
-    return random.choice(WEATHER_TEMPLATES).format(
+    text = random.choice(WEATHER_TEMPLATES).format(
         temp=temp, condition=condition, high=high,
         humidity=humidity, wind_line=wind_line, comment=comment,
     )
+    # An empty wind_line leaves a double space, which the TTS sanitiser
+    # counted as "unspeakable content" and warned about every morning.
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 def get_weather_wav() -> str:
@@ -410,6 +413,7 @@ def get_weather_text_for_location(location: str) -> str:
         f"In {location_label}: {temp} degrees and {condition}. High of {high} today. {wind_line} {comment}",
         f"Weather in {location_label}: {temp} degrees, {condition}. Today's high: {high}. {wind_line} {comment}",
     ]
+    templates = [re.sub(r"\s{2,}", " ", t).strip() for t in templates]
     return random.choice(templates).strip()
 
 

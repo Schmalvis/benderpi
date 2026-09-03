@@ -341,7 +341,15 @@ def wait_for_wakeword(_oww_model=None):
 def main():
     for _secret in cfg.validate():
         metrics.count("secrets_missing", secret=_secret)
-    ai = AIResponder()
+    # An empty ANTHROPIC_API_KEY is a documented degraded state (offline-first),
+    # not a crash: Config.validate() already warned about it above. Without
+    # this guard the RuntimeError killed the service at boot and burned the
+    # systemd start limit.
+    try:
+        ai = AIResponder()
+    except RuntimeError as exc:
+        log.warning("Cloud AI responder unavailable (%s) — running local-only", exc)
+        ai = None
     ai_local = None
     if cfg.ai_backend != "cloud_only":
         try:

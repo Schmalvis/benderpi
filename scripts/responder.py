@@ -142,7 +142,11 @@ class Responder:
         """
         # Determine effective routing — ai_backend overrides per-scenario rules
         scenario = self._classify_scenario(text)
-        if cfg.ai_backend == "cloud_only" or ai_local is None:
+        if ai_cloud is None and ai_local is not None:
+            # No cloud responder (no API key): the local model answers
+            # unconditionally rather than escalating into an error line.
+            effective_routing = "local_only"
+        elif cfg.ai_backend == "cloud_only" or ai_local is None:
             effective_routing = "cloud_only"
         elif cfg.ai_backend == "local_only":
             effective_routing = "local_only"

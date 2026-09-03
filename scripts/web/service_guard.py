@@ -79,13 +79,50 @@ def _stop_converse() -> None:
     )
 
 
-def _start_converse() -> None:
+def _start_converse() -> bool:
+    """Start bender-converse. Returns True when systemd accepted the start.
+
+    The unit has ``StartLimitBurst=5`` per 300s and every lease is a stop +
+    start, so a busy soundboard session hits ``start-limit-hit`` on the sixth
+    play. That used to be silent: the exit code was ignored and the API said
+    ok while Bender stayed dead. Now the failure is logged, one
+    ``reset-failed`` + retry is attempted (needs a sudoers grant for
+    ``systemctl reset-failed bender-converse``; harmless if absent), and the
+    result is recorded in :data:`last_start_failed` for callers to surface.
+    """
+    global last_start_failed
     if not _IS_LINUX:
-        return
-    subprocess.run(
+        return True
+    rc = subprocess.run(
         ["sudo", "systemctl", "start", "bender-converse"],
         capture_output=True, text=True, timeout=15,
     )
+    if rc.returncode == 0:
+        last_start_failed = False
+        return True
+    log.error("bender-converse failed to start after web lease (rc=%s): %s",
+              rc.returncode, (rc.stderr or rc.stdout).strip()[:300])
+    subprocess.run(
+        ["sudo", "-n", "systemctl", "reset-failed", "bender-converse"],
+        capture_output=True, text=True, timeout=15,
+    )
+    rc = subprocess.run(
+        ["sudo", "systemctl", "start", "bender-converse"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if rc.returncode == 0:
+        log.warning("bender-converse started on retry after reset-failed")
+        last_start_failed = False
+        return True
+    log.error("bender-converse still down after reset-failed retry (rc=%s). "
+              "Run: sudo systemctl reset-failed bender-converse && "
+              "sudo systemctl start bender-converse", rc.returncode)
+    last_start_failed = True
+    return False
+
+
+#: True when the most recent lease could not restart bender-converse.
+last_start_failed = False
 
 
 @contextlib.contextmanager

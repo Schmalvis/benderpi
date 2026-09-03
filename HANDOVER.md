@@ -1,5 +1,40 @@
 # BenderPi Handover Context
-Last updated: 2026-07-30
+Last updated: 2026-09-03
+
+---
+
+## 2026-09-03 — Fourth review + batch 1 fixes
+
+Review: `docs/benderpi-fable-project-review-2026-09-03.md` (59 findings, verified;
+five sub-reviews + live device evidence). Batch 1 of its sequencing is implemented
+here, **uncommitted at time of writing** — push deliberately, it auto-deploys.
+Suite: 832 passed (806 + 26 new in `tests/test_batch1_regressions.py`).
+
+| Ref | Fix | Where |
+|---|---|---|
+| C1 | `speak_from_iter()` now sanitises every sentence; an emoji-only or tag-only sentence is skipped. This was the only live LLM→Piper path and it bypassed `f0d215d` entirely | `tts_generate.py` |
+| C2 | Cloud stream yields its final sentence (was never spoken; one-sentence replies were silence) | `ai_response.py` |
+| C3 | Voice alarms are naive local datetimes; `timers` now normalises to aware UTC at the boundary and on load, and `check_fired` skips a malformed entry instead of raising on every main-loop pass | `timers.py` |
+| H2 | `audio._lock` is an `RLock`: `play()` called `open_session()` while holding it and deadlocked whenever the output stream was lost | `audio.py` |
+| H5 | `service_guard._start_converse()` checks the exit code, logs `start-limit-hit`, tries `reset-failed` + one retry, exposes `last_start_failed` | `web/service_guard.py`; new sudoers grant on the device |
+| H6 | Missing `ANTHROPIC_API_KEY` no longer crashes boot; responder routes `local_only` when no cloud responder exists | `wake_converse.py`, `session.py`, `responder.py` |
+| M21 | `classify()` strips trailing `.!?,` — "Okay." was UNKNOWN and cost an LLM turn | `intent.py` |
+| L9 | Hard-timeout clip looked up under `promoted/` where prebuild writes it | `session.py` |
+| L7 | Weather text collapses the double space left by an empty wind line; sanitiser compares whitespace-normalised text so it no longer warns every morning | `briefings.py`, `tts_generate.py` |
+| M12 | `.gitignore`: `.env.*`, `*.bak`, `hailort.log`, `memory/`, `.understand-anything/` | `.gitignore` |
+
+Device-side (done over SSH, not auto-deployed):
+- `.env.bak.20260710170727` moved out of the repo dir to `/home/pi/.env.bak.20260710170727` (mode 600).
+- journald is now persistent: `/etc/systemd/journald.conf.d/50-persistent.conf`. See CLAUDE.md.
+- `/etc/sudoers.d/bender-web-reset-failed` added for H5.
+
+**Deliberately not done:** disabling glances/rpcbind (review L17). `rpcbind` +
+`rpc-statd` are required by the NFSv3 mount of `/home/pi/projects` from the QNAP.
+glances is likely fleet monitoring. Bind glances to 127.0.0.1/tailscale instead.
+
+**Next:** batch 2 (session quality: H7 control tokens, H8 gate phrases, H9 sampling,
+M1 VAD onset, M2 idle timeout, M5 reset-after-with) then one evening of real use,
+capturing wake-word samples in the same sitting.
 
 ---
 

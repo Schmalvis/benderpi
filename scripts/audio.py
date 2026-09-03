@@ -131,7 +131,10 @@ log.debug("Audio config: silence_pre=%.3fs, silence_post=%.3fs", SILENCE_PRE, SI
 # Single shared PyAudio instance — never re-created to avoid PortAudio crashes
 _pa    = pyaudio.PyAudio()
 _stream = None
-_lock  = threading.Lock()
+# RLock, not Lock: play()/play_stream() hold this while calling open_session()
+# on the reopen path, and open_session() takes it again. A plain Lock
+# deadlocked the main thread whenever the output stream was lost mid-session.
+_lock  = threading.RLock()
 _abort = threading.Event()
 
 
