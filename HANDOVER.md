@@ -43,7 +43,14 @@ Batch 2 progress:
   `stt_speech_onset_timeout_s` (6.0), flush only after playback, idle clock starts
   after the reply, monotonic time in the session loop. 14 tests in
   `tests/test_stt_onset.py`. Suite 846. Deploy together with commit 2 (one restart).
-- Commit 2 (H8, M5): pending.
+- **Commit 2 (H8, M5) done, not yet deployed:** `_clean_sentence()` strips wrapping
+  quotes, speaker labels, and stage directions from every streamed sentence before
+  the gate and the log; `HARD_FAIL_PHRASES` gains ten refusal openers; the gate
+  takes `stream=True` (min 3 chars, hedge judged on length only); on a gate failure
+  the stream path leaves the completion first and resets the on-chip context while
+  still holding `_infer_lock`; `_reset_context()` takes the lock non-blocking and
+  defers via `_context_dirty` when a zombie generation holds it. One new system-prompt
+  rule against self-quoting. 35 tests in `tests/test_reply_cleaning.py`. Suite 881.
 - Commit 3 (H7, H9): pending; needs the on-device sampling spike first.
 
 ---

@@ -30,7 +30,18 @@ HEDGE_PHRASES = {
 HARD_FAIL_PHRASES = {
     "as an ai", "language model",
     "i'm not bender", "i am not bender", "i'm an ai", "i'm just a computer",
+    # Assistant-style refusals. Spoken live 2026-08-03: "I'm sorry, but I
+    # can't assist with that. Please provide a different t…" — the list above
+    # had "i can't help" and nothing else that matched.
+    "can't assist", "cannot assist", "i'm sorry, but", "i am sorry, but",
+    "i'm unable to", "i am unable to", "please provide", "as a chatbot",
+    "virtual assistant", "i'm here to help",
 }
+
+# Minimum first-sentence length on the stream path. The non-stream rule (10)
+# rejected "Yeah." and "No way!" — both in character — and every rejection
+# escalates to cloud and wipes the on-chip context.
+_STREAM_MIN_CHARS = 3
 
 # A reply this short that also hedges is almost certainly a non-answer worth
 # escalating; a longer hedged reply is probably Bender being Bender.
@@ -57,6 +68,41 @@ _IM_END = "<|im_end|>"
 # A trailing fragment of a special token ("<|im_", "<|") left in the buffer when
 # generation stops. Without this, a force-flush would speak the fragment aloud.
 _PARTIAL_SPECIAL_RE = re.compile(r'<\|[^>]*$')
+
+# Reply cleaning — applied to every sentence on both stream paths, before the
+# quality gate and before the sentence is yielded (so conversation_log records
+# what was actually spoken). Each pattern is something Qwen said aloud in
+# August 2026 despite the system prompt forbidding it:
+#   "(laughter)"                          — parenthetical stage direction
+#   "(Bender's casual, slightly rude way…" — meta-commentary in parentheses
+#   "\"I'm not going to be the same.\""   — the whole reply wrapped in quotes
+#                                          (the model writing a transcript)
+_STAGE_DIRECTION_RES = (
+    re.compile(r"\((?:laugh|chuckl|giggl|sigh|grin|smirk|pause|snort|bender|robot"
+               r"|beat|shrug|wink|sarcas|mutter|whisper|scoff|groan|burp|clank"
+               r"|in a |with a )[^)]{0,80}\)", re.IGNORECASE),
+    re.compile(r"\[[^\]]{0,40}\]"),          # [laughs], [sighs]
+    re.compile(r"\*[^*\n]{1,40}\*"),         # *laughs* — the prompt bans all emotes
+)
+_SPEAKER_LABEL_RE = re.compile(r"^(?:bender|assistant|robot)\s*:\s*", re.IGNORECASE)
+_WRAPPING_QUOTES = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
+
+
+def _clean_sentence(sentence: str) -> str:
+    """Strip transcript artefacts from one sentence. Returns "" if nothing
+    speakable is left (a bare stage direction) — callers skip such sentences."""
+    s = sentence.strip()
+    s = _SPEAKER_LABEL_RE.sub("", s)
+    for rx in _STAGE_DIRECTION_RES:
+        s = rx.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    for open_q, close_q in _WRAPPING_QUOTES:
+        if len(s) >= 2 and s[0] == open_q and s[-1] == close_q:
+            s = s[1:-1].strip()
+            break
+    if not re.search(r"[A-Za-z0-9]", s):
+        return ""
+    return s
 
 
 def _flush_sentence(buf: str, force: bool) -> tuple[str, str]:
@@ -87,7 +133,7 @@ class QualityCheckFailed(Exception):
         super().__init__(f"Quality check failed: {reason}")
 
 
-def check_response_quality(text: str) -> tuple[bool, str]:
+def check_response_quality(text: str, stream: bool = False) -> tuple[bool, str]:
     """Return (passed, reason). Reason is empty string if passed.
 
     Softened so an in-character hedge ("I don't know, meatbag!") no longer forces
@@ -101,7 +147,8 @@ def check_response_quality(text: str) -> tuple[bool, str]:
     triggers the single-sentence rule.
     """
     stripped = text.strip()
-    if len(stripped) < 10:
+    min_chars = _STREAM_MIN_CHARS if stream else 10
+    if len(stripped) < min_chars:
         return False, "too_short"
     text_lower = stripped.lower()
 
@@ -124,7 +171,13 @@ def check_response_quality(text: str) -> tuple[bool, str]:
     for phrase in HEDGE_PHRASES:
         if phrase in text_lower:
             is_short = len(stripped) < _HEDGE_SHORT_MAX
-            single_sentence = len(_SENT_RE.findall(stripped)) <= 1
+            if stream:
+                # Only sentence 1 is visible here, so "single sentence" was
+                # always true and every in-character hedge escalated. Judge
+                # the stream on length alone.
+                single_sentence = False
+            else:
+                single_sentence = len(_SENT_RE.findall(stripped)) <= 1
             if is_short or single_sentence:
                 return False, "hedge_phrase"
             # Longer, multi-sentence hedged reply — treat as in-character.
@@ -151,6 +204,7 @@ class _HailoLLMResponder:
         # destroyed and reloaded every turn, so every turn was a fresh context.
         self._context_fresh = True
         self._context_turns = 0
+        self._context_dirty = False   # reset requested while a generation was in flight
         # Held for exactly the duration of a self._llm.generate_all() call, from
         # whichever thread issues it. Its lifetime brackets "is the Hailo NPU
         # currently doing LLM inference" independent of caller thread or whether
@@ -229,17 +283,35 @@ class _HailoLLMResponder:
             self._last_failed_at = time.monotonic()
         return self._available
 
-    def _reset_context(self) -> None:
+    def _reset_context(self, *, locked: bool = False) -> None:
         """Wipe the on-chip conversation context so the next prompt may carry a
         system message again. Cheap (no HEF reload) and the only supported way
-        to get back to a fresh context."""
-        if self._llm is not None:
-            try:
-                self._llm.clear_context()
-            except Exception as e:
-                log.warning("Failed to clear Hailo context cache: %s", e)
-        self._context_fresh = True
-        self._context_turns = 0
+        to get back to a fresh context.
+
+        ``locked=True`` means the caller already holds ``_infer_lock`` (the
+        stream path after a quality failure). Otherwise the lock is taken
+        non-blocking: if a zombie generation (a hard-timeout-abandoned thread)
+        is still running on this LLM object, clearing the context under it
+        would corrupt the inference, so the reset is deferred via
+        ``_context_dirty`` and performed by the next ``_build_prompt``.
+        """
+        if not locked:
+            if not self._infer_lock.acquire(blocking=False):
+                log.warning("Hailo context reset deferred: a generation is still in flight")
+                metrics.count("hailo_context_reset_deferred")
+                self._context_dirty = True
+                return
+        try:
+            if self._llm is not None:
+                try:
+                    self._llm.clear_context()
+                except Exception as e:
+                    log.warning("Failed to clear Hailo context cache: %s", e)
+            self._context_fresh, self._context_turns = True, 0
+            self._context_dirty = False
+        finally:
+            if not locked:
+                self._infer_lock.release()
 
     def _build_prompt(self, user_text: str) -> list:
         """Build the message list for one turn under the on-chip-context rules.
@@ -254,6 +326,11 @@ class _HailoLLMResponder:
         recycle the context rather than let it grow without limit inside a very
         long session.
         """
+        if getattr(self, "_context_dirty", False):
+            # A reset was requested (session end / gate failure) while a zombie
+            # generation held the lock. Do it now, before this turn commits.
+            self._reset_context()
+
         limit = int(getattr(cfg, "ai_max_history", 6))
         if limit > 0 and self._context_turns >= limit:
             log.info("Hailo context reached %d turns — recycling", self._context_turns)
@@ -389,6 +466,7 @@ class _HailoLLMResponder:
                 self._context_turns += 1
 
                 done = False
+                failed: tuple[str, str] | None = None
                 for token in gen:
                     if token == _IM_END:
                         done = True
@@ -402,32 +480,45 @@ class _HailoLLMResponder:
                         sentence, buffer = _flush_sentence(buffer, force=done)
                         if not sentence:
                             break
+                        sentence = _clean_sentence(sentence)
+                        if not sentence:
+                            continue  # a bare stage direction: nothing to say
                         if not quality_checked:
                             quality_checked = True
-                            passed, reason = check_response_quality(sentence)
+                            passed, reason = check_response_quality(sentence, stream=True)
                             if not passed:
-                                self._reset_context()
-                                raise QualityCheckFailed(reason, sentence)
+                                # Leave the completion first; the reset happens
+                                # below, after the `with` has closed it.
+                                failed = (reason, sentence)
+                                break
                             metrics._write({
                                 "type": "timer", "name": "ai_hailo_ttfs",
                                 "duration_ms": round((time.monotonic() - started) * 1000, 1),
                             })
                         emitted += 1
                         yield sentence
-                    if done:
+                    if done or failed is not None:
                         break
 
                 # Anything left when the model stopped without a final boundary.
-                sentence, buffer = _flush_sentence(buffer, force=True)
-                if sentence:
-                    if not quality_checked:
-                        quality_checked = True
-                        passed, reason = check_response_quality(sentence)
-                        if not passed:
-                            self._reset_context()
-                            raise QualityCheckFailed(reason, sentence)
-                    emitted += 1
-                    yield sentence
+                if failed is None:
+                    sentence, buffer = _flush_sentence(buffer, force=True)
+                    sentence = _clean_sentence(sentence) if sentence else ""
+                    if sentence:
+                        if not quality_checked:
+                            quality_checked = True
+                            passed, reason = check_response_quality(sentence, stream=True)
+                            if not passed:
+                                failed = (reason, sentence)
+                        if failed is None:
+                            emitted += 1
+                            yield sentence
+
+            # The completion is closed here and we still hold _infer_lock, so
+            # the on-chip reset cannot race a live generation.
+            if failed is not None:
+                self._reset_context(locked=True)
+                raise QualityCheckFailed(*failed)
         finally:
             self._infer_lock_held_since = None
             self._infer_lock.release()
@@ -690,9 +781,12 @@ class _OllamaResponder:
                         sentence, buffer = _flush_sentence(buffer, force=done)
                         if not sentence:
                             break
+                        sentence = _clean_sentence(sentence)
+                        if not sentence:
+                            continue
                         if not quality_checked:
                             quality_checked = True
-                            passed, reason = check_response_quality(sentence)
+                            passed, reason = check_response_quality(sentence, stream=True)
                             if not passed:
                                 raise QualityCheckFailed(reason, sentence)
                         collected.append(sentence)
