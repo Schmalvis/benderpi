@@ -41,4 +41,5 @@ systemd-python>=235  # requires apt: libsystemd-dev pkg-config
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 python-dotenv==1.2.2
+pyusb>=1.2  # scripts/xvf3800.py: REBOOT the reSpeaker XVF3800 over its USB control interface
 requests==2.32.3

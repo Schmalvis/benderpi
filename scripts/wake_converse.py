@@ -68,6 +68,45 @@ def _remove_session_file():
             pass
 
 
+def _recover_corrupt_mic(selftest: dict) -> None:
+    """The XVF3800 came up feeding a corrupt stream (2026-09-08: 91.7% zero
+    samples after the 07:00 cold boot, a kernel buffer overrun per packet, the
+    wake model scoring 0.001 on everything). Nothing in-process could clear it
+    except the array's own REBOOT command (scripts/xvf3800.py), so send that,
+    then measure again. Every outcome is a metric the watchdog turns into an
+    HA card, because the fallback is a human replugging the cable."""
+    zero_frac = float(selftest.get("zero_frac", 0.0))
+    metrics.count("mic_stream_corrupt", stage="startup", zero_frac=zero_frac)
+    log.error("Mic stream is CORRUPT at startup (%.0f%% exact-zero samples): the "
+              "XVF3800 cold-boot fault. The wake word cannot work on this feed.",
+              100.0 * zero_frac)
+    if not getattr(cfg, "xvf3800_reboot_on_corrupt", True):
+        metrics.count("mic_stream_corrupt_persisting", reason="reboot_disabled")
+        log.error("xvf3800_reboot_on_corrupt is off -- unplug and replug the array")
+        return
+    import xvf3800
+    if not xvf3800.reboot():
+        metrics.count("mic_stream_corrupt_persisting", reason="reboot_failed")
+        log.error("XVF3800 REBOOT failed -- unplug and replug the array")
+        return
+    time.sleep(1.0)  # let ALSA/PortAudio see the re-enumerated card
+    try:
+        again = audio.mic_selftest()
+    except Exception as exc:
+        log.warning("Mic self-test after REBOOT raised: %s", exc)
+        again = {}
+    if again.get("corrupt"):
+        metrics.count("mic_stream_corrupt_persisting", reason="still_corrupt",
+                      zero_frac=float(again.get("zero_frac", 0.0)))
+        log.error("Mic stream still corrupt after XVF3800 REBOOT (%.0f%% zeros) -- "
+                  "unplug and replug the array", 100.0 * float(again.get("zero_frac", 0.0)))
+    else:
+        metrics.count("mic_stream_recovered", method="xvf3800_reboot",
+                      zero_frac=float(again.get("zero_frac", 0.0)))
+        log.warning("Mic stream recovered by XVF3800 REBOOT (now %.1f%% zeros)",
+                    100.0 * float(again.get("zero_frac", 0.0)))
+
+
 def _cleanup_abort_files():
     """Remove abort and end-session IPC files."""
     for f in [cfg.end_session_file, cfg.abort_file]:
@@ -167,6 +206,8 @@ def wait_for_wakeword(_oww_model=None):
     # only now — a low rolling RMS just emits one log-only warning.
     std_floor = float(getattr(cfg, "wake_std_floor", 0.0))
     silence_alarm_s = float(getattr(cfg, "wake_silence_alarm_s", 0.0))
+    zero_frac_max = float(getattr(cfg, "mic_zero_frac_max", 0.5))
+    corrupt_alarm_s = float(getattr(cfg, "wake_corrupt_alarm_s", 0.0))
     rms_floor = float(getattr(cfg, "wake_rms_floor", 0.0))
     degraded_warn_s = float(getattr(cfg, "wake_degraded_warn_s", 0.0))
     score_log_interval_s = float(getattr(cfg, "wake_score_log_interval_s", 0.0))
@@ -189,6 +230,8 @@ def wait_for_wakeword(_oww_model=None):
         # stale score/level from before a session or reinit can never trigger.
         recent_hits = deque(maxlen=window)  # 1.0 if frame >= threshold else 0.0
         last_std_ok_ts = time.monotonic()   # last frame whose stddev cleared std_floor
+        last_zero_ok_ts = time.monotonic()  # last frame whose exact-zero fraction was sane
+        window_max_zero = 0.0               # peak exact-zero fraction since last periodic log
         last_rms_ok_ts = time.monotonic()   # last frame whose RMS cleared the advisory floor
         degraded_warned = False             # edge-trigger: warn once per low-RMS episode
         last_score_log_ts = time.monotonic()
@@ -257,6 +300,30 @@ def wait_for_wakeword(_oww_model=None):
                               std_floor, now - last_std_ok_ts)
                     raise RuntimeError("wake loop stalled")
 
+                # Corrupt-stream sentinel: the XVF3800 cold-boot fault delivers
+                # 4 real samples in every 48. Stddev and peak RMS stay healthy
+                # (that is why the sentinel above slept through it for a whole
+                # morning on 2026-09-08); the exact-zero fraction does not.
+                frame_zero = float(np.mean(pcm_np == 0)) if pcm_np.size else 0.0
+                if frame_zero > window_max_zero:
+                    window_max_zero = frame_zero
+                if zero_frac_max <= 0.0 or frame_zero < zero_frac_max:
+                    last_zero_ok_ts = now
+                elif corrupt_alarm_s > 0.0 and now - last_zero_ok_ts > corrupt_alarm_s:
+                    metrics.count("wake_mic_corrupt", corrupt_s=round(now - last_zero_ok_ts, 1),
+                                  zero_frac=round(frame_zero, 3))
+                    log.error("Wake mic stream corrupt: %.0f%% exact-zero samples for %.1fs "
+                              "(XVF3800 fault)", 100.0 * frame_zero, now - last_zero_ok_ts)
+                    if getattr(cfg, "xvf3800_reboot_on_corrupt", True):
+                        # Reset the array first; the stall path below then
+                        # reopens the stream on the re-enumerated device.
+                        try:
+                            import xvf3800
+                            xvf3800.reboot()
+                        except Exception as exc:
+                            log.error("XVF3800 REBOOT raised: %s", exc)
+                    raise RuntimeError("wake loop stalled")
+
                 # Advisory-only: a low rolling RMS with healthy variance is a
                 # quiet room (normal) but can also be gain collapse. Log ONE
                 # warning per low episode (edge-triggered) — never restart.
@@ -294,13 +361,14 @@ def wait_for_wakeword(_oww_model=None):
                 if (score_log_interval_s > 0.0
                         and now - last_score_log_ts >= score_log_interval_s):
                     log.info("Wake idle: peak score %.3f, peak RMS %.0f, peak std "
-                             "%.0f over last %.0fs", window_max_score,
-                             window_max_rms, window_max_std,
+                             "%.0f, peak zero %.0f%% over last %.0fs", window_max_score,
+                             window_max_rms, window_max_std, 100.0 * window_max_zero,
                              now - last_score_log_ts)
                     last_score_log_ts = now
                     window_max_score = 0.0
                     window_max_rms = 0.0
                     window_max_std = 0.0
+                    window_max_zero = 0.0
 
                 # N-of-M temporal smoothing: require multiple recent frames over
                 # threshold before firing, suppressing single-frame spikes.
@@ -378,9 +446,12 @@ def main():
     # every boot trains people to ignore the one signal the 6-day silent-mic
     # incident existed to give them, so it gets a quiet box to measure on.
     try:
-        audio.mic_selftest()
+        selftest = audio.mic_selftest()
     except Exception as exc:
         log.warning("Mic self-test raised unexpectedly: %s — continuing", exc)
+        selftest = {}
+    if selftest.get("corrupt"):
+        _recover_corrupt_mic(selftest)
     # Warm up Piper TTS (pre-loads ONNX model) BEFORE the briefings refresh
     # thread below gets a chance to touch the Piper pool. Order matters: both
     # used to race for the same cold PiperPool on startup, and on an RTC-wake

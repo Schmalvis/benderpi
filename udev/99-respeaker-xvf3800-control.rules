@@ -1,0 +1,11 @@
+# Let the pi user (group plugdev) send vendor control requests to the
+# reSpeaker XVF3800 4-Mic Array. scripts/xvf3800.py sends the array's REBOOT
+# command to recover the cold-boot corrupt capture stream (see CLAUDE.md,
+# Known Issues). Without this the device node is root:root 0664 and the
+# control transfer fails with "Access denied".
+#
+# Applied to BenderPi 2026-09-08. Not part of auto-deploy; to apply:
+#   sudo cp udev/99-respeaker-xvf3800-control.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --attr-match=idVendor=2886 --attr-match=idProduct=001a
+SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", MODE="0660", GROUP="plugdev"

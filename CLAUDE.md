@@ -175,6 +175,9 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `oww_frames_required` | `2` | N-of-M smoothing: consecutive high-score frames required within `oww_window` to confirm a wake trigger (cuts single-frame ghost triggers) |
 | `oww_window` | `4` | Rolling frame window `oww_frames_required` is evaluated over |
 | `wake_std_floor` | `5.0` | Dead-feed sentinel: per-frame input **stddev** below this for `wake_silence_alarm_s` escalates (reinit→restart). Stddev, not RMS, so it catches both a zeros feed AND a mic stuck at constant DC (both ~0 stddev) while a live *quiet room* still varies (~20–40). Replaced an RMS-floor sentinel that mistook quiet rooms for dead mics (2026-07-14 false-positive stall cluster) |
+| `mic_zero_frac_max` | `0.5` | Exact-zero sample fraction at or above this marks the capture stream **corrupt** (startup self-test and the wake loop). The XVF3800 cold-boot fault reads ~0.92; a quiet room reads under 0.01. `0` disables |
+| `wake_corrupt_alarm_s` | `30.0` | Seconds of corrupt frames in the wake loop before it sends the XVF3800 `REBOOT` and escalates through the stall path (`0` disables) |
+| `xvf3800_reboot_on_corrupt` | `true` | Send the array's `REBOOT` control command when the stream is corrupt (startup and runtime). Off = log, count `mic_stream_corrupt_persisting`, and wait for a human to replug |
 | `wake_silence_alarm_s` | `120.0` | Seconds of sub-`wake_std_floor` stddev before the dead-feed sentinel escalates (0 disables) |
 | `wake_rms_floor` | `30.0` | **Advisory only** (no longer escalates): if rolling input RMS stays below this for `wake_degraded_warn_s`, the wake loop logs ONE `wake_mic_degraded` WARNING (possible quiet room or gain collapse) — never restarts. Also the near-silence floor for wake-score diagnostics |
 | `wake_degraded_warn_s` | `600.0` | Seconds of sub-`wake_rms_floor` rolling RMS before the log-only advisory warning fires, edge-triggered once per low episode (0 disables) |
@@ -570,6 +573,13 @@ has `/etc/systemd/journald.conf.d/50-persistent.conf` (`Storage=persistent`,
 `SystemMaxUse=200M`). The drop-in **must sort after `40-`** or the vendor file wins.
 Not part of auto-deploy; re-apply on a fresh Pi.
 
+**udev rules on the Pi** (also not auto-deployed; the repo copies are in `udev/`):
+`99-respeaker-xvf3800-no-autosuspend.rules` (applied 2026-07-16) and
+`99-respeaker-xvf3800-control.rules` (applied 2026-09-08 — gives group `plugdev`
+write access to the array so `scripts/xvf3800.py` can send `REBOOT`). Apply with
+`sudo cp udev/*.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules &&
+sudo udevadm trigger --attr-match=idVendor=2886 --attr-match=idProduct=001a`.
+
 ### Features
 - **Puppet mode** — type text for Bender to speak, soundboard with favourites, volume control
 - **Dashboard** — health, performance metrics, usage stats, watchdog alerts
@@ -663,4 +673,5 @@ sudo systemctl restart bender-converse
 - **Piper output is 22050Hz** — must be resampled before playback; `tts_generate.py` handles this
 - **BBC Nottingham RSS** — `feeds.bbci.co.uk/news/england/nottinghamshire/rss.xml` returns 404; use UK + England feeds instead
 - **BBC RSS CDATA** — `xml.etree.ElementTree` can't parse BBC's CDATA titles; use regex extraction
+- **reSpeaker XVF3800 cold-boot corruption (2026-09-08)** — when the Pi cold boots with the array already plugged in (every 07:00 boot), the capture stream can come up corrupt: one `xhci-hcd: WARN: buffer overrun event for slot 1 ep 2` per USB packet, and PCM that is 91.7% exact zeros in a fixed 48-sample pattern (4 real samples, 44 zeros). Peak RMS and stddev still look alive because 1 sample in 12 is real, so the dead-feed sentinel slept through it and the wake model scored 0.001 on everything all morning. A service restart, a USB unbind/rebind and a sysfs port `disable`/enable all left it corrupt (Pi 5 cannot cut VBUS per port — all four ports are ganged, and the root disk is on USB). **Two things clear it:** replugging the cable, and the array's own `REBOOT` command over its vendor control interface (`scripts/xvf3800.py`, the protocol from respeaker's `xvf_host.py`; Seeed support's fix for the same fault after warm reboots). Verified on-device: off the bus at 0.25s, back and clean at 1.0s. **Now automatic:** `audio.mic_selftest()` measures the exact-zero fraction (`mic_zero_frac_max`, 0.5; a quiet room reads <1%), `wake_converse` sends `REBOOT` and re-measures at startup (`_recover_corrupt_mic`, metrics `mic_stream_corrupt` → `mic_stream_recovered` / `mic_stream_corrupt_persisting`), the wake loop has a matching runtime sentinel (`wake_corrupt_alarm_s`, 30s → `wake_mic_corrupt` → REBOOT → stall escalation), and `watchdog.py` raises an HA card (`mic_stream_corrupt`: warning if recovered, **error "unplug and replug"** if persisting). Needs `pyusb` (requirements) and `udev/99-respeaker-xvf3800-control.rules` on the Pi (applied 2026-09-08; not auto-deployed). Diagnose by hand with `scripts/wake_score.py --synthetic` (model OK ⇒ ~0.97) then `--record 20` (0.001 scores with audible levels ⇒ corrupt feed), or `arecord -D mic_shared` + zero%. Whether `REBOOT` clears the *cold-boot* state (not just a warm one) is proven only by the next corrupt morning — check `journalctl -u bender-converse -b | grep -i corrupt`
 - **openWakeWord model** — committed default is `models/hey_bender_v0.1.onnx` (the trained "hey bender" model), gitignored like all `models/*`. Fresh clone / fresh Pi: run `bash scripts/deploy_hey_bender.sh` to download it from `Schmalvis/hey-bender-oww` on HF Hub. The wake loop fails loudly (logs an error and exits non-zero) at startup if the configured `oww_model_path` file is missing — it will never silently fall back to a bundled openWakeWord model. Training/retraining: `scripts/train_hey_bender.py` (see `docs/superpowers/plans/2026-06-12-hey-bender-wake-word.md`)

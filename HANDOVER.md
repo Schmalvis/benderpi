@@ -51,7 +51,29 @@ RMS 1229) was discarded by the `whisper_hallucinations` blocklist.
 - Tests: +4 `test_stt_onset.py`, +2 `test_intent.py`, +15 `test_reply_cleaning.py`,
   +3 `test_decode_control.py`.
 
-**Next:** deploy commit 4; group 6 of the script when a second person is around;
+**Commit 5 — corrupt mic stream: detect, auto-recover, alert.** Software
+recovery exists after all: the array's own `REBOOT` command over its USB vendor
+control interface (`scripts/xvf3800.py`; protocol from respeaker's
+`python_control/xvf_host.py`; Seeed support's fix for the same firmware fault
+after warm reboots). Verified on-device 2026-09-08 13:41: off the bus at 0.25s,
+back at 1.0s, stream clean. Pi 5 cannot cut USB VBUS per port (all ports ganged,
+root disk on USB), so this is the only hands-free reset.
+- `audio.mic_selftest()` reports `zero_frac` / `corrupt` (`mic_zero_frac_max` 0.5).
+- `wake_converse._recover_corrupt_mic()`: REBOOT, wait, re-measure; metrics
+  `mic_stream_corrupt` → `mic_stream_recovered` or `mic_stream_corrupt_persisting`.
+- Wake loop: exact-zero-fraction sentinel (`wake_corrupt_alarm_s` 30s) → REBOOT →
+  stall escalation. Also logs `peak zero N%` on the per-minute idle line.
+- `watchdog.py`: `mic_stream_corrupt` alert — warning when recovered, error
+  "unplug and replug" when persisting.
+- Device: `udev/99-respeaker-xvf3800-control.rules` applied (plugdev write access);
+  `pyusb` added to requirements (the deploy installs it; the device already had it
+  in pi's user site-packages).
+- **Unproven until the next corrupt morning:** that REBOOT clears the *cold-boot*
+  state. Check `journalctl -u bender-converse -b | grep -i corrupt` after 07:00.
+- Tests: `tests/test_xvf3800.py` (5), +3 `test_mic_selftest.py`, +3
+  `test_watchdog.py`, +3 `test_wake_loop_heartbeat.py`. Suite 937.
+
+**Next:** deploy commits 4 and 5; group 6 of the script when a second person is around;
 `capture_wake_samples.py` (still zero samples — recall is now the dominant failure:
 the user "had to repeat a lot"); the mic zero-fraction self-test; then batch 3.
 

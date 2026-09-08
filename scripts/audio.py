@@ -410,7 +410,9 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
     capture_channels = 2 if "xvf_dsnoop" in device_name else 1
 
     result = {"ok": False, "reason": "unknown", "frames": 0,
-              "elapsed_s": 0.0, "max_rms": 0.0, "slow": False}
+              "elapsed_s": 0.0, "max_rms": 0.0, "slow": False,
+              "zero_frac": 0.0, "corrupt": False}
+    zero_frac_max = float(getattr(cfg, "mic_zero_frac_max", 0.5))
     stream = None
     reader = None
     try:
@@ -425,6 +427,8 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
         t0 = _time.monotonic()
         max_rms = 0.0
         read_ok = 0
+        zero_samples = 0
+        total_samples = 0
         for _ in range(want_frames):
             data = reader.read(read_timeout_s)
             if not data:
@@ -435,14 +439,23 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
                 samples = samples[::2]
             if len(samples):
                 max_rms = max(max_rms, float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))))
+                zero_samples += int(np.count_nonzero(samples == 0))
+                total_samples += len(samples)
         elapsed = _time.monotonic() - t0
+        zero_frac = (zero_samples / total_samples) if total_samples else 0.0
         result.update(frames=read_ok, elapsed_s=round(elapsed, 3),
-                      max_rms=round(max_rms, 1))
+                      max_rms=round(max_rms, 1), zero_frac=round(zero_frac, 3))
 
         if read_ok == 0:
             result["reason"] = "no frames read"
         elif max_rms <= 0.0:
             result["reason"] = "all-zero frames (mic silent / disconnected?)"
+        elif zero_frac_max > 0.0 and zero_frac >= zero_frac_max:
+            # The XVF3800 cold-boot fault: 4 real samples in every 48. Peak RMS
+            # and stddev still look alive, so only the zero fraction sees it.
+            result["corrupt"] = True
+            result["reason"] = (f"corrupt stream ({zero_frac:.0%} exact-zero samples, "
+                                f"limit {zero_frac_max:.0%}) -- XVF3800 cold-boot fault")
         elif elapsed > 3.0 * duration_s:
             # Every frame arrived AND carried real signal, so the mic path is
             # demonstrably working. Elapsed time here measures how fast *this
@@ -475,7 +488,8 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
 
     metrics.count("mic_selftest", ok=result["ok"], reason=result["reason"],
                   frames=result["frames"], max_rms=result["max_rms"],
-                  slow=result.get("slow", False))
+                  slow=result.get("slow", False), zero_frac=result["zero_frac"],
+                  corrupt=result["corrupt"])
     if result["ok"] and result.get("slow"):
         log.warning("Mic self-test OK but slow: %d frames in %.2fs, max_rms=%.0f "
                     "— every frame arrived with signal, so the mic path is fine; "
@@ -483,9 +497,9 @@ def mic_selftest(duration_s: float = 1.0) -> dict:
                     result["frames"], result["elapsed_s"], result["max_rms"],
                     device_name or "default")
     elif result["ok"]:
-        log.info("Mic self-test OK: %d frames in %.2fs, max_rms=%.0f (mic: %s)",
+        log.info("Mic self-test OK: %d frames in %.2fs, max_rms=%.0f, zero=%.1f%% (mic: %s)",
                  result["frames"], result["elapsed_s"], result["max_rms"],
-                 device_name or "default")
+                 100.0 * result["zero_frac"], device_name or "default")
     else:
         log.warning("Mic self-test FAILED (%s) — continuing anyway, mic may recover "
                     "(mic: %s, frames=%d, max_rms=%.0f)",

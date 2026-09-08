@@ -228,6 +228,15 @@ class Config:
     #   quiet rooms (ambient RMS ~20-40) for dead mics and reinit-looped —
     #   see the 2026-07-14 false-positive stall cluster.
     wake_std_floor: float = 5.0         # per-frame input stddev below this = dead/stuck feed
+    #   Corrupt-stream sentinel (2026-09-08): the XVF3800 can come up after a
+    #   cold boot feeding 91.7% exact-zero samples (4 real samples in every 48)
+    #   with a kernel xhci "buffer overrun" per packet. The 1-in-12 real samples
+    #   keep stddev and peak RMS healthy-looking, so the dead-feed sentinel
+    #   never fires. Measure the exact-zero fraction instead: a quiet room reads
+    #   under 1%, the fault reads ~92%. Same threshold for the startup self-test.
+    mic_zero_frac_max: float = 0.5      # exact-zero sample fraction at/above this = corrupt stream
+    wake_corrupt_alarm_s: float = 30.0  # seconds of corrupt frames before escalating (0 disables)
+    xvf3800_reboot_on_corrupt: bool = True  # send the array's REBOOT command before escalating
     wake_silence_alarm_s: float = 120.0 # seconds below std floor before escalating (0 disables)
     #   wake_rms_floor is now advisory only: if the rolling input RMS sits below
     #   it for wake_degraded_warn_s the loop logs ONE warning (possible quiet

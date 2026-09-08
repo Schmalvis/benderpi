@@ -330,6 +330,34 @@ def run_checks(metrics_path: str = None, config: dict = None, events: list[dict]
                 data={"exits": len(stall_exits), "threshold": threshold},
             ))
 
+    # Corrupt capture stream (XVF3800 cold-boot fault, 2026-09-08): the
+    # self-test or the wake loop saw a mostly-zero feed. The service tries the
+    # array's REBOOT command itself; "persisting" means that did not work and a
+    # human has to replug the cable -- the one case that must reach HA.
+    corrupt = [e for e in mic_stall_events if e.get("type") == "count"
+               and e.get("name") in ("mic_stream_corrupt", "wake_mic_corrupt")]
+    persisting = [e for e in mic_stall_events if e.get("type") == "count"
+                  and e.get("name") == "mic_stream_corrupt_persisting"]
+    recovered = [e for e in mic_stall_events if e.get("type") == "count"
+                 and e.get("name") == "mic_stream_recovered"]
+    if persisting:
+        alerts.append(Alert(
+            severity="error", check="mic_stream_corrupt",
+            message=f"Mic stream corrupt and the XVF3800 REBOOT did not clear it "
+                    f"({len(persisting)}x in the last {mic_stall_lookback}h) — unplug and "
+                    f"replug the mic array",
+            data={"persisting": len(persisting), "corrupt": len(corrupt),
+                  "recovered": len(recovered)},
+        ))
+    elif corrupt:
+        alerts.append(Alert(
+            severity="warning", check="mic_stream_corrupt",
+            message=f"Mic stream came up corrupt {len(corrupt)}x in the last "
+                    f"{mic_stall_lookback}h; the XVF3800 REBOOT recovered it "
+                    f"{len(recovered)}x (cold-boot fault, see CLAUDE.md)",
+            data={"corrupt": len(corrupt), "recovered": len(recovered)},
+        ))
+
     # Hailo LLM lock stuck — release_chip() skipped its VDevice release N+
     # consecutive times because a generate_all() was still in flight. A zombie
     # inference has wedged the NPU and stranded the shared device; STT on the

@@ -144,3 +144,39 @@ class TestStartupOrdering:
         i_warm = src.index("name=\"stt-warmup\"")
         assert i_selftest < i_warm, (
             "mic_selftest() must run before the model warm-up thread starts")
+
+
+class TestCorruptStream:
+    """2026-09-08: after the 07:00 cold boot the XVF3800 fed 4 real samples in
+    every 48 (91.7% exact zeros). max_rms and stddev looked alive, so only an
+    exact-zero fraction can see it."""
+
+    @staticmethod
+    def _corrupt_frame(n: int = 480) -> bytes:
+        samples = np.zeros(n, dtype=np.int16)
+        for i in range(n):
+            if i % 48 in (33, 34, 36, 37):
+                samples[i] = 300
+        return samples.tobytes()
+
+    def test_corrupt_pattern_fails_with_zero_fraction(self, monkeypatch):
+        _install_fake_mic(monkeypatch, frames=[self._corrupt_frame()] * 3)
+        monkeypatch.setattr(audio.cfg, "mic_zero_frac_max", 0.5, raising=False)
+        r = audio.mic_selftest(duration_s=0.09)
+        assert r["ok"] is False
+        assert r["corrupt"] is True
+        assert abs(r["zero_frac"] - 44 / 48) < 0.01
+        assert "corrupt stream" in r["reason"]
+
+    def test_healthy_frames_are_not_corrupt(self, monkeypatch):
+        _install_fake_mic(monkeypatch, frames=[_frame()] * 3)
+        r = audio.mic_selftest(duration_s=0.09)
+        assert r["ok"] is True
+        assert r["corrupt"] is False
+        assert r["zero_frac"] < 0.5
+
+    def test_threshold_zero_disables_the_check(self, monkeypatch):
+        _install_fake_mic(monkeypatch, frames=[self._corrupt_frame()] * 3)
+        monkeypatch.setattr(audio.cfg, "mic_zero_frac_max", 0.0, raising=False)
+        r = audio.mic_selftest(duration_s=0.09)
+        assert r["corrupt"] is False

@@ -229,3 +229,43 @@ class TestServiceActive:
         # On a box without the unit installed the probe has no opinion, so this
         # asserts wiring + no false positive rather than a specific verdict.
         assert not [a for a in alerts if a.check == "service_inactive"]
+
+
+def test_mic_stream_corrupt_recovered_is_a_warning(tmp_path):
+    from watchdog import run_checks
+    from datetime import datetime, timezone
+    now_ts = datetime.now(timezone.utc).isoformat()
+    events = [
+        {"ts": now_ts, "type": "count", "name": "mic_stream_corrupt", "stage": "startup"},
+        {"ts": now_ts, "type": "count", "name": "mic_stream_recovered", "method": "xvf3800_reboot"},
+    ]
+    alerts = run_checks(metrics_path=_write_metrics(tmp_path, events),
+                        config={"lookback_hours": 168, "mic_stall_lookback_hours": 24})
+    a = [x for x in alerts if x.check == "mic_stream_corrupt"]
+    assert len(a) == 1 and a[0].severity == "warning"
+    assert "recovered it 1x" in a[0].message
+
+
+def test_mic_stream_corrupt_persisting_is_an_error_asking_for_a_replug(tmp_path):
+    from watchdog import run_checks
+    from datetime import datetime, timezone
+    now_ts = datetime.now(timezone.utc).isoformat()
+    events = [
+        {"ts": now_ts, "type": "count", "name": "mic_stream_corrupt", "stage": "startup"},
+        {"ts": now_ts, "type": "count", "name": "mic_stream_corrupt_persisting", "reason": "still_corrupt"},
+    ]
+    alerts = run_checks(metrics_path=_write_metrics(tmp_path, events),
+                        config={"lookback_hours": 168, "mic_stall_lookback_hours": 24})
+    a = [x for x in alerts if x.check == "mic_stream_corrupt"]
+    assert len(a) == 1 and a[0].severity == "error"
+    assert "replug" in a[0].message
+
+
+def test_old_corrupt_events_do_not_alert(tmp_path):
+    from watchdog import run_checks
+    from datetime import datetime, timezone, timedelta
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    events = [{"ts": old_ts, "type": "count", "name": "mic_stream_corrupt_persisting"}]
+    alerts = run_checks(metrics_path=_write_metrics(tmp_path, events),
+                        config={"lookback_hours": 168, "mic_stall_lookback_hours": 24})
+    assert not [x for x in alerts if x.check == "mic_stream_corrupt"]

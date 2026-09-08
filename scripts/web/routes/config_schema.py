@@ -150,6 +150,9 @@ class BenderConfigUpdate(BaseModel):
     oww_frames_required: int | None = None
     oww_window: int | None = None
     wake_std_floor: float | None = None
+    mic_zero_frac_max: float | None = None
+    wake_corrupt_alarm_s: float | None = None
+    xvf3800_reboot_on_corrupt: bool | None = None
     wake_rms_floor: float | None = None
     wake_silence_alarm_s: float | None = None
     wake_degraded_warn_s: float | None = None

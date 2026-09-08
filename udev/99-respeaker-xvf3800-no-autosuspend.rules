@@ -1,0 +1,26 @@
+# Disable USB autosuspend for the Seeed reSpeaker XVF3800 4-Mic Array.
+#
+# Drafted 2026-07-15 as an untested mitigation candidate for the recurring
+# mic-stall / wake-loop-wedge issue (wake_loop_stall_reinit / _exit events,
+# handled today by scripts/watchdog.py + systemd auto-restart of
+# bender-converse.service). See memory/mic_stall_autosuspend_investigation.md
+# for the investigation notes. NOT YET APPLIED to any device.
+#
+# Matches by USB vendor:product ID (2886:001a) rather than bus/port path,
+# since the bus-topology name (e.g. "3-1") is not stable across reboots or
+# if the device is plugged into a different port.
+#
+# To apply on BenderPi:
+#   sudo cp udev/99-respeaker-xvf3800-no-autosuspend.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger -v --attr-match=idVendor=2886 --attr-match=idProduct=001a
+#
+# To verify:
+#   cat /sys/bus/usb/devices/3-1/power/control     # expect: on
+#   cat /sys/bus/usb/devices/3-1/power/autosuspend # informational only once control=on
+#
+# To roll back:
+#   sudo rm /etc/udev/rules.d/99-respeaker-xvf3800-no-autosuspend.rules
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", TEST=="power/control", ATTR{power/control}="on"

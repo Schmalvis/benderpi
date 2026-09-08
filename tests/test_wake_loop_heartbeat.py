@@ -200,3 +200,101 @@ def test_wake_loop_exits_on_wedged_read(monkeypatch):
     fake_model = types.SimpleNamespace(predict=lambda *a, **k: {"hey": 0.0})
     with pytest.raises(SystemExit):
         wake_converse.wait_for_wakeword(_oww_model=fake_model)
+
+
+class CorruptStream:
+    """The XVF3800 cold-boot fault: 4 real samples in every 48, forever."""
+
+    def __init__(self):
+        import numpy as np
+        self._np = np
+
+    def read(self, n, exception_on_overflow=False):
+        np = self._np
+        s = np.zeros(n, dtype=np.int16)
+        idx = np.array([i for i in range(n) if i % 48 in (33, 34, 36, 37)])
+        s[idx] = 300
+        time.sleep(0.005)
+        return s.tobytes()
+
+    def stop_stream(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_corrupt_stream_sends_xvf3800_reboot_then_escalates(monkeypatch):
+    """A mostly-zero feed keeps stddev and peak RMS alive (the dead-feed
+    sentinel slept through a whole morning of it on 2026-09-08). The zero
+    fraction sentinel must fire, send the array's REBOOT, and escalate."""
+    fake_audio, fake_cfg, fake_pa_instance = _patch_all_deps(monkeypatch)
+    fake_pa_instance.open = lambda **kw: CorruptStream()
+    fake_cfg.mic_read_timeout_s = 1.0
+    fake_audio.rms = _real_audio.rms          # the loop's advisory RMS check runs first
+    fake_cfg.wake_std_floor = 0.0          # the std sentinel would not fire anyway
+    fake_cfg.wake_silence_alarm_s = 0.0
+    fake_cfg.mic_zero_frac_max = 0.5
+    fake_cfg.wake_corrupt_alarm_s = 0.05
+    fake_cfg.xvf3800_reboot_on_corrupt = True
+    reboots = []
+    monkeypatch.setitem(sys.modules, "xvf3800",
+                        _make_fake_module("xvf3800", reboot=lambda: reboots.append(1) or True))
+
+    sys.modules.pop("wake_converse", None)
+    import wake_converse
+    monkeypatch.setattr(wake_converse, "cfg", fake_cfg, raising=False)
+    monkeypatch.setattr(wake_converse, "audio", fake_audio, raising=False)
+    counts = []
+    monkeypatch.setattr(wake_converse, "metrics",
+        types.SimpleNamespace(count=lambda name, **kw: counts.append(name),
+                              _write=lambda *a, **kw: None),
+        raising=False)
+    monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "fake-key-for-testing")
+
+    fake_model = types.SimpleNamespace(predict=lambda *a, **k: {"hey": 0.0})
+    with pytest.raises(SystemExit):
+        wake_converse.wait_for_wakeword(_oww_model=fake_model)
+    assert reboots, "REBOOT must be attempted before escalating"
+    assert "wake_mic_corrupt" in counts
+
+
+def test_startup_recovery_reboots_and_remeasures(monkeypatch):
+    fake_audio, fake_cfg, _ = _patch_all_deps(monkeypatch)
+    fake_cfg.xvf3800_reboot_on_corrupt = True
+    results = [{"ok": True, "corrupt": False, "zero_frac": 0.006}]
+    fake_audio.mic_selftest = lambda *a, **k: results.pop(0)
+    monkeypatch.setitem(sys.modules, "xvf3800",
+                        _make_fake_module("xvf3800", reboot=lambda: True))
+    sys.modules.pop("wake_converse", None)
+    import wake_converse
+    monkeypatch.setattr(wake_converse, "cfg", fake_cfg, raising=False)
+    monkeypatch.setattr(wake_converse, "audio", fake_audio, raising=False)
+    monkeypatch.setattr(wake_converse.time, "sleep", lambda s: None)
+    counts = []
+    monkeypatch.setattr(wake_converse, "metrics",
+        types.SimpleNamespace(count=lambda name, **kw: counts.append((name, kw)),
+                              _write=lambda *a, **kw: None), raising=False)
+    wake_converse._recover_corrupt_mic({"corrupt": True, "zero_frac": 0.917})
+    names = [n for n, _ in counts]
+    assert names == ["mic_stream_corrupt", "mic_stream_recovered"]
+
+
+def test_startup_recovery_reports_persisting_when_reboot_does_not_help(monkeypatch):
+    fake_audio, fake_cfg, _ = _patch_all_deps(monkeypatch)
+    fake_cfg.xvf3800_reboot_on_corrupt = True
+    fake_audio.mic_selftest = lambda *a, **k: {"ok": False, "corrupt": True, "zero_frac": 0.917}
+    monkeypatch.setitem(sys.modules, "xvf3800",
+                        _make_fake_module("xvf3800", reboot=lambda: True))
+    sys.modules.pop("wake_converse", None)
+    import wake_converse
+    monkeypatch.setattr(wake_converse, "cfg", fake_cfg, raising=False)
+    monkeypatch.setattr(wake_converse, "audio", fake_audio, raising=False)
+    monkeypatch.setattr(wake_converse.time, "sleep", lambda s: None)
+    counts = []
+    monkeypatch.setattr(wake_converse, "metrics",
+        types.SimpleNamespace(count=lambda name, **kw: counts.append((name, kw)),
+                              _write=lambda *a, **kw: None), raising=False)
+    wake_converse._recover_corrupt_mic({"corrupt": True, "zero_frac": 0.917})
+    assert [n for n, _ in counts] == ["mic_stream_corrupt", "mic_stream_corrupt_persisting"]
+    assert counts[1][1]["reason"] == "still_corrupt"
