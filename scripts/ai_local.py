@@ -29,6 +29,8 @@ HEDGE_PHRASES = {
 # Hard fails: an assistant breaking character as an AI/LLM is never acceptable,
 # regardless of length. These always escalate to cloud.
 HARD_FAIL_PHRASES = {
+    # Live 2026-09-08: "...from the TV show Futurama. How can I help you today?"
+    "how can i help", "tv show",
     "as an ai", "language model",
     "i'm not bender", "i am not bender", "i'm an ai", "i'm just a computer",
     # Assistant-style refusals. Spoken live 2026-08-03: "I'm sorry, but I
@@ -87,6 +89,21 @@ _STAGE_DIRECTION_RES = (
 )
 _SPEAKER_LABEL_RE = re.compile(r"^(?:bender|assistant|robot)\s*:\s*", re.IGNORECASE)
 _WRAPPING_QUOTES = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
+_DOUBLE_QUOTES = '"“”'
+
+# Formatting the prompt forbids and the synthesiser cannot speak: markdown
+# headings, rules, bold and bullets, and JSON-ish tool payloads. Live
+# 2026-09-08: "--- ### RANSOM NOTE FOR ..." (23s of it spoken) and
+# "[{'type': 'text', 'text': 'Let's go swimming then.'" after an emoji. A
+# sentence matching this is a derail: drop it, stop decoding, clear context.
+_FORMAT_BREAK_RE = re.compile(
+    r"(?:^|\s)#{1,6}\s"                 # markdown heading
+    r"|(?:^|\s)-{3,}(?:\s|$)"           # horizontal rule
+    r"|\*\*|\* \*"                      # bold / stray emphasis pairs
+    r"|^[-*•]\s+\S"                     # bullet at sentence start
+    r"|\[\{|\{\s*['\"]type['\"]|['\"]text['\"]\s*:"  # tool/JSON payload
+)
+_EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
 
 
 def _clean_sentence(sentence: str) -> str:
@@ -96,11 +113,21 @@ def _clean_sentence(sentence: str) -> str:
     s = _SPEAKER_LABEL_RE.sub("", s)
     for rx in _STAGE_DIRECTION_RES:
         s = rx.sub(" ", s)
+    s = _EMOJI_RE.sub(" ", s)
     s = re.sub(r"\s+", " ", s).strip()
     for open_q, close_q in _WRAPPING_QUOTES:
         if len(s) >= 2 and s[0] == open_q and s[-1] == close_q:
             s = s[1:-1].strip()
             break
+    else:
+        # A quote wrapping several sentences puts the opening mark on
+        # sentence 1 and the closing mark on the last (live 2026-09-08:
+        # '"And don't ever call me Banda. I'm Bender. Just Bender."').
+        # Strip a double quote that has no partner in this sentence.
+        if s and s[0] in _DOUBLE_QUOTES and sum(s.count(q) for q in _DOUBLE_QUOTES) == 1:
+            s = s[1:].strip()
+        elif s and s[-1] in _DOUBLE_QUOTES and sum(s.count(q) for q in _DOUBLE_QUOTES) == 1:
+            s = s[:-1].strip()
     if not re.search(r"[A-Za-z0-9]", s):
         return ""
     return s
@@ -204,6 +231,8 @@ def check_response_quality(text: str, stream: bool = False) -> tuple[bool, str]:
     for marker in _CONTROL_TOKEN_MARKERS:
         if marker in text_lower:
             return False, "control_tokens"
+    if _FORMAT_BREAK_RE.search(stripped):
+        return False, "format_break"
 
     # Hard fails — always escalate.
     for phrase in HARD_FAIL_PHRASES:
@@ -508,6 +537,7 @@ class _HailoLLMResponder:
                 failed: tuple[str, str] | None = None
                 ended_clean = False          # saw <|im_end|>: the model finished
                 derailed: str | None = None  # template output after the reply
+                derail_reason = "control_tokens"
                 capped = False               # stopped at ai_max_sentences
                 max_sentences = int(getattr(cfg, "ai_max_sentences", 3))
                 for token in gen:
@@ -539,6 +569,13 @@ class _HailoLLMResponder:
                             # Derail detected on a later sentence, not just
                             # sentence 1 (which the gate below already covers).
                             derailed = sentence
+                            done = True
+                            break
+                        if _FORMAT_BREAK_RE.search(sentence):
+                            # Markdown or a JSON payload on any sentence: the
+                            # model has stopped talking and started typing.
+                            derailed = sentence
+                            derail_reason = "format_break"
                             done = True
                             break
                         sentence = _clean_sentence(sentence)
@@ -582,6 +619,12 @@ class _HailoLLMResponder:
                         log.info("Dropped unfinished tail after %d sentence(s): %r",
                                  emitted, sentence[:120])
                         sentence = ""
+                    if sentence:
+                        low = sentence.lower()
+                        if any(m in low for m in _CONTROL_TOKEN_MARKERS):
+                            derailed, derail_reason, sentence = sentence, "control_tokens", ""
+                        elif _FORMAT_BREAK_RE.search(sentence):
+                            derailed, derail_reason, sentence = sentence, "format_break", ""
                     sentence = _clean_sentence(sentence) if sentence else ""
                     if sentence:
                         if not quality_checked:
@@ -603,7 +646,7 @@ class _HailoLLMResponder:
                 log.warning("Hailo LLM derailed into template output after %d "
                             "sentence(s): %r", emitted, derailed[:120])
                 if failed is None and emitted == 0:
-                    failed = ("control_tokens", derailed)
+                    failed = (derail_reason, derailed)
             if derailed is not None or failed is not None:
                 self._reset_context(locked=True)
             if failed is not None:

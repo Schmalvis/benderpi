@@ -181,3 +181,52 @@ class TestDeferredReset:
         r.clear_history()
         assert llm.cleared == 1
         assert r._context_dirty is False
+
+
+# ---------------------------------------------------------------------------
+# Evening of use, 2026-09-08
+# ---------------------------------------------------------------------------
+
+class TestEveningOfUse:
+    @pytest.mark.parametrize("raw,expected", [
+        # a quote wrapping three sentences: opening mark on sentence 1 ...
+        ("\"And don't ever call me Banda.", "And don't ever call me Banda."),
+        # ... closing mark on the last
+        ("Just Bender.\"", "Just Bender."),
+        ("“I'm Bender.", "I'm Bender."),
+        # emoji are silent junk to the synthesiser
+        ("Not really, just trying to find something fun. 😅", "Not really, just trying to find something fun."),
+        # apostrophes are not quotes
+        ("Bender's the greatest.", "Bender's the greatest."),
+    ])
+    def test_unbalanced_quotes_and_emoji(self, raw, expected):
+        assert _clean_sentence(raw) == expected
+
+    def test_inner_quote_pair_is_still_untouched(self):
+        assert _clean_sentence('I said "no" and I meant it.') == 'I said "no" and I meant it.'
+
+    @pytest.mark.parametrize("text", [
+        "Sure, here’s my usual approach to writing a ransom note: --- ### RANSOM NOTE FOR THE UNEXPECTEDLY EXPERTS.",
+        "**Bender** says no.",
+        "- First, steal the money.",
+        "[{'type': 'text', 'text': 'Let’s go swimming then.'",
+        "Here you go: {\"type\": \"text\"}",
+    ])
+    def test_markdown_and_payloads_are_format_breaks(self, text):
+        assert check_response_quality(text, stream=True) == (False, "format_break")
+
+    @pytest.mark.parametrize("text", [
+        "Bender - the greatest robot - says no.",
+        "I have 3 things to say, meatbag.",
+        "Twenty-two beers, minus one.",
+        "Why? Because I said so.",
+    ])
+    def test_ordinary_punctuation_is_not_a_format_break(self, text):
+        assert check_response_quality(text, stream=True) == (True, "")
+
+    @pytest.mark.parametrize("text", [
+        "I am Bender Bending Rodriguez from the TV show Futurama.",
+        "How can I help you today?",
+    ])
+    def test_fourth_wall_and_helpdesk_lines_hard_fail(self, text):
+        assert check_response_quality(text, stream=True) == (False, "hard_fail")

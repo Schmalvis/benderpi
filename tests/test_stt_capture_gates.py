@@ -154,6 +154,7 @@ class TestRecordUtteranceStats:
         monkeypatch.setattr(stt.cfg, "post_play_flush_ms", 0, raising=False)
         monkeypatch.setattr(stt.cfg, "silence_frames", 5, raising=False)
         monkeypatch.setattr(stt.cfg, "max_record_seconds", 30, raising=False)
+        monkeypatch.setattr(stt.cfg, "stt_vad_warmup_frames", 0, raising=False)
 
         pcm, reason, cap = stt._record_utterance()
         assert reason == "silence"

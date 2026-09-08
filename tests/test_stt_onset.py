@@ -78,6 +78,7 @@ def rig(monkeypatch):
     monkeypatch.setattr(stt.cfg, "silence_frames", 5, raising=False)
     monkeypatch.setattr(stt.cfg, "max_record_seconds", 15, raising=False)
     monkeypatch.setattr(stt.cfg, "stt_onset_frames", 3, raising=False)
+    monkeypatch.setattr(stt.cfg, "stt_vad_warmup_frames", 0, raising=False)
     monkeypatch.setattr(stt.cfg, "stt_speech_onset_timeout_s", 6.0, raising=False)
 
     def run(frames, flush=True, **cfg_over):
@@ -202,3 +203,35 @@ class TestWakeLoopWiring:
         assert "listen_and_transcribe(after_playback=played_since_capture)" in src
         assert src.count("played_since_capture = True") == 2   # session start + after a turn
         assert "played_since_capture = False" in src
+
+
+class TestVadWarmup:
+    """A fresh webrtcvad instance flags its first 3-5 frames as speech on
+    quiet-room audio (reproduced offline 2026-09-08, all three modes). Live:
+    one rejected 120-150ms capture every 0.97s, ten in a row. The first
+    stt_vad_warmup_frames frames go through the VAD and are ignored."""
+
+    def test_startup_burst_does_not_start_capture(self, rig):
+        # exactly the live artefact: 5 "voiced" frames, then a quiet room
+        pcm, reason, cap, _ = rig([VOICED] * 5 + [SILENT] * 40, flush=False,
+                                  stt_vad_warmup_frames=5)
+        assert reason == "no_speech"
+        assert cap["voiced_ms"] == 0
+
+    def test_speech_after_warmup_is_captured(self, rig):
+        frames = [VOICED] * 5 + [SILENT] * 3 + [VOICED] * 6 + [SILENT] * 10
+        pcm, reason, cap, _ = rig(frames, flush=False, stt_vad_warmup_frames=5)
+        assert reason == "silence"
+        assert cap["voiced_ms"] == 6 * stt.FRAME_MS
+
+    def test_speech_already_running_loses_only_the_warmup_frames(self, rig):
+        pcm, reason, cap, _ = rig([VOICED] * 12 + [SILENT] * 10, flush=False,
+                                  stt_vad_warmup_frames=5)
+        assert reason == "silence"
+        assert cap["voiced_ms"] == 7 * stt.FRAME_MS
+
+    def test_warmup_zero_disables(self, rig):
+        pcm, reason, cap, _ = rig([VOICED] * 5 + [SILENT] * 10, flush=False,
+                                  stt_vad_warmup_frames=0)
+        assert reason == "silence"
+        assert cap["voiced_ms"] == 5 * stt.FRAME_MS

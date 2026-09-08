@@ -1,5 +1,59 @@
 # BenderPi Handover Context
-Last updated: 2026-09-03
+Last updated: 2026-09-08
+
+---
+
+## 2026-09-08 — Evening of use (batch 2 verification) + commit 4
+
+Batch 2 commits 1–3 were live since 2026-09-03 18:26. The evening-of-use script
+(plan §Verification step 4) ran 2026-09-08 12:28–12:45, groups 1–5 and 7 (group 6,
+the background-chatter test, needs a second person and is still pending).
+Logs: `logs/2026-09-08.jsonl` on the device, sessions `d8aee88a` … `468d9d53`.
+
+**First, the morning was lost to a dead mic.** "Hey Bender" got no response at
+all; the wake loop logged peak score 0.001 all morning. Root cause was NOT the
+model or batch 2: the XVF3800 came up corrupt at the 07:00 cold boot (91.7% zero
+samples, a kernel `buffer overrun` per USB packet). Service restart, USB
+unbind/rebind and a sysfs port power cycle did nothing; a physical replug fixed it
+instantly. Documented in CLAUDE.md → Known Issues. The daily 22:00/07:00 power cycle
+makes this a recurring risk; nothing detects it yet (the stddev sentinel is fooled
+by the 1-in-12 real samples). **Next: a startup self-test that measures the zero
+fraction and raises a loud metric/HA alert.**
+
+**Results against the five criteria** (9 local-LLM turns, 6 wakes at 0.161–0.947):
+
+| Criterion | Result |
+|---|---|
+| zero refusals / stage directions / quoted replies | no refusals, no stage directions; **one** quote-wrapped 3-sentence reply (opening mark on sentence 1, closing on 3 — the pair-only stripper missed it) |
+| no reply > 3 sentences | pass (cap fired twice) |
+| `turn_total` p95 < 15s | **fail**: 32.7s (markdown ransom note, first sentence 45 tokens), 17.5s, 13.8s; the rest 5.4–13.3s. `ai_hailo_ttfs` 1.1–4.6s except the 11.0s markdown turn |
+| < 2 rejected 120ms captures / session | **fail**: 1–4 per session, ten in a row in the first test session, one every 0.97s at RMS 14–47 (speech: 238–2277) |
+| ≥ 1 cloud escalation on the refusal bait | **fail**: the model complied with a markdown document and nothing in the gate matched it |
+
+Other findings: "Are you an AI?" → "…from the TV show Futurama. How can I help you
+today?" (fourth wall + helpdesk line, gate passed it); follow-up 3 of the multi-turn
+test spoke `😅 [{'type': 'text', 'text': …` before the `<|im_start|>` behind it was
+caught; "Tell me about the year 3000" matched the PERSONAL/age clip (`year` in the
+pattern) so the long-answer test never reached the model; a real "Okay." (1.7s,
+RMS 1229) was discarded by the `whisper_hallucinations` blocklist.
+
+**Commit 4 (this commit) fixes all of the above except recall:**
+- `stt.py`: `stt_vad_warmup_frames` (5). Reproduced offline: a *fresh* webrtcvad
+  instance flags its first 3–5 frames as speech on quiet-room audio in every mode,
+  and every capture builds a fresh instance — that was the periodic 120–150ms
+  artefact, not room noise. Level-independent, so `stt_min_speech_rms` stays off.
+- `ai_local.py`: `_FORMAT_BREAK_RE` (markdown heading/rule/bold/bullet, JSON
+  payload) is a derail on any sentence and a `format_break` gate failure on
+  sentence 1; `_clean_sentence()` strips an unpaired double quote and emoji;
+  `HARD_FAIL_PHRASES` += "how can i help", "tv show".
+- `intent.py`: age pattern no longer matches a bare `year`.
+- `bender_config.json`: `okay` removed from `whisper_hallucinations`.
+- Tests: +4 `test_stt_onset.py`, +2 `test_intent.py`, +15 `test_reply_cleaning.py`,
+  +3 `test_decode_control.py`.
+
+**Next:** deploy commit 4; group 6 of the script when a second person is around;
+`capture_wake_samples.py` (still zero samples — recall is now the dominant failure:
+the user "had to repeat a lot"); the mic zero-fraction self-test; then batch 3.
 
 ---
 

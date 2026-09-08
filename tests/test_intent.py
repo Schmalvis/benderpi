@@ -212,3 +212,12 @@ def test_timer_cancel_not_shadowed_by_dismissal_reorder():
     from intent import classify
     assert classify("stop the timer")[0] == "TIMER_CANCEL"
     assert classify("cancel the pasta timer")[0] == "TIMER_CANCEL"
+
+
+def test_year_3000_is_not_the_age_question():
+    # Live 2026-09-08: "Tell me about the year 3000." played the age clip.
+    intent, _ = classify("tell me about the year 3000")
+    assert intent != "PERSONAL"
+
+def test_what_year_were_you_built_is_age():
+    assert classify("what year were you built") == ("PERSONAL", "age")

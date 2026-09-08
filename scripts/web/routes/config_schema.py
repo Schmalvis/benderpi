@@ -124,6 +124,7 @@ class BenderConfigUpdate(BaseModel):
     silence_frames: int | None = None
     max_record_seconds: int | None = None
     stt_onset_frames: int | None = None
+    stt_vad_warmup_frames: int | None = None
     stt_speech_onset_timeout_s: float | None = None
     hailo_stt_enabled: bool | None = None
 

@@ -164,3 +164,29 @@ class TestCapHitTail:
     def test_clean_finish_flushes_tail_regardless(self, responder):
         r, llm = responder(["Bite me.", " Whatever", "<|im_end|>"])
         assert list(r.generate_stream("hi")) == ["Bite me.", "Whatever"]
+
+
+class TestFormatBreak:
+    """Evening of use 2026-09-08: a JSON payload sentence was spoken before the
+    template token that followed it was caught; a markdown ransom note was
+    spoken for 23s. A format break on any sentence is a derail."""
+
+    def test_payload_on_sentence_two_is_dropped_and_context_cleared(self, responder):
+        r, llm = responder(["Not really, just fun.", " 😅 [{'type': 'text', 'text': 'Swim.'",
+                            "}]", "<|im_start|>", "user"])
+        out = list(r.generate_stream("hi"))
+        assert out == ["Not really, just fun."]
+        assert llm.cleared == 1
+        assert r._context_fresh is True
+
+    def test_markdown_first_sentence_escalates_with_its_own_reason(self, responder):
+        r, llm = responder(["Sure, here's my approach: --- ### RANSOM NOTE.", " More.", "<|im_end|>"])
+        with pytest.raises(QualityCheckFailed) as exc:
+            list(r.generate_stream("hi"))
+        assert exc.value.reason == "format_break"
+        assert llm.cleared == 1
+
+    def test_payload_in_clean_finish_tail_is_dropped(self, responder):
+        r, llm = responder(["Bite me.", " [{'type': 'text'", "<|im_end|>"])
+        assert list(r.generate_stream("hi")) == ["Bite me."]
+        assert llm.cleared == 1

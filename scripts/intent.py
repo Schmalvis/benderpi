@@ -172,7 +172,7 @@ PERSONAL_PATTERNS = [
     ("are_you_real",r"\b(real|robot|machine|computer|artificial)\b"),
     ("can_talk",    r"\bhow (can|do) you talk\b|\bcan you (really |actually )?talk\b|\bcan you speak\b"),
     ("what_can_do", r"\bwhat can you do\b|\babilities\b|\bwhat are you capable\b"),
-    ("age",         r"\b(how old|age|born|year|built)\b"),
+    ("age",         r"\b(how old|age|born|built|what year (were|was) you)\b"),
     ("job",         r"\b(job|purpose|programmed|function)\b|\bwhat do you do\b"),
 ]
 

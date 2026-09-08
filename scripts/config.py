@@ -99,6 +99,7 @@ class Config:
     # let door slams start 750ms captures that were then rejected and re-entered
     # (eight in nine seconds, live 2026-08-04). 3 = 90ms of continuous voice.
     stt_onset_frames: int = 3
+    stt_vad_warmup_frames: int = 5    # frames fed to a fresh VAD and ignored for onset
     # Seconds to wait for speech onset before giving up on a capture (0 = wait
     # the full max_record_seconds). Bounds the idle cost of an empty window and
     # stops 15s of background chatter reaching Whisper.

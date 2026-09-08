@@ -358,6 +358,15 @@ def _record_utterance(flush: bool = True) -> tuple[bytes, str, dict]:
     # stream and discarding 210ms of whatever the user had started saying.
     # Live 2026-08-04: eight rejected 120ms captures in nine seconds.
     onset_needed = max(1, int(getattr(cfg, "stt_onset_frames", 3)))
+    # A fresh webrtcvad instance reports its first 3-5 frames as speech on
+    # quiet-room audio (reproduced offline 2026-09-08 on a device recording,
+    # in every aggressiveness mode). Every capture builds a fresh instance,
+    # so every capture opened with a fake 120-150ms "utterance": the 250ms
+    # gate rejected it, the loop re-entered, and the next capture did the
+    # same -- one rejected capture every 0.97s, ten in a row live. Feed the
+    # first frames through the VAD and ignore them for onset. This is
+    # level-independent, so quiet speech ("Okay." at RMS 81) is untouched.
+    warmup_left = max(0, int(getattr(cfg, "stt_vad_warmup_frames", 5)))
     # A capture with no speech onset ends here instead of at max_record_seconds,
     # so an idle window costs ~6s, not 15s, and 15s of background chatter is no
     # longer transcribed.
@@ -390,6 +399,9 @@ def _record_utterance(flush: bool = True) -> tuple[bytes, str, dict]:
                 continue
             frames.append(data)
             is_speech = vad.is_speech(data, SAMPLE_RATE)
+            if warmup_left > 0:
+                warmup_left -= 1
+                continue
             if is_speech:
                 onset_run += 1
                 if not started:
