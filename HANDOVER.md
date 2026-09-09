@@ -68,8 +68,13 @@ root disk on USB), so this is the only hands-free reset.
 - Device: `udev/99-respeaker-xvf3800-control.rules` applied (plugdev write access);
   `pyusb` added to requirements (the deploy installs it; the device already had it
   in pi's user site-packages).
-- **Unproven until the next corrupt morning:** that REBOOT clears the *cold-boot*
-  state. Check `journalctl -u bender-converse -b | grep -i corrupt` after 07:00.
+- **PROVEN 2026-09-09.** The array came up corrupt again at the 07:00 cold boot
+  (91.9% zeros, `max_rms` 5.3). Self-test caught it 07:00:33 → `REBOOT` →
+  re-enumerated in 1.38s → second self-test 2.6% zeros 07:00:36 → listening
+  07:01:00. 3.5s, fully automatic, `NRestarts=0`. Metrics in order:
+  `mic_selftest`(ok=false) → `mic_stream_corrupt` → `xvf3800_reboot`(ok=true) →
+  `mic_selftest`(ok=true) → `mic_stream_recovered`. The fault is a **daily**
+  risk, not a one-off — two corrupt cold boots out of two observed.
 - Tests: `tests/test_xvf3800.py` (5), +3 `test_mic_selftest.py`, +3
   `test_watchdog.py`, +3 `test_wake_loop_heartbeat.py`. Suite 937.
 
