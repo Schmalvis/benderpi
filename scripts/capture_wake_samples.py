@@ -95,8 +95,24 @@ def _set_service(action: str) -> bool:
         return False
 
 
+def _mic_available(device: str) -> bool:
+    """True if ALSA knows the capture PCM. `mic_shared` is defined in the
+    device's /etc/asound.conf, so on any other machine (e.g. a dev clone)
+    arecord fails with "Unknown PCM" on the first clip, after the service has
+    already been stopped. Check before touching anything."""
+    try:
+        out = subprocess.run(["arecord", "-L"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return False
+    return any(line.strip() == device for line in out.stdout.splitlines())
+
+
 def _record(seconds: float, path: str) -> np.ndarray:
     device = getattr(cfg, "input_device_name", "mic_shared")
+    # The scratch file lives in OUT_ROOT, which does not exist on a fresh
+    # device until the first clip is written -- arecord then fails on the very
+    # first recording (2026-09-22).
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     subprocess.run(
         ["arecord", "-D", device, "-f", "S16_LE", "-r", str(RATE),
          "-c", "1", "-d", str(int(round(seconds))), "-q", path],
@@ -166,13 +182,17 @@ class _Scorer:
         for i in range(0, len(pcm) - 1280, 1280):
             pred = self.model.predict(pcm[i:i + 1280])
             best = max(best, max(pred.values()) if pred else 0.0)
-        return best
+        # openWakeWord returns numpy float32; json.dumps cannot serialise it
+        # (2026-09-22: the first real clip crashed the manifest write).
+        return float(best)
 
 
 def _log(entry: dict) -> None:
     os.makedirs(OUT_ROOT, exist_ok=True)
     with open(os.path.join(OUT_ROOT, "manifest.jsonl"), "a") as f:
-        f.write(json.dumps(entry) + "\n")
+        # default=: any other numpy scalar that slips in is written as a
+        # plain number rather than crashing mid-session after the clip is saved.
+        f.write(json.dumps(entry, default=lambda o: o.item() if hasattr(o, "item") else str(o)) + "\n")
 
 
 def _prompt(msg: str) -> bool:
@@ -348,6 +368,14 @@ def main() -> None:
 
     if args.mode != "ambient" and not args.speaker:
         ap.error("--speaker is required unless --mode ambient")
+
+    device = getattr(cfg, "input_device_name", "mic_shared")
+    if not _mic_available(device):
+        sys.exit(f"Capture device '{device}' is not known to ALSA on this machine.\n"
+                 f"Run this on BenderPi, where the samples must be recorded:\n"
+                 f"  ssh pi@BenderPi.local\n"
+                 f"  cd /home/pi/bender && venv/bin/python scripts/capture_wake_samples.py "
+                 + " ".join(sys.argv[1:]))
 
     # Bender waking mid-capture would talk over the recordings, and playback
     # flips the WM8960 to 44100Hz. Stop him unless told otherwise.

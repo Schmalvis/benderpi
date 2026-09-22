@@ -166,3 +166,58 @@ class TestResume:
 
 def _plan_for(root, per_condition):
     return cap._plan(cap.POSITIVE_CONDITIONS, "positive", "martin", per_condition)
+
+
+class TestFirstRunAndWrongHost:
+    """2026-09-22: the first clip on a fresh device failed because the scratch
+    file's folder did not exist; the same run on the dev clone failed with
+    "Unknown PCM mic_shared" only after the service had been stopped."""
+
+    def test_record_creates_the_output_folder(self, tmp_path, monkeypatch):
+        target = tmp_path / "wake_samples" / ".scratch.wav"
+        seen = {}
+
+        def fake_run(cmd, check=True, **kw):
+            seen["dir_existed"] = target.parent.is_dir()
+            cap._write(str(target), np.zeros(cap.RATE, dtype=np.int16))
+
+        monkeypatch.setattr(cap.subprocess, "run", fake_run)
+        cap._record(1.0, str(target))
+        assert seen["dir_existed"]
+
+    def test_mic_available_matches_exact_pcm_name(self, monkeypatch):
+        listing = "null\n    Discard all samples\nmic_shared\ndefault\n"
+        monkeypatch.setattr(cap.subprocess, "run",
+                            lambda *a, **k: type("R", (), {"stdout": listing})())
+        assert cap._mic_available("mic_shared") is True
+        assert cap._mic_available("mic") is False
+
+    def test_missing_mic_exits_before_stopping_the_service(self, monkeypatch):
+        stopped = []
+        monkeypatch.setattr(cap, "_mic_available", lambda d: False)
+        monkeypatch.setattr(cap, "_set_service", lambda a: stopped.append(a) or True)
+        monkeypatch.setattr(cap, "_service_active", lambda: True)
+        monkeypatch.setattr(cap.sys, "argv", ["capture_wake_samples.py", "--speaker", "martin"])
+        with pytest.raises(SystemExit) as exc:
+            cap.main()
+        assert "BenderPi" in str(exc.value)
+        assert stopped == []
+
+
+class TestManifestTypes:
+    """2026-09-22: openWakeWord scores are numpy float32; the first real clip
+    was saved and then json.dumps crashed the manifest write."""
+
+    def test_scorer_returns_a_plain_float(self):
+        s = cap._Scorer.__new__(cap._Scorer)
+        s.model = type("M", (), {"predict": lambda self, fr: {"hey": np.float32(0.42)}})()
+        out = s.peak(np.zeros(1280 * 4, dtype=np.int16))
+        assert type(out) is float
+        assert abs(out - 0.42) < 1e-6
+
+    def test_log_accepts_numpy_scalars(self, tmp_path, monkeypatch):
+        import json
+        monkeypatch.setattr(cap, "OUT_ROOT", str(tmp_path))
+        cap._log({"current_model_score": np.float32(0.25), "peak_level": np.int16(900)})
+        row = json.loads((tmp_path / "manifest.jsonl").read_text())
+        assert row == {"current_model_score": 0.25, "peak_level": 900}
