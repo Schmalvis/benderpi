@@ -11,6 +11,13 @@ close one domain gap and open another: these samples must come through the same
 WM8960 mic, the same 29dB input boost + 12dB capture gain, the same dsnoop
 resampling and the same room. That acoustic path IS the training signal.
 
+WHAT TO SAY
+    Positives are always the wake phrase itself; the conditions vary HOW and
+    WHERE you say it, not the words. openWakeWord labels clips by the folder
+    they land in, with no transcript, so a positive clip that does not contain
+    the phrase teaches the model something false. The prompts print the exact
+    words for every clip.
+
 USAGE
     # positives, prompted, one speaker at a time
     venv/bin/python scripts/capture_wake_samples.py --speaker martin
@@ -59,7 +66,27 @@ PAD_MS = 200          # keep this much either side of the voiced span
 
 # Conditions worth varying. The v0.1 failure is a generalisation failure, so
 # breadth across the acoustic envelope matters far more than raw sample count.
-# Entries are (label, instruction) or (label, instruction, record_seconds).
+# openWakeWord labels by DIRECTORY, not by transcript: every clip in
+# positive_train/ is taken to be the wake word. So every positive clip must
+# contain WAKE_PHRASE and as little else as possible -- the prompts below say
+# it explicitly rather than assuming the speaker remembers.
+WAKE_PHRASE = "hey bender"
+
+# Carrier sentences for the `embedded` condition. Real use is rarely the
+# phrase alone, but the clip is only CLIP_S long, so the carrier has to be
+# short and the phrase has to come FIRST -- that condition anchors its crop to
+# the start of speech, keeping the phrase whole and always in the same place.
+EMBEDDED_CARRIERS = [
+    "hey bender, what's the weather",
+    "hey bender, turn the lights on",
+    "hey bender, tell me a joke",
+    "hey bender, what time is it",
+    "hey bender, are you awake",
+]
+
+# Entries are (label, instruction) or (label, instruction, record_seconds)
+# or (label, instruction, record_seconds, anchor). Anchor "start" keeps the
+# beginning of speech (phrase first); the default "centre" keeps the middle.
 # Round 2 (2026-09-24) adds the three at the bottom: round 1 covered distance,
 # volume and pace but every clip was the phrase ALONE, which is not how anyone
 # talks to the device. `embedded` is the important one.
@@ -74,10 +101,10 @@ POSITIVE_CONDITIONS = [
     ("off_axis",        "~1.5m away, facing AWAY from the device"),
     ("with_background", "~1.5m away, normal voice, TV or music playing"),
     ("moving",          "walking past the device as you say it"),
-    # A clip is centre-cropped to CLIP_S, so the wake word must sit in the
-    # MIDDLE of what you say -- lead in, say it, tail off.
-    ("embedded",        "~1.5m, inside a sentence, phrase in the MIDDLE: "
-                        "'okay so, hey bender, what's the weather'", 4.0),
+    # Phrase FIRST, then the request. Anchored to the start of speech so the
+    # phrase is always whole and always in the same position in the clip.
+    ("embedded",        "~1.5m away, phrase FIRST then carry on speaking",
+                        4.0, "start"),
     ("another_room",    "called from the next room or hallway, raised voice"),
     ("seated_far",      "~3m away, sitting down, relaxed normal voice"),
 ]
@@ -139,8 +166,15 @@ def _record(seconds: float, path: str) -> np.ndarray:
         return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
 
 
-def trim_to_voiced(pcm: np.ndarray, clip_s: float = CLIP_S) -> "np.ndarray | None":
+def trim_to_voiced(pcm: np.ndarray, clip_s: float = CLIP_S,
+                   anchor: str = "centre") -> "np.ndarray | None":
     """Trim to the voiced span plus padding, then fit to exactly clip_s.
+
+    ``anchor`` decides what survives when speech is LONGER than clip_s:
+    "centre" keeps the middle (right for a clip that is only the phrase),
+    "start" keeps the beginning (right when the phrase is spoken first and a
+    sentence follows -- centre-cropping there would slice the phrase in half
+    and teach the model that the trailing words are part of the target).
 
     Returns None when VAD finds no speech at all — a missed utterance must be
     dropped, not padded into a silent 'positive' that teaches the model the
@@ -160,8 +194,8 @@ def trim_to_voiced(pcm: np.ndarray, clip_s: float = CLIP_S) -> "np.ndarray | Non
     clip = pcm[start:end]
 
     want = int(RATE * clip_s)
-    if len(clip) > want:                      # centre-crop the overspill
-        off = (len(clip) - want) // 2
+    if len(clip) > want:                      # crop the overspill
+        off = 0 if anchor == "start" else (len(clip) - want) // 2
         clip = clip[off:off + want]
     elif len(clip) < want:                    # centre in a silent frame
         out = np.zeros(want, dtype=np.int16)
@@ -223,9 +257,11 @@ def _prompt(msg: str) -> bool:
 
 
 def _spec(item) -> tuple:
-    """(label, instruction, record_seconds) from a 2- or 3-tuple entry."""
+    """(label, instruction, record_seconds, anchor) from a 2- to 4-tuple."""
     label, hint = item[0], item[1]
-    return label, hint, (item[2] if len(item) > 2 else RECORD_S)
+    return (label, hint,
+            (item[2] if len(item) > 2 else RECORD_S),
+            (item[3] if len(item) > 3 else "centre"))
 
 
 def existing_clips(mode: str, speaker: str, label: str) -> int:
@@ -244,11 +280,12 @@ def existing_clips(mode: str, speaker: str, label: str) -> int:
 
 
 def _plan(items, mode: str, speaker: str, per_condition: int):
-    """(label, hint, seconds, done) per condition, and the header totals."""
+    """(label, hint, seconds, anchor, done) per condition, plus header totals."""
     rows = []
     for item in items:
-        label, hint, secs = _spec(item)
-        rows.append((label, hint, secs, existing_clips(mode, speaker, label)))
+        label, hint, secs, anchor = _spec(item)
+        rows.append((label, hint, secs, anchor,
+                     existing_clips(mode, speaker, label)))
     done = sum(min(d, per_condition) for *_, d in rows)
     return rows, done, per_condition * len(rows)
 
@@ -259,13 +296,14 @@ def capture_prompted(args, items, mode: str) -> None:
     kept = fired = 0
     scratch = os.path.join(OUT_ROOT, ".scratch.wav")
 
+    say_default = f'"{WAKE_PHRASE}"' if mode == "positive" else None
     rows, done, total = _plan(items, mode, args.speaker, args.per_condition)
     if done:
         print(f"Resuming: {done}/{total} clips already recorded for "
               f"{args.speaker}. Finished conditions are skipped.")
     print(f"Quit any time with 'q'. Re-run this exact command to carry on.\n")
 
-    for label, hint, secs, already in rows:
+    for label, hint, secs, anchor, already in rows:
         if already >= args.per_condition:
             print(f"=== {label} — done ({already}) ===")
             continue
@@ -275,6 +313,14 @@ def capture_prompted(args, items, mode: str) -> None:
         if already:
             print(f"  ({already} already recorded, continuing)")
         for n in range(already + 1, args.per_condition + 1):
+            # Always print the words. The clip's label comes from the folder
+            # it lands in, so a positive that does not contain the phrase
+            # silently teaches the model the wrong thing.
+            say = say_default
+            if mode == "positive" and label == "embedded":
+                say = f'"{EMBEDDED_CARRIERS[(n - 1) % len(EMBEDDED_CARRIERS)]}"'
+            if say:
+                print(f"  SAY: {say}")
             if not _prompt(f"  [{n}/{args.per_condition}] Enter to record "
                            f"(q to quit): "):
                 print("\nStopped. Everything recorded so far is saved.")
@@ -282,7 +328,7 @@ def capture_prompted(args, items, mode: str) -> None:
                 return
             print("  recording...", end="", flush=True)
             raw = _record(secs, scratch)
-            clip = trim_to_voiced(raw)
+            clip = trim_to_voiced(raw, anchor=anchor)
             if clip is None:
                 print(" no speech detected — skipped, try again")
                 continue
@@ -434,8 +480,9 @@ def main() -> None:
             capture_continuous(args, args.mode)
         elif args.mode == "hard_negative":
             capture_prompted(
-                args, [(p.replace(" ", "_"), f'say: "{p}"')
-                       for p in HARD_NEGATIVE_PHRASES], "hard_negative")
+                args, [(p.replace(" ", "_"), f'say "{p}" — normally, as in '
+                        f'conversation') for p in HARD_NEGATIVE_PHRASES],
+                "hard_negative")
         else:
             capture_prompted(args, POSITIVE_CONDITIONS, "positive")
     finally:

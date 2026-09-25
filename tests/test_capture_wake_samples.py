@@ -78,7 +78,7 @@ class TestConditions:
 
     def test_every_condition_has_an_instruction(self):
         for item in cap.POSITIVE_CONDITIONS:
-            label, hint, _ = cap._spec(item)
+            label, hint, _, _ = cap._spec(item)
             assert hint.strip(), f"{label} has no instruction for the speaker"
 
     def test_a_longer_window_is_used_where_the_phrase_is_embedded(self):
@@ -249,3 +249,56 @@ class TestManifestTypes:
         cap._log({"current_model_score": np.float32(0.25), "peak_level": np.int16(900)})
         row = json.loads((tmp_path / "manifest.jsonl").read_text())
         assert row == {"current_model_score": 0.25, "peak_level": 900}
+
+
+class TestWhatToSay:
+    """openWakeWord labels by folder with no transcript, so a positive clip
+    that does not contain the phrase teaches the model something false. The
+    speaker therefore has to be told the exact words every time."""
+
+    def test_the_wake_phrase_is_a_single_named_constant(self):
+        assert cap.WAKE_PHRASE == "hey bender"
+
+    def test_embedded_carriers_all_contain_the_phrase(self):
+        assert cap.EMBEDDED_CARRIERS
+        for c in cap.EMBEDDED_CARRIERS:
+            assert cap.WAKE_PHRASE in c.lower(), c
+
+    def test_embedded_carriers_put_the_phrase_first(self):
+        """The embedded clip is anchored to the start of speech; a carrier
+        that leads with other words would push the phrase out of the clip."""
+        for c in cap.EMBEDDED_CARRIERS:
+            assert c.lower().startswith(cap.WAKE_PHRASE), c
+
+    def test_embedded_is_the_only_start_anchored_condition(self):
+        anchors = {item[0]: cap._spec(item)[3] for item in cap.POSITIVE_CONDITIONS}
+        assert anchors["embedded"] == "start"
+        assert {v for k, v in anchors.items() if k != "embedded"} == {"centre"}
+
+
+class TestAnchoring:
+    def _speech(self, seconds, amplitude=6000):
+        rng = np.random.default_rng(0)
+        return (rng.normal(0, amplitude, int(cap.RATE * seconds))
+                .clip(-32000, 32000).astype(np.int16))
+
+    def test_start_anchor_keeps_the_opening_of_speech(self):
+        """A 4s utterance cropped to 2s: 'start' must keep the first half,
+        which is where the wake phrase is."""
+        pcm = self._speech(4.0)
+        out = cap.trim_to_voiced(pcm, anchor="start")
+        assert out is not None and len(out) == int(cap.RATE * cap.CLIP_S)
+        # the opening samples survive; with a centre crop they would not
+        assert np.array_equal(out[:1000], pcm[:1000])
+
+    def test_centre_anchor_drops_the_opening(self):
+        pcm = self._speech(4.0)
+        out = cap.trim_to_voiced(pcm, anchor="centre")
+        assert out is not None and len(out) == int(cap.RATE * cap.CLIP_S)
+        assert not np.array_equal(out[:1000], pcm[:1000])
+
+    def test_anchor_is_irrelevant_when_speech_is_short(self):
+        pcm = self._speech(1.0)
+        a = cap.trim_to_voiced(pcm, anchor="start")
+        b = cap.trim_to_voiced(pcm, anchor="centre")
+        assert np.array_equal(a, b)
