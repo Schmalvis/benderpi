@@ -18,8 +18,11 @@ USAGE
     # hard negatives: similar phrases that must NOT wake him
     venv/bin/python scripts/capture_wake_samples.py --speaker martin --mode hard_negative
 
-    # background audio (TV, kitchen, conversation) as plain negatives
+    # background audio (TV, kitchen, distant talk) as plain negatives
     venv/bin/python scripts/capture_wake_samples.py --mode ambient --minutes 20
+
+    # your own conversational speech at ~1.5m, never the wake phrase
+    venv/bin/python scripts/capture_wake_samples.py --mode conversation --minutes 10
 
 Each positive is scored against the *current* model as it is captured, so the
 session doubles as a recall measurement: the "current model scored" tally at the
@@ -29,6 +32,7 @@ Output layout (gitignored -- audio of the household never enters git):
     data/wake_samples/positive/<speaker>/<condition>_<nnn>.wav
     data/wake_samples/hard_negative/<speaker>/<phrase>_<nnn>.wav
     data/wake_samples/ambient/<nnn>.wav
+    data/wake_samples/conversation/<nnn>.wav
     data/wake_samples/manifest.jsonl
 """
 import argparse
@@ -55,6 +59,10 @@ PAD_MS = 200          # keep this much either side of the voiced span
 
 # Conditions worth varying. The v0.1 failure is a generalisation failure, so
 # breadth across the acoustic envelope matters far more than raw sample count.
+# Entries are (label, instruction) or (label, instruction, record_seconds).
+# Round 2 (2026-09-24) adds the three at the bottom: round 1 covered distance,
+# volume and pace but every clip was the phrase ALONE, which is not how anyone
+# talks to the device. `embedded` is the important one.
 POSITIVE_CONDITIONS = [
     ("close_normal",    "~0.5m away, normal speaking voice"),
     ("mid_normal",      "~1.5m away, normal speaking voice"),
@@ -66,13 +74,23 @@ POSITIVE_CONDITIONS = [
     ("off_axis",        "~1.5m away, facing AWAY from the device"),
     ("with_background", "~1.5m away, normal voice, TV or music playing"),
     ("moving",          "walking past the device as you say it"),
+    # A clip is centre-cropped to CLIP_S, so the wake word must sit in the
+    # MIDDLE of what you say -- lead in, say it, tail off.
+    ("embedded",        "~1.5m, inside a sentence, phrase in the MIDDLE: "
+                        "'okay so, hey bender, what's the weather'", 4.0),
+    ("another_room",    "called from the next room or hallway, raised voice"),
+    ("seated_far",      "~3m away, sitting down, relaxed normal voice"),
 ]
 
 # Phrases that share phonetics with the wake word. Without these, adding real
 # positives raises recall and false positives together.
+# Round 1 measured where v0.1 actually false-wakes: "hey vendor" 7/10,
+# "hey bend" 5/10, "hey Brenda" 2/10 -- the failures cluster on the "-ender"
+# ending, not on "hey". Round 2 presses on exactly that.
 HARD_NEGATIVE_PHRASES = [
     "hey there", "hey friend", "bender", "hey bend", "hey Brenda",
     "hey vendor", "okay then", "hey bender's", "play defender",
+    "blender", "gender", "surrender", "lavender", "remember", "hey Ben",
 ]
 
 
@@ -204,6 +222,12 @@ def _prompt(msg: str) -> bool:
     return reply not in ("q", "quit", "stop")
 
 
+def _spec(item) -> tuple:
+    """(label, instruction, record_seconds) from a 2- or 3-tuple entry."""
+    label, hint = item[0], item[1]
+    return label, hint, (item[2] if len(item) > 2 else RECORD_S)
+
+
 def existing_clips(mode: str, speaker: str, label: str) -> int:
     """How many clips this condition already has on disk.
 
@@ -220,10 +244,12 @@ def existing_clips(mode: str, speaker: str, label: str) -> int:
 
 
 def _plan(items, mode: str, speaker: str, per_condition: int):
-    """(label, hint, done) per condition, and the totals for the header."""
-    rows = [(label, hint, existing_clips(mode, speaker, label))
-            for label, hint in items]
-    done = sum(min(d, per_condition) for _, _, d in rows)
+    """(label, hint, seconds, done) per condition, and the header totals."""
+    rows = []
+    for item in items:
+        label, hint, secs = _spec(item)
+        rows.append((label, hint, secs, existing_clips(mode, speaker, label)))
+    done = sum(min(d, per_condition) for *_, d in rows)
     return rows, done, per_condition * len(rows)
 
 
@@ -239,11 +265,13 @@ def capture_prompted(args, items, mode: str) -> None:
               f"{args.speaker}. Finished conditions are skipped.")
     print(f"Quit any time with 'q'. Re-run this exact command to carry on.\n")
 
-    for label, hint, already in rows:
+    for label, hint, secs, already in rows:
         if already >= args.per_condition:
             print(f"=== {label} — done ({already}) ===")
             continue
         print(f"\n=== {label} — {hint} ===")
+        if secs != RECORD_S:
+            print(f"  (recording window {secs:.0f}s for this one)")
         if already:
             print(f"  ({already} already recorded, continuing)")
         for n in range(already + 1, args.per_condition + 1):
@@ -253,7 +281,7 @@ def capture_prompted(args, items, mode: str) -> None:
                 _summarise(args, items, mode, threshold)
                 return
             print("  recording...", end="", flush=True)
-            raw = _record(RECORD_S, scratch)
+            raw = _record(secs, scratch)
             clip = trim_to_voiced(raw)
             if clip is None:
                 print(" no speech detected — skipped, try again")
@@ -319,34 +347,48 @@ def _summarise(args, items, mode: str, threshold: float) -> None:
               + (f" --mode {mode}" if mode != "positive" else ""))
 
 
-def ambient_done() -> int:
-    """Minutes of ambient audio already captured. Same resume rule as above:
-    one file per minute, so the file count is the progress."""
-    d = os.path.join(OUT_ROOT, "ambient")
+# Continuous-audio modes: one file per minute, so the file count IS the resume
+# point (identical rule to the prompted modes).
+#   ambient      -- the room as it normally sounds: TV, kitchen, distant talk.
+#   conversation -- YOU talking normally at ~1.5m, never the wake phrase.
+# They are different negatives and both are needed. Ambient proved v0.1 has no
+# false wakes on household sound (0 frames over threshold in 20 minutes), but
+# the real risk is speech AIMED at someone else beside the device, and no
+# ambient minute contains that at close range.
+CONTINUOUS_MODES = {
+    "ambient": "Talk, watch TV, cook — anything EXCEPT saying the wake word.",
+    "conversation": ("Talk normally at ~1.5m, as if to someone in the room. "
+                     "Never say the wake phrase or anything close to it."),
+}
+
+
+def continuous_done(mode: str) -> int:
+    """Minutes already captured for a continuous mode."""
+    d = os.path.join(OUT_ROOT, mode)
     if not os.path.isdir(d):
         return 0
     return len([f for f in os.listdir(d) if f.endswith(".wav")])
 
 
-def capture_ambient(args) -> None:
-    """Continuous household audio: the negative set that keeps FPs down."""
-    already = ambient_done()
+def capture_continuous(args, mode: str) -> None:
+    """Minute-long negative recordings: ambient room, or conversational speech."""
+    already = continuous_done(mode)
     if already >= args.minutes:
-        print(f"Ambient target already met: {already}/{args.minutes} minutes.")
+        print(f"{mode} target already met: {already}/{args.minutes} minutes.")
         print("Raise --minutes to capture more.")
         return
     if already:
         print(f"Resuming: {already}/{args.minutes} minutes already captured.")
-    print(f"Recording {args.minutes - already} more minutes of background audio.")
-    print("Talk, watch TV, cook — anything EXCEPT saying the wake word.")
+    print(f"Recording {args.minutes - already} more minutes of {mode} audio.")
+    print(CONTINUOUS_MODES[mode])
     print("Ctrl-C is safe: each completed minute is already on disk.")
     chunk_s = 60
     for i in range(already, args.minutes):
-        out = os.path.join(OUT_ROOT, "ambient", f"{i:03d}.wav")
+        out = os.path.join(OUT_ROOT, mode, f"{i:03d}.wav")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         print(f"  minute {i + 1}/{args.minutes}...", flush=True)
         _record(chunk_s, out)
-        _log({"path": os.path.relpath(out, BASE_DIR), "mode": "ambient",
+        _log({"path": os.path.relpath(out, BASE_DIR), "mode": mode,
               "seconds": chunk_s, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")})
     print("Done.")
 
@@ -357,17 +399,18 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--speaker", help="who is speaking (one run per person)")
     ap.add_argument("--mode", default="positive",
-                    choices=["positive", "hard_negative", "ambient"])
+                    choices=["positive", "hard_negative", "ambient", "conversation"])
     ap.add_argument("--per-condition", type=int, default=10,
                     help="clips per condition / per phrase (default 10)")
     ap.add_argument("--minutes", type=int, default=20,
-                    help="ambient mode only")
+                    help="ambient/conversation modes only (conversation: 10 is plenty)")
     ap.add_argument("--keep-service", action="store_true",
                     help="don't stop bender-converse (he may wake mid-capture)")
     args = ap.parse_args()
 
-    if args.mode != "ambient" and not args.speaker:
-        ap.error("--speaker is required unless --mode ambient")
+    if args.mode not in CONTINUOUS_MODES and not args.speaker:
+        ap.error(f"--speaker is required unless --mode is one of "
+                 f"{'/'.join(CONTINUOUS_MODES)}")
 
     device = getattr(cfg, "input_device_name", "mic_shared")
     if not _mic_available(device):
@@ -387,8 +430,8 @@ def main() -> None:
             print("  continuing anyway — he may wake mid-capture")
 
     try:
-        if args.mode == "ambient":
-            capture_ambient(args)
+        if args.mode in CONTINUOUS_MODES:
+            capture_continuous(args, args.mode)
         elif args.mode == "hard_negative":
             capture_prompted(
                 args, [(p.replace(" ", "_"), f'say: "{p}"')

@@ -69,14 +69,32 @@ class TestConditions:
     def test_conditions_cover_the_generalisation_envelope(self):
         """v0.1 failed by generalisation, not sample count, so the capture set
         has to span distance, level, rate, angle and background."""
-        labels = " ".join(label for label, _ in cap.POSITIVE_CONDITIONS)
+        labels = " ".join(item[0] for item in cap.POSITIVE_CONDITIONS)
         for axis in ("close", "far", "quiet", "loud", "fast", "slow",
-                     "off_axis", "background", "moving"):
+                     "off_axis", "background", "moving",
+                     # round 2: every round-1 clip was the phrase ALONE
+                     "embedded", "another_room", "seated_far"):
             assert axis in labels, f"no condition covers {axis}"
 
     def test_every_condition_has_an_instruction(self):
-        for label, hint in cap.POSITIVE_CONDITIONS:
+        for item in cap.POSITIVE_CONDITIONS:
+            label, hint, _ = cap._spec(item)
             assert hint.strip(), f"{label} has no instruction for the speaker"
+
+    def test_a_longer_window_is_used_where_the_phrase_is_embedded(self):
+        """A sentence does not fit the 3s default; the clip is centre-cropped
+        to 2s, so the window has to be long enough to hold the lead-in and
+        tail as well as the phrase."""
+        specs = {item[0]: cap._spec(item)[2] for item in cap.POSITIVE_CONDITIONS}
+        assert specs["embedded"] > cap.RECORD_S
+        assert specs["mid_normal"] == cap.RECORD_S
+
+    def test_negatives_press_on_the_measured_failure(self):
+        """v0.1 false-wakes cluster on the '-ender' ending (hey vendor 7/10,
+        hey bend 5/10), not on 'hey' — round 2 targets that."""
+        joined = " ".join(cap.HARD_NEGATIVE_PHRASES).lower()
+        for p in ("blender", "gender", "surrender", "lavender", "remember"):
+            assert p in joined, f"missing -ender negative: {p}"
 
     def test_hard_negatives_are_phonetically_close(self):
         """Adding real positives lifts recall and false positives together;
@@ -153,15 +171,25 @@ class TestResume:
         _, done, _ = _plan_for(out_root, per_condition=10)
         assert done == 10
 
-    def test_ambient_resumes_from_file_count(self, out_root):
-        d = out_root / "ambient"
+    @pytest.mark.parametrize("mode", ["ambient", "conversation"])
+    def test_continuous_modes_resume_from_file_count(self, out_root, mode):
+        d = out_root / mode
         d.mkdir(parents=True)
         for i in range(7):
             (d / f"{i:03d}.wav").write_bytes(b"")
-        assert cap.ambient_done() == 7
+        assert cap.continuous_done(mode) == 7
 
-    def test_ambient_zero_when_absent(self, out_root):
-        assert cap.ambient_done() == 0
+    @pytest.mark.parametrize("mode", ["ambient", "conversation"])
+    def test_continuous_modes_zero_when_absent(self, out_root, mode):
+        assert cap.continuous_done(mode) == 0
+
+    def test_conversation_is_separate_from_ambient(self, out_root):
+        """Room sound and close-range speech are different negatives; mixing
+        them would hide which one the model actually struggles with."""
+        (out_root / "ambient").mkdir(parents=True)
+        (out_root / "ambient" / "000.wav").write_bytes(b"")
+        assert cap.continuous_done("conversation") == 0
+        assert set(cap.CONTINUOUS_MODES) == {"ambient", "conversation"}
 
 
 def _plan_for(root, per_condition):

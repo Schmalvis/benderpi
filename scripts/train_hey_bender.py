@@ -18,6 +18,16 @@ Run:
 Higher-quality re-run (more samples / steps — see plan doc):
     modal run scripts/train_hey_bender.py --n-samples 25000 --steps 50000
 
+v0.2 — real-voice positives (the ratio sweep in
+docs/superpowers/plans/2026-09-24-wake-word-retrain-v0.2.md). Upload the
+captures once, then one run per ratio:
+    rsync -a pi@BenderPi.local:/home/pi/bender/data/wake_samples/ /tmp/wake_samples/
+    modal volume create bender-wake-samples
+    modal volume put bender-wake-samples /tmp/wake_samples /
+    modal run scripts/train_hey_bender.py --n-samples 20000 --steps 50000 \
+        --use-real-samples --real-positive-fraction 0.20 \
+        --output-name hey_bender_v0.2_r20.onnx
+
 Recall-focused re-run (loosens the FP-rate auto-tuning that was crushing
 recall in earlier runs — see docs/checkpoints or memory for the 0.728/0.457
 and 0.7185/0.439 baselines):
@@ -35,6 +45,13 @@ import modal
 APP_NAME = "hey-bender-oww-train"
 HF_REPO = "Schmalvis/hey-bender-oww"
 OUTPUT_ONNX_NAME = "hey_bender_v0.1.onnx"
+
+# Modal volume holding the real-voice captures recorded through the device's
+# own mic (scripts/capture_wake_samples.py). Never in git -- household audio.
+#   modal volume create bender-wake-samples
+#   modal volume put bender-wake-samples /tmp/wake_samples /
+REAL_SAMPLES_VOLUME = "bender-wake-samples"
+REAL_SAMPLES_MOUNT = "/root/wake_samples"
 
 # ---------------------------------------------------------------------------
 # Container image: CUDA-capable torch + the openWakeWord training stack.
@@ -76,6 +93,163 @@ image = (
 )
 
 app = modal.App(APP_NAME)
+
+
+# ---------------------------------------------------------------------------
+# Real-voice positives (v0.2). Why this works the way it does:
+#
+# openwakeword/train.py --generate_clips counts what is already in
+# positive_train/ and generates only `n_samples - n_current`. So copying real
+# clips in BEFORE that stage injects them AND reduces the synthetic count by
+# the same number -- the mix ratio needs no new config key upstream.
+# --augment_clips then globs those directories, so real clips get exactly the
+# same RIR + background augmentation as synthetic ones, and every duplicate
+# copy is augmented independently.
+#
+# Measured 2026-09-22 against v0.1: 6/100 real positives would wake it, while
+# 22/90 near-miss phrases would. It never learned the phrase -- it learned the
+# synthetic voice's cadence. That is what these clips are here to fix.
+# Plan: docs/superpowers/plans/2026-09-24-wake-word-retrain-v0.2.md
+# ---------------------------------------------------------------------------
+def _load_split(root: str) -> dict:
+    """Read the frozen train/holdout split. Absent = refuse to train.
+
+    Training without it would silently use the held-out clips too, and the
+    resulting recall number would be meaningless. Fail loudly instead.
+    """
+    import json
+    import os
+
+    path = os.path.join(root, "split.json")
+    if not os.path.exists(path):
+        raise RuntimeError(
+            f"{path} missing. Run scripts/split_wake_samples.py on the device "
+            "and re-upload the volume; the held-out clips are the experiment.")
+    return json.load(open(path))
+
+
+def _seed_real_clips(root: str, split: dict, positive_train_dir: str,
+                     negative_train_dir: str, n_samples: int,
+                     positive_fraction: float, negative_copies: int) -> dict:
+    """Copy real clips into the generator's output directories.
+
+    Each clip is written `k` times under distinct names; `k` sets the real
+    share of the positive set, because the generator then makes that many
+    fewer synthetic clips. Held-out clips are asserted absent rather than
+    merely skipped.
+    """
+    import os
+    import shutil
+
+    for d in (positive_train_dir, negative_train_dir):
+        os.makedirs(d, exist_ok=True)
+
+    holdout = set(split["positive"]["holdout"]) | set(split["hard_negative"]["holdout"])
+    watch = set(split["hard_negative"].get("watch", []))
+
+    pos = list(split["positive"]["train"])
+    neg = list(split["hard_negative"]["train"])
+    assert not (set(pos) | set(neg)) & holdout, "held-out clips leaked into training"
+    assert not set(neg) & watch, "excluded phrase leaked into the negative set"
+    if not pos:
+        raise RuntimeError("split.json lists no training positives")
+
+    pos_copies = max(1, round(n_samples * positive_fraction / len(pos)))
+    written = {"positive": 0, "negative": 0,
+               "positive_copies": pos_copies, "negative_copies": negative_copies}
+
+    for rel_paths, dest, copies, key in (
+        (pos, positive_train_dir, pos_copies, "positive"),
+        (neg, negative_train_dir, negative_copies, "negative"),
+    ):
+        for rel in rel_paths:
+            src = os.path.join(root, _strip_data_prefix(rel))
+            if not os.path.exists(src):
+                raise RuntimeError(f"clip listed in split.json is missing: {src}")
+            stem = os.path.splitext(os.path.basename(rel))[0]
+            for i in range(copies):
+                shutil.copyfile(src, os.path.join(dest, f"real_{stem}_{i:03d}.wav"))
+                written[key] += 1
+
+    print(f"Seeded real clips: {written['positive']} positive "
+          f"({len(pos)} clips x {pos_copies}), {written['negative']} negative "
+          f"({len(neg)} clips x {negative_copies}).")
+    print(f"  real share of the {n_samples}-sample positive set: "
+          f"{100.0 * written['positive'] / n_samples:.1f}%")
+    print(f"  held out, never copied: {len(split['positive']['holdout'])} positive, "
+          f"{len(split['hard_negative']['holdout'])} negative, "
+          f"{len(watch)} watch-only")
+    return written
+
+
+def _strip_data_prefix(rel: str) -> str:
+    """split.json paths are repo-relative (data/wake_samples/...); the volume
+    is mounted at the wake_samples directory itself."""
+    marker = "data/wake_samples/"
+    return rel[rel.index(marker) + len(marker):] if marker in rel else rel
+
+
+def _seed_conversation_negatives(root: str, split: dict, negative_train_dir: str,
+                                 clip_s: float = 2.0, rate: int = 16000) -> int:
+    """Slice close-range conversational speech into negative training clips.
+
+    Ambient room sound already scores 0 frames over threshold on v0.1, so it
+    proves little. The untested case is someone talking NEXT TO the device to
+    another person -- real speech, real level, not the phrase. train.py wants
+    short clips in negative_train/, so the minutes are cut into `clip_s`
+    chunks. Held-out minutes stay out: they measure false wakes per hour.
+    """
+    import os
+    import wave
+
+    import numpy as np
+
+    files = split.get("conversation", {}).get("train", [])
+    if not files:
+        print("No conversational negatives in the split (optional).")
+        return 0
+    os.makedirs(negative_train_dir, exist_ok=True)
+    n = 0
+    want = int(rate * clip_s)
+    for rel in files:
+        src = os.path.join(root, _strip_data_prefix(rel))
+        if not os.path.exists(src):
+            continue
+        with wave.open(src) as w:
+            pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        stem = os.path.splitext(os.path.basename(rel))[0]
+        for i in range(0, len(pcm) - want + 1, want):
+            chunk = pcm[i:i + want]
+            out = os.path.join(negative_train_dir, f"real_conv_{stem}_{i // want:03d}.wav")
+            with wave.open(out, "wb") as w2:
+                w2.setnchannels(1)
+                w2.setsampwidth(2)
+                w2.setframerate(rate)
+                w2.writeframes(chunk.tobytes())
+            n += 1
+    print(f"Seeded {n} conversational negative clips from "
+          f"{len(files)} minutes of close-range speech.")
+    return n
+
+
+def _ambient_background_dir(root: str, split: dict, work: str) -> "str | None":
+    """Link the held-IN ambient minutes into their own directory, for use as
+    augmentation backgrounds. The held-out minutes stay out: using them as
+    backgrounds and then scoring false wakes on them is leakage."""
+    import os
+    import shutil
+
+    files = split.get("ambient", {}).get("background", [])
+    if not files:
+        return None
+    dest = os.path.join(work, "room_ambient")
+    os.makedirs(dest, exist_ok=True)
+    for rel in files:
+        src = os.path.join(root, _strip_data_prefix(rel))
+        if os.path.exists(src):
+            shutil.copyfile(src, os.path.join(dest, os.path.basename(rel)))
+    print(f"Room ambient backgrounds: {len(os.listdir(dest))} minutes from this room.")
+    return dest
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +387,9 @@ def _download_training_data(work: str):
 def _write_config(work: str, oww: str, psg: str, phrase: str, n_samples: int,
                   n_samples_val: int, steps: int, piper_pt: str,
                   target_fp_per_hour: float, max_negative_weight: int,
-                  augmentation_rounds: int, target_recall: float) -> str:
+                  augmentation_rounds: int, target_recall: float,
+                  room_ambient_dir: "str | None" = None,
+                  room_ambient_weight: int = 3) -> str:
     import os
 
     import yaml
@@ -235,7 +411,14 @@ def _write_config(work: str, oww: str, psg: str, phrase: str, n_samples: int,
     config["target_false_positives_per_hour"] = target_fp_per_hour
     config["max_negative_weight"] = max_negative_weight
     config["augmentation_rounds"] = augmentation_rounds
+    # FMA music is generic; the room ambient is this kitchen, this mic, these
+    # gains. Weight the room up so augmentation is dominated by the acoustic
+    # environment the model actually has to work in.
     config["background_paths"] = [os.path.join(work, "fma")]
+    config["background_paths_duplication_rate"] = [1]
+    if room_ambient_dir:
+        config["background_paths"].append(room_ambient_dir)
+        config["background_paths_duplication_rate"].append(room_ambient_weight)
     config["rir_paths"] = [os.path.join(work, "mit_rirs")]
     config["piper_sample_generator_path"] = psg
     config["piper_model"] = piper_pt
@@ -299,6 +482,8 @@ def _upload_to_hub(onnx_path: str, token: str, output_name: str = OUTPUT_ONNX_NA
     gpu="T4",
     timeout=18000,
     secrets=[modal.Secret.from_name("huggingface")],
+    volumes={REAL_SAMPLES_MOUNT: modal.Volume.from_name(
+        REAL_SAMPLES_VOLUME, create_if_missing=True)},
 )
 def train(
     phrase: str = "hey bender",
@@ -310,6 +495,10 @@ def train(
     augmentation_rounds: int = 2,
     target_recall: float = 0.5,
     output_name: str = OUTPUT_ONNX_NAME,
+    use_real_samples: bool = False,
+    real_positive_fraction: float = 0.20,
+    real_negative_copies: int = 25,
+    room_ambient_weight: int = 3,
 ):
     import os
     import sys
@@ -337,9 +526,28 @@ def train(
     _download_oww_feature_models()
 
     print("=== 4/5 Write config + train ===")
+    # train.py derives these paths from output_dir + model_name; mirror them so
+    # real clips land in the same directories --generate_clips will count.
+    out_dir = os.path.join(work, "my_custom_model")
+    model_name = phrase.replace(" ", "_")
+    positive_train_dir = os.path.join(out_dir, model_name, "positive_train")
+    negative_train_dir = os.path.join(out_dir, model_name, "negative_train")
+
+    room_ambient_dir = None
+    if use_real_samples:
+        print("--- seed real-voice clips ---", flush=True)
+        split = _load_split(REAL_SAMPLES_MOUNT)
+        _seed_real_clips(REAL_SAMPLES_MOUNT, split, positive_train_dir,
+                         negative_train_dir, n_samples, real_positive_fraction,
+                         real_negative_copies)
+        _seed_conversation_negatives(REAL_SAMPLES_MOUNT, split, negative_train_dir)
+        room_ambient_dir = _ambient_background_dir(REAL_SAMPLES_MOUNT, split, work)
+    else:
+        print("No real samples requested: synthetic-only run (the v0.1 recipe).")
+
     cfg = _write_config(work, oww, psg, phrase, n_samples, n_samples_val, steps, piper_pt,
                         target_fp_per_hour, max_negative_weight, augmentation_rounds,
-                        target_recall)
+                        target_recall, room_ambient_dir, room_ambient_weight)
     train_py = os.path.join(oww, "openwakeword", "train.py")
     env = f'PYTHONPATH="{psg}:$PYTHONPATH"'
     for label, flag in (
@@ -366,6 +574,11 @@ def main(
     max_negative_weight: int = 500,
     augmentation_rounds: int = 2,
     target_recall: float = 0.5,
+    use_real_samples: bool = False,
+    real_positive_fraction: float = 0.20,
+    real_negative_copies: int = 25,
+    room_ambient_weight: int = 3,
+    output_name: str = OUTPUT_ONNX_NAME,
 ):
     url = train.remote(
         phrase=phrase,
@@ -376,6 +589,11 @@ def main(
         max_negative_weight=max_negative_weight,
         augmentation_rounds=augmentation_rounds,
         target_recall=target_recall,
+        use_real_samples=use_real_samples,
+        real_positive_fraction=real_positive_fraction,
+        real_negative_copies=real_negative_copies,
+        room_ambient_weight=room_ambient_weight,
+        output_name=output_name,
     )
     print("\nDone. Model URL:")
     print(url)
@@ -441,3 +659,46 @@ def sweep(
     print("\nPick a candidate from the ranking, deploy it to the Pi, and confirm "
           "recall/precision LIVE by saying 'hey bender' at distance/volume "
           "variations. Synthetic metrics rank; the mic decides.")
+
+
+# Ratio sweep for v0.2: the share of the positive set that is real voice is the
+# one knob the plan cannot settle by argument. 10% under-weights the real
+# clips (that is v0.1's failure mode); 35% risks memorising 80 recordings.
+# The held-out set decides. Each run uploads its own tagged ONNX.
+_REAL_FRACTIONS = (0.10, 0.20, 0.35)
+
+
+@app.local_entrypoint()
+def sweep_real(
+    phrase: str = "hey bender",
+    n_samples: int = 20000,
+    n_samples_val: int = 1000,
+    steps: int = 50000,
+    target_fp_per_hour: float = 1.0,
+    max_negative_weight: int = 500,
+    augmentation_rounds: int = 2,
+    target_recall: float = 0.5,
+    real_negative_copies: int = 25,
+    room_ambient_weight: int = 3,
+):
+    """Train one model per real-clip fraction, in parallel.
+
+    Run: modal run scripts/train_hey_bender.py::sweep_real
+
+    Then score every candidate on the DEVICE against the held-out clips:
+        venv/bin/python scripts/eval_wake_model.py --model models/<name>.onnx
+    Synthetic validation metrics rank candidates; the held-out real clips
+    decide, because the whole defect is a synthetic-to-real gap.
+    """
+    args = [
+        (phrase, n_samples, n_samples_val, steps, target_fp_per_hour,
+         max_negative_weight, augmentation_rounds, target_recall,
+         f"hey_bender_v0.2_r{int(f * 100):02d}.onnx",
+         True, f, real_negative_copies, room_ambient_weight)
+        for f in _REAL_FRACTIONS
+    ]
+    print(f"Sweeping real-clip fractions: {', '.join(f'{f:.0%}' for f in _REAL_FRACTIONS)}")
+    for f, url in zip(_REAL_FRACTIONS, train.starmap(args)):
+        print(f"  real={f:.0%}  {url}")
+    print("\nNow evaluate each on BenderPi with scripts/eval_wake_model.py "
+          "(held-out clips only) and ship against the gates in the plan.")
