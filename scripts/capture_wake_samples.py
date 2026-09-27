@@ -408,6 +408,24 @@ CONTINUOUS_MODES = {
 }
 
 
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _wav_seconds(path: str) -> float:
+    """Audio length from the DATA actually present, not from the header.
+
+    A killed arecord leaves a header claiming the full duration, so trusting
+    it silently overstates how much audio exists.
+    """
+    with wave.open(path) as w:
+        frames = len(w.readframes(w.getnframes()))
+    return round(frames / 2 / RATE, 1)
+
+
 def continuous_done(mode: str) -> int:
     """Minutes already captured for a continuous mode."""
     d = os.path.join(OUT_ROOT, mode)
@@ -431,11 +449,25 @@ def capture_continuous(args, mode: str) -> None:
     chunk_s = 60
     for i in range(already, args.minutes):
         out = os.path.join(OUT_ROOT, mode, f"{i:03d}.wav")
+        # Record to a temp name and rename only on success. Ctrl-C used to
+        # leave a partial file at the real name: resume counts files, so the
+        # interrupted minute looked complete, and arecord's header still
+        # claimed the full 60s while holding ~38s of audio (seen 2026-09-27,
+        # conversation 004 and 007). Nothing downstream could tell.
+        part = out + ".part"
         os.makedirs(os.path.dirname(out), exist_ok=True)
         print(f"  minute {i + 1}/{args.minutes}...", flush=True)
-        _record(chunk_s, out)
+        try:
+            _record(chunk_s, part)
+        except (KeyboardInterrupt, subprocess.CalledProcessError):
+            _safe_unlink(part)
+            print("  interrupted — partial minute discarded "
+                  "(completed minutes are safe)")
+            raise
+        secs = _wav_seconds(part)
+        os.replace(part, out)
         _log({"path": os.path.relpath(out, BASE_DIR), "mode": mode,
-              "seconds": chunk_s, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")})
+              "seconds": secs, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")})
     print("Done.")
 
 

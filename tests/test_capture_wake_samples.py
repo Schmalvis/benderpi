@@ -6,6 +6,7 @@ been dropped, teaches the model the wrong thing and you don't find out until
 after a Modal run and a deploy.
 """
 import sys, os
+import types
 
 import numpy as np
 import pytest
@@ -302,3 +303,78 @@ class TestAnchoring:
         a = cap.trim_to_voiced(pcm, anchor="start")
         b = cap.trim_to_voiced(pcm, anchor="centre")
         assert np.array_equal(a, b)
+
+
+class TestInterruptedMinute:
+    """2026-09-27: Ctrl-C during a continuous capture left a partial file at
+    the real name. Resume counts files, so the interrupted minute looked
+    complete, and arecord's header still claimed 60s while holding ~38s of
+    audio — conversation 004 and 007 both had to be repaired by hand."""
+
+    @pytest.fixture
+    def rig(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cap, "OUT_ROOT", str(tmp_path))
+        monkeypatch.setattr(cap, "BASE_DIR", str(tmp_path))
+        logged = []
+        monkeypatch.setattr(cap, "_log", lambda e: logged.append(e))
+        return tmp_path, logged
+
+    def _write_wav(self, path, seconds):
+        import wave
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(cap.RATE)
+            w.writeframes(np.zeros(int(cap.RATE * seconds), dtype=np.int16).tobytes())
+
+    def test_interrupted_minute_leaves_no_file(self, rig, monkeypatch):
+        root, _ = rig
+
+        def boom(seconds, path):
+            self._write_wav(path, 38)          # partial, as arecord leaves it
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cap, "_record", boom)
+        args = types.SimpleNamespace(minutes=2)
+        with pytest.raises(KeyboardInterrupt):
+            cap.capture_continuous(args, "conversation")
+        assert list((root / "conversation").glob("*.wav")) == []
+        assert list((root / "conversation").glob("*.part")) == []
+        assert cap.continuous_done("conversation") == 0
+
+    def test_completed_minutes_survive_an_interruption(self, rig, monkeypatch):
+        root, logged = rig
+        calls = {"n": 0}
+
+        def flaky(seconds, path):
+            calls["n"] += 1
+            self._write_wav(path, 60)
+            if calls["n"] == 2:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(cap, "_record", flaky)
+        with pytest.raises(KeyboardInterrupt):
+            cap.capture_continuous(types.SimpleNamespace(minutes=3), "conversation")
+        assert len(list((root / "conversation").glob("*.wav"))) == 1
+        assert len(logged) == 1
+
+    def test_logged_seconds_come_from_the_audio_not_the_header(self, rig, monkeypatch):
+        root, logged = rig
+        monkeypatch.setattr(cap, "_record", lambda s, p: self._write_wav(p, 37.6))
+        cap.capture_continuous(types.SimpleNamespace(minutes=1), "ambient")
+        assert logged[0]["seconds"] == 37.6
+
+    def test_wav_seconds_ignores_an_overstated_header(self, tmp_path):
+        """A killed arecord writes a header for the full duration; only the
+        data length tells the truth."""
+        import struct
+        import wave
+        path = tmp_path / "short.wav"
+        self._write_wav(path, 10)
+        raw = bytearray(path.read_bytes())
+        # claim 60s of frames in the data chunk header, keep 10s of samples
+        raw[40:44] = struct.pack("<I", cap.RATE * 60 * 2)
+        path.write_bytes(bytes(raw))
+        with wave.open(str(path)) as w:
+            assert w.getnframes() == cap.RATE * 60, "header should overstate"
+        assert cap._wav_seconds(str(path)) == 10.0
