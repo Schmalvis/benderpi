@@ -96,19 +96,26 @@ comparison uses the identical division.
 
 ---
 
-## 2. Getting 49 MB from the Pi to Modal
+## 2. Getting the samples off the Pi (Hugging Face, not Modal)
 
-`modal.Volume`, uploaded once from the dev clone:
+**Platform changed 2026-09-28.** The plan was written for Modal. Hugging Face
+runs GPU jobs, the model repo (`Schmalvis/hey-bender-oww`) and the account
+credit are already there, and the CLI is already installed — a second provider
+bought nothing. `scripts/train_hey_bender_hf.py` runs the identical pipeline on
+`hf jobs`; the Modal script stays as a working fallback, and the seeding logic
+is tested against both so they cannot drift.
+
+Upload once, from the device:
 
 ```bash
-rsync -a pi@BenderPi.local:/home/pi/bender/data/wake_samples/ /tmp/wake_samples/
-modal volume create bender-wake-samples
-modal volume put bender-wake-samples /tmp/wake_samples /
+venv/bin/python scripts/upload_wake_samples.py      # --dry-run to preview
 ```
 
-Mounted read-only in the training function. Not committed to git — the
-household's audio never enters the repo (`data/wake_samples/` is gitignored, and
-`tests/test_capture_wake_samples.py::test_captures_are_gitignored` pins that).
+It creates `Schmalvis/bender-wake-samples` **private** and refuses to upload to
+a public repo — this is household audio. The frozen `split.json` goes up with
+the clips, so the job trains on exactly the division the device evaluates
+against. Nothing enters git: `data/wake_samples/` is gitignored, pinned by
+`tests/test_capture_wake_samples.py::test_captures_are_gitignored`.
 
 ---
 
@@ -161,10 +168,12 @@ column, so every comparison is like-for-like.
 Three runs, identical except the real fraction:
 
 ```bash
-modal run scripts/train_hey_bender.py --n-samples 20000 --steps 50000 \
-    --real-samples-volume bender-wake-samples --real-positive-fraction 0.10 \
-    --output-name hey_bender_v0.2_r10.onnx
-# ... 0.20 → _r20.onnx, 0.35 → _r35.onnx
+hf jobs uv run --flavor t4-small --timeout 5h --secrets HF_TOKEN \
+    scripts/train_hey_bender_hf.py -- \
+    --n-samples 20000 --steps 50000 --use-real-samples \
+    --real-positive-fraction 0.10 --output-name hey_bender_v0.2_r10.onnx
+# ... 0.20 → _r20.onnx, 0.35 → _r35.onnx; they are independent, run in parallel
+hf jobs logs <job-id> --follow
 ```
 
 At 20% and `n_samples=20000`: 4000 real slots ÷ 80 clips = **50 copies each**.
@@ -173,8 +182,10 @@ augmented instances. 10% under-weights the real voice (the v0.1 failure mode);
 35% risks memorising 80 recordings. The sweep decides it with the held-out set
 rather than by argument.
 
-**Cost:** ~2–3.5 h wall clock per run on a Modal T4 at ≈$0.59/h, so **~$1.20–2.10
-each, ~$4–6 for all three**. Runs are unattended and can go in parallel.
+**Cost:** ~2–3.5 h wall clock per run, billed per minute of GPU time by
+flavour (`t4-small` is the cheapest that fits; `l4x1` is faster). Runs are
+unattended and can go in parallel. Check the balance before the sweep — three
+runs is the commitment, not one.
 
 ---
 

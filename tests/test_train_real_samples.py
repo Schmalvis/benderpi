@@ -30,7 +30,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 # test are plain functions that never touch it.
 sys.modules.setdefault("modal", MagicMock())
 
-import train_hey_bender as th
+import train_hey_bender
+import train_hey_bender_hf
+
+
+@pytest.fixture(params=["modal", "hf"])
+def th(request):
+    """Both trainers, one test body.
+
+    The Modal script came first; the Hugging Face one replaced it because the
+    model repo, the samples and the account credit are all on HF already. The
+    seeding logic is identical in both and must STAY identical -- a drift here
+    is a silently wrong training set, not a crash, so every test below runs
+    against both implementations.
+    """
+    return {"modal": train_hey_bender, "hf": train_hey_bender_hf}[request.param]
 
 
 CONV_SECONDS = 6  # fixture-only: real captures are 60s per file
@@ -92,11 +106,11 @@ def volume(tmp_path):
 
 
 class TestSplitLoading:
-    def test_missing_split_refuses_to_train(self, tmp_path):
+    def test_missing_split_refuses_to_train(self, tmp_path, th):
         with pytest.raises(RuntimeError, match="split.json"):
             th._load_split(str(tmp_path))
 
-    def test_loads_the_frozen_split(self, volume):
+    def test_loads_the_frozen_split(self, volume, th):
         root, split = volume
         assert th._load_split(root)["positive"]["train"] == split["positive"]["train"]
 
@@ -111,13 +125,16 @@ def dry_copy(monkeypatch):
     times and where -- not the bytes.
     """
     copies = []
-    monkeypatch.setattr(th.__dict__.setdefault("shutil", __import__("shutil")),
-                        "copyfile", lambda src, dst: copies.append((src, dst)))
+    # Patch the stdlib module itself: the Modal trainer imports shutil inside
+    # the function, the HF one at module level, and both see this object.
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "copyfile",
+                        lambda src, dst: copies.append((src, dst)))
     return copies
 
 
 class TestSeeding:
-    def test_real_share_matches_the_requested_fraction(self, volume, tmp_path, dry_copy):
+    def test_real_share_matches_the_requested_fraction(self, volume, tmp_path, dry_copy, th):
         root, split = volume
         w = th._seed_real_clips(root, split, str(tmp_path / "pt"),
                                 str(tmp_path / "nt"), 20000, 0.20, 25)
@@ -127,7 +144,7 @@ class TestSeeding:
         assert abs(w["positive"] / 20000 - 0.20) < 0.01
         assert len([d for _, d in dry_copy if "/pt/" in d]) == 4000
 
-    def test_fraction_scales(self, volume, tmp_path, dry_copy):
+    def test_fraction_scales(self, volume, tmp_path, dry_copy, th):
         # copies-per-clip is a whole number, so the share lands near the ask,
         # not exactly on it: 20000*0.35/80 = 87.5 -> 88 copies -> 35.2%.
         root, split = volume
@@ -138,13 +155,13 @@ class TestSeeding:
             got = len([d for _, d in dry_copy if "/pt/" in d])
             assert abs(got / 20000 - frac) < 0.01
 
-    def test_negative_copies_are_independent_of_the_fraction(self, volume, tmp_path, dry_copy):
+    def test_negative_copies_are_independent_of_the_fraction(self, volume, tmp_path, dry_copy, th):
         root, split = volume
         th._seed_real_clips(root, split, str(tmp_path / "pt"),
                             str(tmp_path / "nt"), 20000, 0.20, 25)
         assert len([d for _, d in dry_copy if "/nt/" in d]) == 64 * 25
 
-    def test_copies_are_distinctly_named(self, volume, tmp_path):
+    def test_copies_are_distinctly_named(self, volume, tmp_path, th):
         """Real file IO here, deliberately: this is the one test that proves
         the copies actually land on disk. Kept small (n_samples=100) so it
         costs ~100 files, not 4000."""
@@ -155,7 +172,7 @@ class TestSeeding:
         assert len(names) == len(set(names))
         assert all(n.startswith("real_") for n in names)
 
-    def test_at_least_one_copy_even_at_a_tiny_fraction(self, volume, tmp_path):
+    def test_at_least_one_copy_even_at_a_tiny_fraction(self, volume, tmp_path, th):
         root, split = volume
         pos = str(tmp_path / "pt")
         th._seed_real_clips(root, split, pos, str(tmp_path / "nt"), 100, 0.001, 1)
@@ -163,7 +180,7 @@ class TestSeeding:
 
 
 class TestNoLeakage:
-    def test_holdout_clips_never_reach_a_training_directory(self, volume, tmp_path, dry_copy):
+    def test_holdout_clips_never_reach_a_training_directory(self, volume, tmp_path, dry_copy, th):
         root, split = volume
         th._seed_real_clips(root, split, str(tmp_path / "pt"),
                             str(tmp_path / "nt"), 20000, 0.20, 25)
@@ -173,21 +190,21 @@ class TestNoLeakage:
                   for _, d in dry_copy}
         assert not (held & seeded)
 
-    def test_a_leaked_split_is_rejected(self, volume, tmp_path, dry_copy):
+    def test_a_leaked_split_is_rejected(self, volume, tmp_path, dry_copy, th):
         root, split = volume
         split["positive"]["train"].append(split["positive"]["holdout"][0])
         with pytest.raises(AssertionError, match="leaked"):
             th._seed_real_clips(root, split, str(tmp_path / "pt"),
                                 str(tmp_path / "nt"), 20000, 0.20, 25)
 
-    def test_the_excluded_phrase_is_rejected_if_it_appears_in_negatives(self, volume, tmp_path, dry_copy):
+    def test_the_excluded_phrase_is_rejected_if_it_appears_in_negatives(self, volume, tmp_path, dry_copy, th):
         root, split = volume
         split["hard_negative"]["train"].append(split["hard_negative"]["watch"][0])
         with pytest.raises(AssertionError, match="excluded phrase"):
             th._seed_real_clips(root, split, str(tmp_path / "pt"),
                                 str(tmp_path / "nt"), 20000, 0.20, 25)
 
-    def test_a_missing_clip_fails_loudly(self, volume, tmp_path):
+    def test_a_missing_clip_fails_loudly(self, volume, tmp_path, th):
         root, split = volume
         os.remove(os.path.join(root, "positive", "martin", "close_normal_001.wav"))
         with pytest.raises(RuntimeError, match="missing"):
@@ -196,20 +213,20 @@ class TestNoLeakage:
 
 
 class TestAmbientBackgrounds:
-    def test_only_the_held_in_minutes_become_backgrounds(self, volume, tmp_path):
+    def test_only_the_held_in_minutes_become_backgrounds(self, volume, tmp_path, th):
         root, split = volume
         d = th._ambient_background_dir(root, split, str(tmp_path / "work"))
         assert len(os.listdir(d)) == 15
         assert "015.wav" not in os.listdir(d), "held-out ambient must not be a background"
 
-    def test_no_ambient_means_no_directory(self, volume, tmp_path):
+    def test_no_ambient_means_no_directory(self, volume, tmp_path, th):
         root, split = volume
         split["ambient"]["background"] = []
         assert th._ambient_background_dir(root, split, str(tmp_path / "w")) is None
 
 
 class TestConfig:
-    def test_room_ambient_is_weighted_above_generic_music(self, tmp_path, monkeypatch):
+    def test_room_ambient_is_weighted_above_generic_music(self, tmp_path, monkeypatch, th):
         cfg = {}
 
         class _Yaml:
@@ -233,7 +250,7 @@ class TestConfig:
         assert cfg["background_paths"][-1] == "/room"
         assert cfg["background_paths_duplication_rate"] == [1, 3]
 
-    def test_without_real_samples_the_room_is_absent(self, tmp_path, monkeypatch):
+    def test_without_real_samples_the_room_is_absent(self, tmp_path, monkeypatch, th):
         cfg = {}
 
         class _Yaml:
@@ -258,14 +275,14 @@ class TestConfig:
 
 
 class TestConversationalNegatives:
-    def test_minutes_are_sliced_into_two_second_clips(self, volume, tmp_path):
+    def test_minutes_are_sliced_into_two_second_clips(self, volume, tmp_path, th):
         root, split = volume
         neg = str(tmp_path / "nt")
         n = th._seed_conversation_negatives(root, split, neg)
         assert n == 7 * (CONV_SECONDS // 2), "each file sliced into 2s clips"
         assert len(os.listdir(neg)) == n
 
-    def test_clips_are_the_training_format(self, volume, tmp_path):
+    def test_clips_are_the_training_format(self, volume, tmp_path, th):
         root, split = volume
         neg = str(tmp_path / "nt")
         th._seed_conversation_negatives(root, split, neg)
@@ -273,7 +290,7 @@ class TestConversationalNegatives:
             assert (w.getnchannels(), w.getsampwidth(), w.getframerate()) == (1, 2, 16000)
             assert w.getnframes() == 32000
 
-    def test_holdout_minutes_are_never_sliced_in(self, volume, tmp_path):
+    def test_holdout_minutes_are_never_sliced_in(self, volume, tmp_path, th):
         root, split = volume
         neg = str(tmp_path / "nt")
         th._seed_conversation_negatives(root, split, neg)
@@ -285,7 +302,7 @@ class TestConversationalNegatives:
         assert not (sources & held)
         assert sources == {f"{i:03d}" for i in range(7)}
 
-    def test_no_conversation_captured_is_not_an_error(self, volume, tmp_path):
+    def test_no_conversation_captured_is_not_an_error(self, volume, tmp_path, th):
         root, split = volume
         split["conversation"]["train"] = []
         assert th._seed_conversation_negatives(root, split, str(tmp_path / "nt")) == 0

@@ -1,5 +1,12 @@
 """Modal training script for the "hey bender" openWakeWord model.
 
+SUPERSEDED 2026-09-28 by scripts/train_hey_bender_hf.py, which runs the same
+pipeline on Hugging Face Jobs. The model repo, the sample data and the account
+credit were all on Hugging Face already, so a second provider bought nothing.
+Kept because it works and because the seeding logic is tested against both
+(tests/test_train_real_samples.py runs every case twice). Use the HF script
+unless you have a reason not to.
+
 Runs the full openWakeWord training pipeline unattended on a Modal T4 GPU and
 uploads the resulting ONNX model to the HF Hub repo ``Schmalvis/hey-bender-oww``.
 
