@@ -104,8 +104,11 @@ def main() -> None:
             "in the repo settings, or pass --repo with a different name. "
             "Refusing to upload.")
 
+    # .scratch.wav is the capture script's working file for the clip being
+    # recorded; it is not part of the dataset and went up on the first upload.
     api.upload_folder(repo_id=args.repo, repo_type="dataset",
                       folder_path=SAMPLES_DIR, path_in_repo="",
+                      ignore_patterns=[".scratch.wav", "*.part", ".*"],
                       commit_message="wake-word samples + frozen split")
     print(f"\nDone: https://huggingface.co/datasets/{args.repo} (private)")
     print("Train with:")

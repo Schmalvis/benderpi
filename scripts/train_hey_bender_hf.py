@@ -22,7 +22,8 @@
 #   "acoustics",
 #   "pronouncing",
 #   "deep-phonemizer==0.0.19",
-#   "webrtcvad",
+#   "webrtcvad-wheels",   # NOT webrtcvad: that builds from C source and the
+#                         # job image has no Python headers or compiler
 #   "torchinfo",
 #   "espeak-phonemizer",
 #   "mutagen",
