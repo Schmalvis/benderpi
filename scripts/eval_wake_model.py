@@ -181,7 +181,8 @@ def _continuous_results(scorer: Scorer, paths: "list[str]", thresholds) -> dict:
     return {"seconds": seconds, "peak": peak, "fires": fires}
 
 
-def evaluate(model_path: str, split: dict, thresholds=DEFAULT_THRESHOLDS) -> dict:
+def evaluate(model_path: str, split: dict, thresholds=DEFAULT_THRESHOLDS,
+             synthetic_pcm=None) -> dict:
     scorer = Scorer(model_path)
     res = {"model": os.path.basename(scorer.path), "thresholds": list(thresholds)}
     res["positive"] = _clip_results(scorer, split["positive"]["holdout"], thresholds)
@@ -193,21 +194,22 @@ def evaluate(model_path: str, split: dict, thresholds=DEFAULT_THRESHOLDS) -> dic
         scorer, split["ambient"]["holdout"], thresholds)
     res["conversation"] = _continuous_results(
         scorer, split.get("conversation", {}).get("holdout", []), thresholds)
-    res["synthetic"] = _synthetic_score(scorer)
+    res["synthetic"] = _synthetic_score(scorer, synthetic_pcm)
     return res
 
 
-def _synthetic_score(scorer: Scorer) -> float:
-    """Piper-rendered "hey bender": the harness self-check.
+def render_synthetic() -> "np.ndarray | None":
+    """Piper-rendered "hey bender", padded: the harness self-check.
 
-    v0.1 scores ~0.97 here. If a candidate collapses on this too, the export
-    or the harness is broken -- that is a different bug from a model that
-    simply does not generalise, and confusing the two wastes a day.
+    Rendered ONCE per run and shared by every model. Rendering per model made
+    the control incomparable between them -- on 2026-09-28 a run reported
+    0.358 for v0.1, which scores 0.969 on a good render, and that mismatch
+    cost an hour of chasing a bug that did not exist.
     """
     piper = os.path.join(BASE_DIR, "piper", "piper")
     model = os.path.join(BASE_DIR, "models", "bender.onnx")
     if not (os.path.exists(piper) and os.path.exists(model)):
-        return -1.0
+        return None
     raw = tempfile.mktemp(suffix=".wav")
     try:
         subprocess.run([piper, "--model", model, "--output_file", raw],
@@ -219,16 +221,25 @@ def _synthetic_score(scorer: Scorer) -> float:
             pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
         pcm = resample_poly(pcm.astype(np.float64), RATE, sr).astype(np.int16)
         pad = np.zeros(RATE * 2, dtype=np.int16)
-        s = scorer.frame_scores(np.concatenate([pad, pcm, pad]))
-        return float(s.max()) if len(s) else 0.0
+        return np.concatenate([pad, pcm, pad])
     except Exception as exc:
         print(f"  (synthetic control unavailable: {exc})")
-        return -1.0
+        return None
     finally:
         try:
             os.unlink(raw)
         except OSError:
             pass
+
+
+def _synthetic_score(scorer: Scorer, pcm) -> float:
+    """Score the shared synthetic render. Expect ~0.97 for a sane model: a
+    candidate that collapses here has an export or harness problem, which is a
+    different bug from one that simply does not generalise."""
+    if pcm is None:
+        return -1.0
+    s = scorer.frame_scores(pcm)
+    return float(s.max()) if len(s) else 0.0
 
 
 def _rate(rows, t) -> "tuple[int, int]":
@@ -392,10 +403,11 @@ def main() -> None:
         else:
             print(f"mic check: {z:.1%} exact-zero samples — stream is healthy")
 
+    synthetic = render_synthetic()
     results = []
     for m in [args.model] + args.compare:
         print(f"scoring {m} ...", flush=True)
-        results.append(evaluate(m, split, thresholds))
+        results.append(evaluate(m, split, thresholds, synthetic))
 
     print_report(results, thresholds)
 
