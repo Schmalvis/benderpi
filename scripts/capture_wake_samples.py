@@ -45,6 +45,7 @@ Output layout (gitignored -- audio of the household never enters git):
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -71,6 +72,62 @@ PAD_MS = 200          # keep this much either side of the voiced span
 # contain WAKE_PHRASE and as little else as possible -- the prompts below say
 # it explicitly rather than assuming the speaker remembers.
 WAKE_PHRASE = "hey bender"
+
+# Every positive clip is transcribed and checked before it is saved.
+#
+# WHY (2026-09-28): the first 130 positives were captured with prompts that
+# described the CONDITION but never printed the words, so most clips are the
+# speaker reading the condition aloud -- close_normal_002 says "This is my
+# normal speaking voice", far_normal_001 says "3 metres away". openWakeWord
+# labels by directory with no transcript, so those went into training as
+# "hey bender" and were copied 50-88 times each. Two GPU runs and a day of
+# analysis were spent on a model taught that the wake word sounds like a man
+# describing a microphone position. Nothing downstream could see it: the
+# audio was clean, the levels were right, the VAD was happy.
+#
+# Whisper on a 2s far-field clip is not reliable enough to reject on its own,
+# so a clip it cannot confirm is offered to the speaker with the transcript
+# shown. The machine catches the systematic error; the human settles the
+# ambiguous ones.
+_PHRASE_RE = re.compile(
+    r"\b(?:hey|hay|hi|a|ay)\s*,?\s*"
+    r"(?:bend|band|vend)(?:er|e|a|or|ers)?"
+    r"|\bevander\b|\bhaybender\b|\bheybender\b",
+    re.IGNORECASE)
+
+
+def phrase_present(text: str) -> bool:
+    """Does this transcript look like the wake phrase was said?
+
+    Deliberately generous: "Evander" and "Hey, Ben" are what a fast or clipped
+    "hey bender" transcribes as, and rejecting a good clip costs a re-record
+    while accepting a bad one poisons the training set silently... which is
+    exactly why the speaker gets the final say on anything uncertain.
+    """
+    return bool(_PHRASE_RE.search(text or ""))
+
+
+def _transcriber():
+    """Return transcribe(path)->str, or None if no backend is available.
+
+    Uses the device's own Whisper (the service is stopped during capture, so
+    the Hailo STT device is free). On a machine without it, capture still
+    works -- it just cannot verify, and says so.
+    """
+    try:
+        import stt as _stt
+    except Exception as exc:
+        print(f"  (no transcriber: {exc})")
+        return None
+
+    def _t(path: str) -> str:
+        try:
+            return (_stt.transcribe_file(path) or "").strip()
+        except Exception as exc:
+            print(f"  (transcription failed: {exc})")
+            return ""
+
+    return _t
 
 # Carrier sentences for the `embedded` condition. Real use is rarely the
 # phrase alone, but the clip is only CLIP_S long, so the carrier has to be
@@ -247,12 +304,18 @@ def _log(entry: dict) -> None:
         f.write(json.dumps(entry, default=lambda o: o.item() if hasattr(o, "item") else str(o)) + "\n")
 
 
-def _prompt(msg: str) -> bool:
-    """Return False if the user wants to stop."""
+def _prompt(msg: str, keep_yes: bool = False) -> bool:
+    """Return False if the user wants to stop.
+
+    With keep_yes, only an explicit 'y' returns True -- used where the safe
+    default is to NOT keep what was just recorded.
+    """
     try:
         reply = input(msg).strip().lower()
     except EOFError:
         return False
+    if keep_yes:
+        return reply == "y"
     return reply not in ("q", "quit", "stop")
 
 
