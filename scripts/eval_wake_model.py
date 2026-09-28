@@ -198,38 +198,74 @@ def evaluate(model_path: str, split: dict, thresholds=DEFAULT_THRESHOLDS,
     return res
 
 
-def render_synthetic() -> "np.ndarray | None":
-    """Piper-rendered "hey bender", padded: the harness self-check.
+SYNTHETIC_CONTROL = os.path.join(BASE_DIR, "data", "wake_samples",
+                                 "synthetic_control.wav")
 
-    Rendered ONCE per run and shared by every model. Rendering per model made
-    the control incomparable between them -- on 2026-09-28 a run reported
-    0.358 for v0.1, which scores 0.969 on a good render, and that mismatch
-    cost an hour of chasing a bug that did not exist.
+
+def render_synthetic(reference_model: "str | None" = None) -> "np.ndarray | None":
+    """The harness self-check: a fixed Piper "hey bender", padded with silence.
+
+    It has to be a CACHED FILE, not a fresh render. Piper is stochastic --
+    measured on-device 2026-09-28, five renders of the same text came out
+    1.07-1.12s long and v0.1 scored them 0.966, 0.957, 0.071, 0.964, 0.071.
+    Two of five fall off a cliff, so a per-run render made the control swing
+    between 0.97 and 0.13 and look like a broken export. (That the wake model
+    is that brittle on its OWN training distribution is itself a finding.)
+
+    On first use the file is created: render, score with the reference model
+    (the deployed one by default), keep the first render it recognises. The
+    control exists to prove the harness and the export work, so it must be
+    audio a known-good model actually wakes on.
     """
+    if os.path.exists(SYNTHETIC_CONTROL):
+        return _read_wav(SYNTHETIC_CONTROL)
+
     piper = os.path.join(BASE_DIR, "piper", "piper")
     model = os.path.join(BASE_DIR, "models", "bender.onnx")
     if not (os.path.exists(piper) and os.path.exists(model)):
         return None
-    raw = tempfile.mktemp(suffix=".wav")
     try:
-        subprocess.run([piper, "--model", model, "--output_file", raw],
-                       input=b"hey bender", check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         from scipy.signal import resample_poly
-        with wave.open(raw) as w:
-            sr = w.getframerate()
-            pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
-        pcm = resample_poly(pcm.astype(np.float64), RATE, sr).astype(np.int16)
-        pad = np.zeros(RATE * 2, dtype=np.int16)
-        return np.concatenate([pad, pcm, pad])
+        ref = Scorer(reference_model or cfg.oww_model_path) if reference_model \
+            or os.path.exists(os.path.join(BASE_DIR, cfg.oww_model_path)) else None
+        best, best_score = None, -1.0
+        for attempt in range(5):
+            raw = tempfile.mktemp(suffix=".wav")
+            try:
+                subprocess.run([piper, "--model", model, "--output_file", raw],
+                               input=b"hey bender", check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with wave.open(raw) as w:
+                    sr = w.getframerate()
+                    pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+            finally:
+                try:
+                    os.unlink(raw)
+                except OSError:
+                    pass
+            pcm = resample_poly(pcm.astype(np.float64), RATE, sr).astype(np.int16)
+            pad = np.zeros(RATE * 2, dtype=np.int16)
+            padded = np.concatenate([pad, pcm, pad])
+            score = float(ref.frame_scores(padded).max()) if ref else 1.0
+            if score > best_score:
+                best, best_score = padded, score
+            if score >= 0.5:
+                break
+        os.makedirs(os.path.dirname(SYNTHETIC_CONTROL), exist_ok=True)
+        with wave.open(SYNTHETIC_CONTROL, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(RATE)
+            w.writeframes(best.tobytes())
+        print(f"Cached the synthetic control ({best_score:.3f} on the reference "
+              f"model) at {SYNTHETIC_CONTROL}")
+        if best_score < 0.5:
+            print("  WARNING: no render scored above 0.5. Treat the control "
+                  "column as unreliable until this file is replaced.")
+        return best
     except Exception as exc:
         print(f"  (synthetic control unavailable: {exc})")
         return None
-    finally:
-        try:
-            os.unlink(raw)
-        except OSError:
-            pass
 
 
 def _synthetic_score(scorer: Scorer, pcm) -> float:

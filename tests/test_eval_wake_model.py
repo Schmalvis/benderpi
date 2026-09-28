@@ -199,3 +199,34 @@ class TestMicGuard:
         monkeypatch.setattr(sys, "argv", ["eval_wake_model.py"])
         with pytest.raises(SystemExit, match="split_wake_samples"):
             ev.main()
+
+
+class TestSyntheticControl:
+    """Piper is stochastic: measured on-device 2026-09-28, five renders of
+    "hey bender" scored 0.966, 0.957, 0.071, 0.964, 0.071 on v0.1. A per-run
+    render therefore swung the control between 0.97 and 0.13 and read as a
+    broken export, so the control is a cached file chosen once."""
+
+    def test_an_existing_control_file_is_reused_not_re_rendered(self, tmp_path, monkeypatch):
+        import wave
+        path = tmp_path / "synthetic_control.wav"
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(ev.RATE)
+            w.writeframes(np.arange(1000, dtype=np.int16).tobytes())
+        monkeypatch.setattr(ev, "SYNTHETIC_CONTROL", str(path))
+        monkeypatch.setattr(ev.subprocess, "run",
+                            lambda *a, **k: pytest.fail("must not render again"))
+        out = ev.render_synthetic()
+        assert len(out) == 1000
+
+    def test_a_missing_control_and_no_piper_is_not_fatal(self, tmp_path, monkeypatch):
+        """No Piper binary on a dev clone: the harness still runs, the control
+        column just says n/a."""
+        monkeypatch.setattr(ev, "SYNTHETIC_CONTROL", str(tmp_path / "none.wav"))
+        monkeypatch.setattr(ev, "BASE_DIR", str(tmp_path))
+        assert ev.render_synthetic() is None
+
+    def test_scoring_without_a_control_returns_the_n_a_sentinel(self):
+        assert ev._synthetic_score(object(), None) == -1.0
