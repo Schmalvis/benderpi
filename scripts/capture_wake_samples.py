@@ -97,14 +97,46 @@ _PHRASE_RE = re.compile(
 
 
 def phrase_present(text: str) -> bool:
-    """Does this transcript look like the wake phrase was said?
+    """Does this transcript clearly contain the wake phrase?
 
-    Deliberately generous: "Evander" and "Hey, Ben" are what a fast or clipped
-    "hey bender" transcribes as, and rejecting a good clip costs a re-record
-    while accepting a bad one poisons the training set silently... which is
-    exactly why the speaker gets the final say on anything uncertain.
+    Generous about the ending: "Evander", "hey benda" and "hey vendor" are all
+    what a fast or clipped "hey bender" comes back as.
     """
     return bool(_PHRASE_RE.search(text or ""))
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z']+", text or ""))
+
+
+# Above this many words, a transcript with no phrase-like token in it is
+# someone TALKING, not saying a two-word wake phrase. Measured on both real
+# sets: the ruined clips are 3-9 word sentences ("This is my normal speaking
+# voice"), while a genuine capture transcribes to 1-4 words even when mangled
+# past recognition ("Hey Pender", "Hey, thunder", "A-Bent", "Ebato").
+_TALKING_WORDS = 4
+
+
+def classify_clip(text: str) -> str:
+    """Return "ok", "unclear" or "wrong".
+
+    Whisper cannot confirm a 2s far-field clip. Re-auditing a freshly
+    captured, deliberately-spoken set, it rendered "hey bender" as "Hey
+    Pender", "Hey, Sander", "A feather" and "Ebato" -- a strict phrase match
+    would have condemned 84 of 116 good recordings. So the machine only rules
+    on what it can actually tell apart, and the human settles the rest:
+
+      wrong   -- silence, or a sentence with no phrase-like token. This is
+                 exactly the failure that ruined the first dataset.
+      ok      -- the phrase is recognisably there.
+      unclear -- short and mangled. Probably fine.
+    """
+    words = _word_count(text)
+    if words == 0:
+        return "wrong"
+    if phrase_present(text):
+        return "ok"
+    return "unclear" if words <= _TALKING_WORDS else "wrong"
 
 
 def _transcriber():
@@ -360,6 +392,13 @@ def capture_prompted(args, items, mode: str) -> None:
     scratch = os.path.join(OUT_ROOT, ".scratch.wav")
 
     say_default = f'"{WAKE_PHRASE}"' if mode == "positive" else None
+    # Positives are what poisons training when they are wrong, so they are the
+    # ones checked. The transcriber runs on the device's own Whisper; the
+    # service is stopped during capture, so the Hailo STT device is free.
+    verify = _transcriber() if (mode == "positive" and not args.no_verify) else None
+    if mode == "positive" and verify is None and not args.no_verify:
+        print("WARNING: no transcriber on this machine — clips will be kept "
+              "unchecked. That is how the first dataset was ruined.")
     rows, done, total = _plan(items, mode, args.speaker, args.per_condition)
     if done:
         print(f"Resuming: {done}/{total} clips already recorded for "
@@ -396,6 +435,25 @@ def capture_prompted(args, items, mode: str) -> None:
                 print(" no speech detected — skipped, try again")
                 continue
 
+            verdict = "ok"
+            heard = ""
+            if verify is not None:
+                tmp = os.path.join(OUT_ROOT, ".verify.wav")
+                _write(tmp, clip)
+                heard = verify(tmp)
+                _safe_unlink(tmp)
+                verdict = classify_clip(heard)
+                if verdict == "wrong":
+                    print(f" heard {heard!r} — that is not the wake phrase.")
+                    if not _prompt("      keep it anyway? (y to keep, "
+                                   "Enter to re-record): ", keep_yes=True):
+                        continue
+                    print("      kept on your say-so.", end="")
+                else:
+                    print(f" heard {heard!r}"
+                          + (" (unclear)" if verdict == "unclear" else "")
+                          + " —", end="")
+
             peak = int(np.abs(clip).max())
             score = scorer.peak(clip)
             kept += 1
@@ -405,9 +463,14 @@ def capture_prompted(args, items, mode: str) -> None:
             out = os.path.join(OUT_ROOT, mode, args.speaker,
                                f"{label}_{n:03d}.wav")
             _write(out, clip)
+            # The transcript and verdict go in the manifest so a later
+            # audit can see what was heard at capture time, instead of
+            # re-transcribing and guessing. The first dataset had no such
+            # record, which is why the fault took two training runs to find.
             _log({"path": os.path.relpath(out, BASE_DIR), "mode": mode,
                   "speaker": args.speaker, "condition": label,
                   "peak_level": peak, "current_model_score": round(score, 4),
+                  "heard": heard, "verdict": verdict,
                   "ts": time.strftime("%Y-%m-%dT%H:%M:%S")})
 
             flags = []
@@ -545,6 +608,8 @@ def main() -> None:
                     help="clips per condition / per phrase (default 10)")
     ap.add_argument("--minutes", type=int, default=20,
                     help="ambient/conversation modes only (conversation: 10 is plenty)")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip the transcript check on positives (not advised)")
     ap.add_argument("--keep-service", action="store_true",
                     help="don't stop bender-converse (he may wake mid-capture)")
     args = ap.parse_args()

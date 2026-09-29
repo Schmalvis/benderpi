@@ -54,14 +54,17 @@ def _clips(mode: str) -> "list[str]":
 
 
 def audit(mode: str, transcribe) -> "list[tuple]":
-    """(path, transcript, ok) per clip; ok means the phrase was heard."""
+    """(path, transcript, verdict) per clip: ok / unclear / wrong.
+
+    Only "wrong" is quarantined. Whisper mangles a 2s far-field "hey bender"
+    into "Hey Pender" / "A feather" / "Ebato", so treating anything it fails
+    to recognise as a bad clip would destroy most of a good set -- it would
+    have quarantined 84 of 116 deliberately-recorded clips.
+    """
     import capture_wake_samples as cap
 
-    rows = []
-    for path in _clips(mode):
-        text = transcribe(path)
-        rows.append((path, text, cap.phrase_present(text)))
-    return rows
+    return [(path, t, cap.classify_clip(t))
+            for path, t in ((p, transcribe(p)) for p in _clips(mode))]
 
 
 def main() -> None:
@@ -84,25 +87,28 @@ def main() -> None:
         raise SystemExit(f"no {mode} clips found under {OUT_ROOT}")
 
     by_group = collections.OrderedDict()
-    for path, text, ok in rows:
+    for path, text, verdict in rows:
         g = os.path.basename(path).rsplit("_", 1)[0]
-        by_group.setdefault(g, []).append((path, text, ok))
+        by_group.setdefault(g, []).append((path, text, verdict))
 
-    print(f"{'group':18s} kept  examples of what was actually said")
+    print(f"{'group':18s}  ok unclear wrong   what the wrong ones say")
     for g, items in by_group.items():
-        ok_n = sum(1 for *_, ok in items if ok)
-        bad = [t for _, t, ok in items if not ok][:2]
-        print(f"{g:18s} {ok_n:2d}/{len(items):<2d}  " + " | ".join(repr(t[:40]) for t in bad))
+        n = collections.Counter(v for *_, v in items)
+        bad = [t for _, t, v in items if v == "wrong"][:2]
+        print(f"{g:18s} {n['ok']:3d} {n['unclear']:7d} {n['wrong']:5d}   "
+              + " | ".join(repr(t[:34]) for t in bad))
 
-    total_ok = sum(1 for *_, ok in rows if ok)
-    print(f"\n{total_ok}/{len(rows)} clips are what they claim to be.")
+    tot = collections.Counter(v for *_, v in rows)
+    print(f"\n{tot['ok']} ok, {tot['unclear']} unclear (kept — the transcriber "
+          f"cannot resolve a 2s far-field clip), {tot['wrong']} wrong.")
 
     if args.json:
         with open(args.json, "w") as f:
-            json.dump([{"path": p, "text": t, "ok": ok} for p, t, ok in rows], f, indent=2)
+            json.dump([{"path": p, "text": t, "verdict": v} for p, t, v in rows],
+                      f, indent=2)
         print(f"Wrote {args.json}")
 
-    failures = [p for p, _, ok in rows if not ok]
+    failures = [p for p, _, v in rows if v == "wrong"]
     if not failures:
         print("Nothing to quarantine.")
         return
