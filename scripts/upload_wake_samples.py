@@ -32,15 +32,19 @@ DEFAULT_REPO = "Schmalvis/bender-wake-samples"
 
 
 def summarise(root: str) -> dict:
-    """What is about to be uploaded, by mode."""
+    """What is about to be uploaded, by mode. Quarantined clips are excluded
+    here as well as in the upload, so the count on screen is the count sent."""
     out = {}
     for mode in ("positive", "hard_negative"):
         out[mode] = len(glob.glob(os.path.join(root, mode, "*", "*.wav")))
+    out["quarantined (not uploaded)"] = len(
+        glob.glob(os.path.join(root, "quarantine", "**", "*.wav"), recursive=True))
     for mode in ("ambient", "conversation"):
         out[mode] = len(glob.glob(os.path.join(root, mode, "*.wav")))
-    out["bytes"] = sum(os.path.getsize(f)
-                       for f in glob.glob(os.path.join(root, "**", "*.wav"),
-                                          recursive=True))
+    out["bytes"] = sum(
+        os.path.getsize(f)
+        for f in glob.glob(os.path.join(root, "**", "*.wav"), recursive=True)
+        if "quarantine" not in f)
     return out
 
 
@@ -81,6 +85,9 @@ def main() -> None:
           f"{len(split['hard_negative']['holdout'])} held out / "
           f"{len(split['hard_negative'].get('watch', []))} watch)")
     print(f"  ambient         {counts['ambient']:4d} min")
+    if counts["quarantined (not uploaded)"]:
+        print(f"  quarantined     {counts['quarantined (not uploaded)']:4d}  "
+              f"(excluded, and removed from the repo if they were there)")
     print(f"  conversation    {counts['conversation']:4d} min")
     print(f"  total           {counts['bytes'] / 1e6:.0f} MB")
 
@@ -105,10 +112,20 @@ def main() -> None:
             "Refusing to upload.")
 
     # .scratch.wav is the capture script's working file for the clip being
-    # recorded; it is not part of the dataset and went up on the first upload.
+    # recorded; quarantine/ holds clips an audit rejected. Neither belongs in
+    # the training set.
+    #
+    # delete_patterns matters as much as the upload: when clips are
+    # quarantined the repo must LOSE them, or a stale copy sits at the old
+    # path for a later run to find. The job picks files from split.json, so a
+    # leftover is inert today -- but a dataset that disagrees with the device
+    # is how the last failure hid for two training runs.
     api.upload_folder(repo_id=args.repo, repo_type="dataset",
                       folder_path=SAMPLES_DIR, path_in_repo="",
-                      ignore_patterns=[".scratch.wav", "*.part", ".*"],
+                      ignore_patterns=[".scratch.wav", "*.part", ".*",
+                                       "quarantine/**", "synthetic_control.wav"],
+                      delete_patterns=["positive/**", "hard_negative/**",
+                                       "ambient/**", "conversation/**"],
                       commit_message="wake-word samples + frozen split")
     print(f"\nDone: https://huggingface.co/datasets/{args.repo} (private)")
     print("Train with:")
