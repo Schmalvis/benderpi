@@ -86,19 +86,63 @@ def _group(path: str) -> str:
     return os.path.basename(path).rsplit("_", 1)[0]
 
 
-class Scorer:
-    """One loaded model, scored exactly as the wake loop scores frames."""
+# livekit-wakeword models are NOT interchangeable with openWakeWord ones.
+# Measured on-device 2026-09-29: the same v0.1 model scoring the same audio
+# reads 0.965 through openWakeWord's streaming front-end and 0.005 through
+# livekit's stateless one. Whatever the projects share upstream, the runtime
+# paths are not compatible, so a model must be scored by its OWN engine or
+# the number is meaningless.
+LIVEKIT_WINDOW = 32000      # 2.0s at 16kHz: livekit's predict() wants a full window
 
-    def __init__(self, model_path: str):
-        from openwakeword.model import Model
+
+def engine_for(model_path: str) -> str:
+    """openWakeWord unless the filename says otherwise.
+
+    Convention over configuration, because getting this wrong does not error
+    -- it silently reports ~0.005 for a perfectly good model.
+    """
+    name = os.path.basename(model_path).lower()
+    return "livekit" if ("livekit" in name or name.startswith("lk_")) else "openwakeword"
+
+
+class Scorer:
+    """One loaded model, scored exactly as its own engine would at runtime."""
+
+    def __init__(self, model_path: str, engine: "str | None" = None):
         full = model_path if os.path.isabs(model_path) \
             else os.path.join(BASE_DIR, model_path)
         if not os.path.exists(full):
             raise SystemExit(f"model not found: {full}")
         self.path = full
-        self.model = Model(wakeword_model_paths=[full])
+        self.engine = engine or engine_for(full)
+        if self.engine == "livekit":
+            try:
+                from livekit.wakeword import WakeWordModel
+            except ImportError:
+                raise SystemExit(
+                    "livekit-wakeword is not installed; needed to score "
+                    f"{os.path.basename(full)} (pip install livekit-wakeword)")
+            self.model = WakeWordModel(models=[full])
+        else:
+            from openwakeword.model import Model
+            self.model = Model(wakeword_model_paths=[full])
 
     def frame_scores(self, pcm: np.ndarray) -> np.ndarray:
+        """One score per 80ms hop, so both engines produce a stream the same
+        smoothing rule can be applied to."""
+        if self.engine == "livekit":
+            # Stateless: every hop re-scores a full trailing 2s window. Short
+            # clips are zero-padded at the front rather than skipped, or a 2s
+            # capture would yield a single score and the smoothing would never
+            # see a second frame.
+            if len(pcm) < LIVEKIT_WINDOW:
+                pcm = np.concatenate(
+                    [np.zeros(LIVEKIT_WINDOW - len(pcm), dtype=np.int16), pcm])
+            out = []
+            for i in range(0, len(pcm) - LIVEKIT_WINDOW + 1, FRAME):
+                pred = self.model.predict(pcm[i:i + LIVEKIT_WINDOW])
+                out.append(float(max(pred.values())) if pred else 0.0)
+            return np.array(out) if out else np.zeros(0)
         out = []
         for i in range(0, len(pcm) - FRAME + 1, FRAME):
             pred = self.model.predict(pcm[i:i + FRAME])
@@ -182,9 +226,10 @@ def _continuous_results(scorer: Scorer, paths: "list[str]", thresholds) -> dict:
 
 
 def evaluate(model_path: str, split: dict, thresholds=DEFAULT_THRESHOLDS,
-             synthetic_pcm=None) -> dict:
-    scorer = Scorer(model_path)
-    res = {"model": os.path.basename(scorer.path), "thresholds": list(thresholds)}
+             synthetic_pcm=None, engine: "str | None" = None) -> dict:
+    scorer = Scorer(model_path, engine)
+    res = {"model": os.path.basename(scorer.path), "engine": scorer.engine,
+           "thresholds": list(thresholds)}
     res["positive"] = _clip_results(scorer, split["positive"]["holdout"], thresholds)
     res["hard_negative"] = _clip_results(
         scorer, split["hard_negative"]["holdout"], thresholds)
@@ -332,6 +377,8 @@ def _mic_zero_fraction(seconds: int = 3) -> float:
 
 def print_report(results: "list[dict]", thresholds) -> None:
     names = [r["model"] for r in results]
+    for r in results:
+        print(f"  {r['model']}: scored with the {r.get('engine', 'openwakeword')} engine")
     w = max(22, max(len(n) for n in names) + 2)
 
     def row(label, values):
@@ -416,6 +463,8 @@ def main() -> None:
     ap.add_argument("--thresholds", default=",".join(str(t) for t in DEFAULT_THRESHOLDS))
     ap.add_argument("--json", help="write the full results to this path")
     ap.add_argument("--skip-mic-check", action="store_true")
+    ap.add_argument("--engine", choices=["openwakeword", "livekit"],
+                    help="override the engine inferred from the filename")
     args = ap.parse_args()
 
     if not os.path.exists(SPLIT_PATH):
@@ -443,7 +492,8 @@ def main() -> None:
     results = []
     for m in [args.model] + args.compare:
         print(f"scoring {m} ...", flush=True)
-        results.append(evaluate(m, split, thresholds, synthetic))
+        results.append(evaluate(m, split, thresholds, synthetic,
+                                engine=args.engine))
 
     print_report(results, thresholds)
 
