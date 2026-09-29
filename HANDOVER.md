@@ -1,5 +1,68 @@
 # BenderPi Handover Context
-Last updated: 2026-09-08
+Last updated: 2026-09-29
+
+---
+
+## 2026-09-22 → 09-29 — wake-word v0.2/v0.3: a mislabelled dataset, and where it left us
+
+**Read this before touching the wake word.** Every recall number recorded
+before 2026-09-29 is void.
+
+**What went wrong.** 115 of the 130 captured "positive" clips did not contain
+"hey bender". The capture prompts described the recording CONDITION and never
+printed the words, so the speaker read the condition aloud: close_normal_002
+is "This is my normal speaking voice", far_normal_001 is "3 metres away",
+off_axis is "facing away from the device". openWakeWord labels by directory
+with no transcript, so those clips trained as the wake word, copied 50-88
+times each. Two GPU runs, ~$1.80 and a day of analysis rested on it. Nothing
+downstream could see it — clean audio, correct levels, happy VAD, and a
+manifest that recorded the level and the model score but never what was said.
+
+**Fixed.** `capture_wake_samples.py` prints the exact words for every clip and
+classifies each recording with on-device Whisper (ok / unclear / wrong); the
+transcript and verdict go into the manifest. `audit_wake_samples.py` applies
+the same check to old clips and quarantines failures. Whisper CANNOT confirm a
+2s far-field clip — it renders a correct "hey bender" as "Hey Pender", "Hey,
+Sander", "A feather", "Ebato" — so only a sentence with no phrase-like token
+is auto-rejected; short mangled ones are kept. A strict match would have
+condemned 84 of 116 good recordings, and briefly did.
+
+**Current dataset (device, gitignored, mirrored to the private HF dataset
+`Schmalvis/bender-wake-samples`):** 109 positives (83 train / 26 held out),
+150 hard negatives, 20 min ambient, 10 min conversation, 107 clips in
+`quarantine/`. Split frozen in `data/wake_samples/split.json`.
+
+**True baseline, 26 clean held-out clips, live 2-of-4 smoothing, @0.35:**
+
+| model | recall | ordinary speech | hard-neg FP | ambient FP |
+|---|---|---|---|---|
+| v0.1 (synthetic only) | 2/26 (8%) | 1/12 | 0/28 | 0/h |
+| v0.2 r35 (poisoned clips) | 8/26 (31%) | 4/12 | 2/28 | 0/h |
+| v0.3 r35 (clean clips) | 6/26 (23%) | **5/12 (42%)** | 2/28 | 0/h |
+
+Real clips clearly beat synthetic-only. Clean vs poisoned differs by two
+clips, which is inside the noise of a 26-clip set — do not over-read it. The
+plateau is ~25-35% recall against an 80% ship gate. **Nothing has shipped:**
+`deploy_hey_bender.sh` refuses a model that fails the gates, and v0.1 is still
+the deployed model.
+
+**Tooling built this week:** `split_wake_samples.py` (frozen split),
+`eval_wake_model.py` (held-out scoring with the live smoothing, ship gates,
+corrupt-mic guard), `audit_wake_samples.py`, `upload_wake_samples.py` (private
+HF dataset), `train_hey_bender_hf.py` (HF Jobs; the Modal script is superseded
+— HF has the model repo, the data and the credit). Sweep and eval cost ~$2.70
+of a $21 HF balance.
+
+**Next levers, in order of expected value:**
+1. More real clips — 300-400, and a second speaker. 83 training clips is thin.
+2. Migrate to **livekit-wakeword** (Apache-2.0, same frozen front-end as
+   openWakeWord so the wake loop and config keys survive; generates adversarial
+   negatives automatically). Researched 2026-09-28: Picovoice is out (free tier
+   ended 30 June 2026), sherpa-onnx KWS measured 14% recall on these clips,
+   microWakeWord is the hedge.
+3. **Change the wake phrase.** "bender" sits in a dense phonetic neighbourhood
+   — vendor, bend, blender, gender, lavender, surrender, remember, defender —
+   and nobody has costed this option.
 
 ---
 
