@@ -502,7 +502,9 @@ def print_report(results: "list[dict]", thresholds, profile: str = "full",
         print(f"\n  {r['model']}")
         for k in g["passed"]:
             v = g["values"][k]
-            shown = f"{100 * v:.0f}%" if k.startswith("recall") else f"{v:.1f}/h"
+            # rates are fractions, per-hour counts are not: printing 11% as
+            # "0.1/h" made a passing gate look like a different metric
+            shown = f"{v:.1f}/h" if k.endswith("_per_hour") else f"{100 * v:.0f}%"
             print(f"    [{'PASS' if g['passed'][k] else 'FAIL'}] {labels[k]:38s} {shown}")
         print(f"    far-field recall (reported, not gated): "
               f"{100 * g['values']['recall_far']:.0f}%")

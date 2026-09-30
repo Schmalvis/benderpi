@@ -8,6 +8,8 @@
 #   bash scripts/deploy_hey_bender.sh hey_bender_v0.2_r20.onnx --threshold 0.35
 #   bash scripts/deploy_hey_bender.sh <model> --no-eval        # skip the gate check
 #   bash scripts/deploy_hey_bender.sh <model> --force          # deploy a failing model
+#   bash scripts/deploy_hey_bender.sh <model> --threshold 0.10 \
+#       --profile near_field                                   # judge near-field only
 #
 # What it does:
 #   1. Downloads the model from Schmalvis/hey-bender-oww into models/
@@ -28,10 +30,16 @@ MODEL_FILE="hey_bender_v0.1.onnx"
 THRESHOLD=""
 RUN_EVAL=1
 FORCE=0
+PROFILE="full"
+# The gates must be judged at the threshold the device will actually run, or
+# the check answers a question nobody asked.
+GATE_THRESHOLD=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --threshold) THRESHOLD="${2:?--threshold needs a value}"; shift 2 ;;
+        --profile)   PROFILE="${2:?--profile needs a value}"; shift 2 ;;
+        --gate-threshold) GATE_THRESHOLD="${2:?--gate-threshold needs a value}"; shift 2 ;;
         --no-eval)   RUN_EVAL=0; shift ;;
         --force)     FORCE=1; shift ;;
         --repo)      REPO="${2:?--repo needs a value}"; shift 2 ;;
@@ -84,8 +92,12 @@ if [ "$RUN_EVAL" = "1" ]; then
     echo "[2/4] Scoring ${MODEL_FILE} against the held-out clips ..."
     GATE_JSON="$(mktemp)"
     trap 'rm -f "$GATE_JSON"' EXIT
+    # Judge at the threshold being deployed unless told otherwise.
+    GATE_AT="${GATE_THRESHOLD:-${THRESHOLD:-0.35}}"
+    echo "  gates: profile ${PROFILE}, threshold ${GATE_AT}"
     if ! "${PY}" "${PROJECT_DIR}/scripts/eval_wake_model.py" \
-            --model "${MODEL_PATH}" --json "${GATE_JSON}" --skip-mic-check; then
+            --model "${MODEL_PATH}" --json "${GATE_JSON}" --skip-mic-check \
+            --profile "${PROFILE}" --gate-threshold "${GATE_AT}"; then
         echo "  evaluation failed to run. Fix that before deploying, or pass" >&2
         echo "  --no-eval if you know why it cannot run here." >&2
         exit 1

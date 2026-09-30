@@ -126,7 +126,26 @@ echo "$OUT" | grep -q "deploy_hey_bender.sh hey_bender_v0.1.onnx --threshold 0.1
     || fail "rollback line wrong: $(echo "$OUT" | grep -A2 Rollback)"
 [ $FAIL -eq $BEFORE ] && ok "rollback restores the previous model and threshold"
 
-echo "7. Bad arguments are rejected"
+echo "7. The profile and gate threshold reach the evaluation"
+BEFORE=$FAIL
+setup yes
+touch "$PROJ/models/hey_bender_v0.3.onnx"
+# stub eval records the arguments it was called with
+cat > "$PROJ/scripts/eval_wake_model.py" <<'PYEOF2'
+import json, sys
+open("ARGS.txt", "w").write(" ".join(sys.argv[1:]))
+out = sys.argv[sys.argv.index("--json") + 1]
+json.dump({"gates": [{"ship": True}]}, open(out, "w"))
+PYEOF2
+run hey_bender_v0.3.onnx --threshold 0.10 --profile near_field
+[ $RC -eq 0 ] || fail "exit $RC: $OUT"
+ARGS="$(cat "$PROJ/ARGS.txt" 2>/dev/null)"
+echo "$ARGS" | grep -q -- "--profile near_field" || fail "profile not passed: $ARGS"
+echo "$ARGS" | grep -q -- "--gate-threshold 0.10" \
+    || fail "gate threshold should default to the deployed threshold: $ARGS"
+[ $FAIL -eq $BEFORE ] && ok "profile and gate threshold forwarded"
+
+echo "8. Bad arguments are rejected"
 BEFORE=$FAIL
 setup yes
 run ../../etc/passwd;        [ $RC -ne 0 ] || fail "path accepted"
