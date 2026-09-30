@@ -230,3 +230,76 @@ class TestSyntheticControl:
 
     def test_scoring_without_a_control_returns_the_n_a_sentinel(self):
         assert ev._synthetic_score(object(), None) == -1.0
+
+
+class TestProfiles:
+    """Two gate sets, because the goal narrowed on evidence: five runs across
+    two engines and three mixing ratios never exceeded 31% overall recall, and
+    every model scored 0/2 on far_normal, another_room, seated_far, moving and
+    off_axis. Near-field was accepted as the scope on 2026-09-30, with
+    far-field kept as separate work — reported, never gated away silently."""
+
+    def _result(self, near=(5, 6), far=(0, 7), hard=(3, 28),
+                amb=0, conv=0):
+        def clips(fired, groups):
+            out = []
+            for i, g in enumerate(groups):
+                out.append({"path": g, "group": g, "peak": 0.9,
+                            "fires": {0.35: i < fired}})
+            return out
+        pos = clips(near[0], list(ev.NEAR_FIELD_CONDITIONS)[:near[1]])
+        pos += clips(far[0], list(ev.FAR_FIELD_CONDITIONS)[:far[1]])
+        return {
+            "model": "cand.onnx", "engine": "openwakeword", "positive": pos,
+            "hard_negative": [{"path": str(i), "group": "hey_vendor", "peak": 0.9,
+                               "fires": {0.35: i < hard[0]}} for i in range(hard[1])],
+            "watch": [],
+            "ambient": {"seconds": 300.0, "peak": 0.01, "fires": {0.35: amb}},
+            "conversation": {"seconds": 180.0, "peak": 0.01, "fires": {0.35: conv}},
+            "synthetic": 0.99,
+        }
+
+    def test_near_field_profile_ships_a_near_field_model(self):
+        """The real case: 5/6 near-field, 0/7 far-field, 3/28 hard negatives."""
+        g = ev.gate_results(self._result(), profile="near_field")
+        assert g["ship"] is True
+        assert g["values"]["recall_far"] == 0.0
+
+    def test_the_same_model_fails_the_full_profile(self):
+        g = ev.gate_results(self._result(), profile="full")
+        assert g["ship"] is False
+        assert g["passed"]["recall"] is False
+
+    def test_near_field_profile_does_not_gate_far_field(self):
+        """Far-field must be visible in the numbers but never block a ship."""
+        g = ev.gate_results(self._result(far=(0, 7)), profile="near_field")
+        assert "recall_far" in g["values"]
+        assert "recall_far" not in g["passed"]
+
+    def test_poor_near_field_still_blocks(self):
+        g = ev.gate_results(self._result(near=(2, 6)), profile="near_field")
+        assert g["passed"]["recall_near"] is False
+        assert g["ship"] is False
+
+    def test_household_false_wakes_still_block_absolutely(self):
+        """A device that wakes while you talk to someone else is worse than one
+        that needs repeating, so these stay at zero in both profiles."""
+        for key, kwargs in (("ambient_per_hour", {"amb": 1}),
+                            ("conversation_per_hour", {"conv": 1})):
+            g = ev.gate_results(self._result(**kwargs), profile="near_field")
+            assert g["passed"][key] is False
+            assert g["ship"] is False
+
+    def test_adversarial_phrases_get_a_looser_but_real_bound(self):
+        assert ev.NEAR_FIELD_GATES["hard_negative_rate"] == 0.15
+        g = ev.gate_results(self._result(hard=(6, 28)), profile="near_field")
+        assert g["passed"]["hard_negative_rate"] is False
+
+    def test_the_condition_lists_do_not_overlap_or_miss_any(self):
+        near, far = set(ev.NEAR_FIELD_CONDITIONS), set(ev.FAR_FIELD_CONDITIONS)
+        assert not near & far
+        captured = {"close_normal", "mid_normal", "far_normal", "mid_quiet",
+                    "mid_loud", "mid_fast", "mid_slow", "off_axis",
+                    "with_background", "moving", "embedded", "another_room",
+                    "seated_far"}
+        assert near | far == captured

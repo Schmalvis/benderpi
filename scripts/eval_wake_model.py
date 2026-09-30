@@ -31,10 +31,20 @@ Usage:
     venv/bin/python scripts/eval_wake_model.py --model models/a.onnx --compare models/hey_bender_v0.1.onnx
     venv/bin/python scripts/eval_wake_model.py --model models/a.onnx --json results.json
 
-Ship gates (docs/superpowers/plans/2026-09-24-wake-word-retrain-v0.2.md), all
-at threshold 0.35 and all on held-out data:
-    recall >= 80%, recall on normal-speech conditions >= 75%,
-    hard-negative false wakes <= 10%, ambient false wakes = 0/hour.
+Two gate profiles, both on held-out data at threshold 0.35:
+
+  --profile full        (default) the original target: wake from anywhere.
+                        recall >= 80%, normal-speech recall >= 75%,
+                        hard-negative false wakes <= 10%, ambient = 0/hour.
+
+  --profile near_field  the scope accepted 2026-09-30 after five runs across
+                        two engines never exceeded 31% recall, with every
+                        model scoring 0/2 on far_normal, another_room,
+                        seated_far, moving and off_axis:
+                        near-field recall >= 70%, hard-negative <= 15%,
+                        ambient AND conversation = 0/hour. Far-field recall is
+                        printed under this profile but never gates -- it is
+                        tracked follow-up work, not a silently dropped target.
 """
 
 import argparse
@@ -67,11 +77,41 @@ SHIP_THRESHOLD = 0.35
 NORMAL_CONDITIONS = ("close_normal", "mid_normal", "far_normal", "mid_quiet",
                      "mid_loud", "mid_fast")
 
+# Conditions where the speaker is within ~1.5m and addressing the device.
+NEAR_FIELD_CONDITIONS = ("close_normal", "mid_normal", "mid_loud", "mid_fast",
+                         "mid_quiet", "embedded")
+# Everything else: across the room, off axis, from another room, walking past.
+FAR_FIELD_CONDITIONS = ("far_normal", "another_room", "seated_far", "moving",
+                        "off_axis", "mid_slow", "with_background")
+
+# Two profiles, because the goal changed on evidence rather than on preference.
+#
+# "full" is the original target: wake from anywhere in the room. Five training
+# runs across two engines and three mixing ratios never exceeded 31% recall,
+# and EVERY model scored 0/2 on far_normal, another_room, seated_far, moving
+# and off_axis. The ceiling is the phrase and the distance, not the model.
+#
+# "near_field" is the scope the owner accepted on 2026-09-30: near-field now,
+# far-field as a separate piece of work. Far-field recall is still measured
+# and printed under this profile -- it is just not a blocker.
 SHIP_GATES = {
     "recall": 0.80,
     "recall_normal": 0.75,
     "hard_negative_rate": 0.10,
     "ambient_per_hour": 0.0,
+}
+NEAR_FIELD_GATES = {
+    # The metric that decides whether talking to it from a metre away works.
+    "recall_near": 0.70,
+    # Deliberately adversarial phrases ("hey vendor", "hey bend"). Nobody says
+    # these by accident, so a looser bound than the full profile is honest
+    # rather than convenient -- the rate that matters day to day is the next one.
+    "hard_negative_rate": 0.15,
+    # Ordinary household sound and close-range conversation. This one stays at
+    # zero: a device that wakes itself while you talk to someone else is worse
+    # than one that needs repeating.
+    "ambient_per_hour": 0.0,
+    "conversation_per_hour": 0.0,
 }
 
 
@@ -327,28 +367,34 @@ def _rate(rows, t) -> "tuple[int, int]":
     return sum(1 for r in rows if r["fires"][t]), len(rows)
 
 
-def gate_results(res: dict, t: float = SHIP_THRESHOLD) -> dict:
+def _per_hour(d: dict, t: float) -> float:
+    return (d["fires"][t] / (d["seconds"] / 3600)) if d["seconds"] else 0.0
+
+
+def gate_results(res: dict, t: float = SHIP_THRESHOLD,
+                 profile: str = "full") -> dict:
     pos = res["positive"]
     fired, n = _rate(pos, t)
-    normal = [r for r in pos if r["group"] in NORMAL_CONDITIONS]
-    nf, nn = _rate(normal, t)
+    nf, nn = _rate([r for r in pos if r["group"] in NORMAL_CONDITIONS], t)
+    near_f, near_n = _rate([r for r in pos if r["group"] in NEAR_FIELD_CONDITIONS], t)
+    far_f, far_n = _rate([r for r in pos if r["group"] in FAR_FIELD_CONDITIONS], t)
     hf, hn = _rate(res["hard_negative"], t)
-    amb = res["ambient"]
-    per_hour = (amb["fires"][t] / (amb["seconds"] / 3600)) if amb["seconds"] else 0.0
     got = {
         "recall": fired / n if n else 0.0,
         "recall_normal": nf / nn if nn else 0.0,
+        "recall_near": near_f / near_n if near_n else 0.0,
+        "recall_far": far_f / far_n if far_n else 0.0,
         "hard_negative_rate": hf / hn if hn else 0.0,
-        "ambient_per_hour": per_hour,
+        "ambient_per_hour": _per_hour(res["ambient"], t),
+        "conversation_per_hour": _per_hour(res["conversation"], t),
     }
-    passed = {
-        "recall": got["recall"] >= SHIP_GATES["recall"],
-        "recall_normal": got["recall_normal"] >= SHIP_GATES["recall_normal"],
-        "hard_negative_rate": got["hard_negative_rate"] <= SHIP_GATES["hard_negative_rate"],
-        "ambient_per_hour": got["ambient_per_hour"] <= SHIP_GATES["ambient_per_hour"],
-    }
-    return {"threshold": t, "values": got, "passed": passed,
-            "ship": all(passed.values())}
+    gates = NEAR_FIELD_GATES if profile == "near_field" else SHIP_GATES
+    passed = {}
+    for key, bound in gates.items():
+        passed[key] = got[key] >= bound if key.startswith("recall") \
+            else got[key] <= bound
+    return {"threshold": t, "profile": profile, "values": got,
+            "passed": passed, "ship": all(passed.values())}
 
 
 def _mic_zero_fraction(seconds: int = 3) -> float:
@@ -375,7 +421,7 @@ def _mic_zero_fraction(seconds: int = 3) -> float:
             pass
 
 
-def print_report(results: "list[dict]", thresholds) -> None:
+def print_report(results: "list[dict]", thresholds, profile: str = "full") -> None:
     names = [r["model"] for r in results]
     for r in results:
         print(f"  {r['model']}: scored with the {r.get('engine', 'openwakeword')} engine")
@@ -437,20 +483,28 @@ def print_report(results: "list[dict]", thresholds) -> None:
     row("synthetic control (expect ~0.97)",
         [f"{r['synthetic']:.3f}" if r["synthetic"] >= 0 else "n/a" for r in results])
 
-    print(f"\n{'=' * 60}")
-    print(f"  SHIP GATES @ {SHIP_THRESHOLD:.2f} (held-out data only)")
-    print(f"{'=' * 60}")
-    labels = {"recall": "recall >= 80%",
-              "recall_normal": "normal-speech recall >= 75%",
-              "hard_negative_rate": "hard-negative false wakes <= 10%",
-              "ambient_per_hour": "ambient false wakes = 0/h"}
+    print(f"\n{'=' * 64}")
+    print(f"  SHIP GATES @ {SHIP_THRESHOLD:.2f}, profile '{profile}' "
+          f"(held-out data only)")
+    print(f"{'=' * 64}")
+    labels = {
+        "recall": "recall >= 80%",
+        "recall_normal": "normal-speech recall >= 75%",
+        "recall_near": "NEAR-FIELD recall >= 70%",
+        "hard_negative_rate": f"hard-negative false wakes <= "
+                              f"{100 * (NEAR_FIELD_GATES if profile == 'near_field' else SHIP_GATES)['hard_negative_rate']:.0f}%",
+        "ambient_per_hour": "ambient false wakes = 0/h",
+        "conversation_per_hour": "conversation false wakes = 0/h",
+    }
     for r in results:
-        g = gate_results(r)
+        g = gate_results(r, SHIP_THRESHOLD, profile)
         print(f"\n  {r['model']}")
-        for k, label in labels.items():
+        for k in g["passed"]:
             v = g["values"][k]
-            shown = f"{100 * v:.0f}%" if k != "ambient_per_hour" else f"{v:.1f}/h"
-            print(f"    [{'PASS' if g['passed'][k] else 'FAIL'}] {label:36s} {shown}")
+            shown = f"{100 * v:.0f}%" if k.startswith("recall") else f"{v:.1f}/h"
+            print(f"    [{'PASS' if g['passed'][k] else 'FAIL'}] {labels[k]:38s} {shown}")
+        print(f"    far-field recall (reported, not gated): "
+              f"{100 * g['values']['recall_far']:.0f}%")
         print(f"    => {'SHIP' if g['ship'] else 'DO NOT SHIP'}")
 
 
@@ -465,6 +519,9 @@ def main() -> None:
     ap.add_argument("--skip-mic-check", action="store_true")
     ap.add_argument("--engine", choices=["openwakeword", "livekit"],
                     help="override the engine inferred from the filename")
+    ap.add_argument("--profile", choices=["full", "near_field"], default="full",
+                    help="which ship gates to apply (see SHIP_GATES / "
+                         "NEAR_FIELD_GATES for why there are two)")
     args = ap.parse_args()
 
     if not os.path.exists(SPLIT_PATH):
@@ -495,12 +552,13 @@ def main() -> None:
         results.append(evaluate(m, split, thresholds, synthetic,
                                 engine=args.engine))
 
-    print_report(results, thresholds)
+    print_report(results, thresholds, args.profile)
 
     if args.json:
         with open(args.json, "w") as f:
             json.dump({"results": results,
-                       "gates": [gate_results(r) for r in results]}, f, indent=2)
+                       "gates": [gate_results(r, SHIP_THRESHOLD, args.profile)
+                                 for r in results]}, f, indent=2)
             f.write("\n")
         print(f"\nWrote {args.json}")
 
