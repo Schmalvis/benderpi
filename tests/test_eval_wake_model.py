@@ -303,3 +303,62 @@ class TestProfiles:
                     "with_background", "moving", "embedded", "another_room",
                     "seated_far"}
         assert near | far == captured
+
+
+class TestGateThreshold:
+    """The gates used to be hardcoded to 0.35 while the scored thresholds came
+    from --thresholds, so `--thresholds 0.10` crashed with KeyError: 0.35 —
+    after printing a header, which made it look like a data problem."""
+
+    def _split(self, tmp_path):
+        p = tmp_path / "split.json"
+        p.write_text(json.dumps(
+            {"positive": {"holdout": []}, "hard_negative": {"holdout": [], "watch": []},
+             "ambient": {"holdout": []}, "conversation": {"holdout": []}}))
+        return str(p)
+
+    def test_the_gate_threshold_is_always_scored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ev, "SPLIT_PATH", self._split(tmp_path))
+        monkeypatch.setattr(ev, "render_synthetic", lambda *a, **k: None)
+        monkeypatch.setattr(ev, "_mic_zero_fraction", lambda *a, **k: 0.01)
+        seen = {}
+
+        def fake_eval(model, split, thresholds, synth=None, engine=None):
+            seen["thresholds"] = thresholds
+            return {"model": "m.onnx", "engine": "openwakeword",
+                    "positive": [], "hard_negative": [], "watch": [],
+                    "ambient": {"seconds": 0.0, "peak": 0.0,
+                                "fires": {t: 0 for t in thresholds}},
+                    "conversation": {"seconds": 0.0, "peak": 0.0,
+                                     "fires": {t: 0 for t in thresholds}},
+                    "synthetic": -1.0}
+
+        monkeypatch.setattr(ev, "evaluate", fake_eval)
+        monkeypatch.setattr(sys, "argv",
+                            ["eval_wake_model.py", "--thresholds", "0.10",
+                             "--gate-threshold", "0.10", "--model", "m.onnx"])
+        ev.main()
+        assert 0.10 in seen["thresholds"]
+
+    def test_a_gate_threshold_outside_the_list_is_added(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ev, "SPLIT_PATH", self._split(tmp_path))
+        monkeypatch.setattr(ev, "render_synthetic", lambda *a, **k: None)
+        monkeypatch.setattr(ev, "_mic_zero_fraction", lambda *a, **k: 0.01)
+        seen = {}
+
+        def fake_eval(model, split, thresholds, synth=None, engine=None):
+            seen["thresholds"] = thresholds
+            return {"model": "m.onnx", "engine": "openwakeword",
+                    "positive": [], "hard_negative": [], "watch": [],
+                    "ambient": {"seconds": 0.0, "peak": 0.0,
+                                "fires": {t: 0 for t in thresholds}},
+                    "conversation": {"seconds": 0.0, "peak": 0.0,
+                                     "fires": {t: 0 for t in thresholds}},
+                    "synthetic": -1.0}
+
+        monkeypatch.setattr(ev, "evaluate", fake_eval)
+        monkeypatch.setattr(sys, "argv",
+                            ["eval_wake_model.py", "--thresholds", "0.20",
+                             "--model", "m.onnx"])   # gate defaults to 0.35
+        ev.main()
+        assert 0.35 in seen["thresholds"] and 0.20 in seen["thresholds"]

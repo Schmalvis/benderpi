@@ -421,7 +421,8 @@ def _mic_zero_fraction(seconds: int = 3) -> float:
             pass
 
 
-def print_report(results: "list[dict]", thresholds, profile: str = "full") -> None:
+def print_report(results: "list[dict]", thresholds, profile: str = "full",
+                 gate_threshold: float = SHIP_THRESHOLD) -> None:
     names = [r["model"] for r in results]
     for r in results:
         print(f"  {r['model']}: scored with the {r.get('engine', 'openwakeword')} engine")
@@ -484,7 +485,7 @@ def print_report(results: "list[dict]", thresholds, profile: str = "full") -> No
         [f"{r['synthetic']:.3f}" if r["synthetic"] >= 0 else "n/a" for r in results])
 
     print(f"\n{'=' * 64}")
-    print(f"  SHIP GATES @ {SHIP_THRESHOLD:.2f}, profile '{profile}' "
+    print(f"  SHIP GATES @ {gate_threshold:.2f}, profile '{profile}' "
           f"(held-out data only)")
     print(f"{'=' * 64}")
     labels = {
@@ -497,7 +498,7 @@ def print_report(results: "list[dict]", thresholds, profile: str = "full") -> No
         "conversation_per_hour": "conversation false wakes = 0/h",
     }
     for r in results:
-        g = gate_results(r, SHIP_THRESHOLD, profile)
+        g = gate_results(r, gate_threshold, profile)
         print(f"\n  {r['model']}")
         for k in g["passed"]:
             v = g["values"][k]
@@ -519,6 +520,10 @@ def main() -> None:
     ap.add_argument("--skip-mic-check", action="store_true")
     ap.add_argument("--engine", choices=["openwakeword", "livekit"],
                     help="override the engine inferred from the filename")
+    ap.add_argument("--gate-threshold", type=float, default=SHIP_THRESHOLD,
+                    help="threshold the gates are judged at; it is always "
+                         "scored even if --thresholds omits it (default 0.35). "
+                         "Use the value the device actually runs.")
     ap.add_argument("--profile", choices=["full", "near_field"], default="full",
                     help="which ship gates to apply (see SHIP_GATES / "
                          "NEAR_FIELD_GATES for why there are two)")
@@ -529,7 +534,11 @@ def main() -> None:
             f"{SPLIT_PATH} missing. Run scripts/split_wake_samples.py first — "
             "without a frozen split there is no held-out set to score.")
     split = json.load(open(SPLIT_PATH))
-    thresholds = tuple(float(t) for t in args.thresholds.split(","))
+    # The gate threshold must be among the scored ones, or the gates read a
+    # key that was never computed. Add it rather than fail: restricting
+    # --thresholds is a normal thing to do while comparing models.
+    thresholds = tuple(sorted(set(float(t) for t in args.thresholds.split(","))
+                              | {args.gate_threshold}))
 
     if not args.skip_mic_check:
         z = _mic_zero_fraction()
@@ -552,12 +561,12 @@ def main() -> None:
         results.append(evaluate(m, split, thresholds, synthetic,
                                 engine=args.engine))
 
-    print_report(results, thresholds, args.profile)
+    print_report(results, thresholds, args.profile, args.gate_threshold)
 
     if args.json:
         with open(args.json, "w") as f:
             json.dump({"results": results,
-                       "gates": [gate_results(r, SHIP_THRESHOLD, args.profile)
+                       "gates": [gate_results(r, args.gate_threshold, args.profile)
                                  for r in results]}, f, indent=2)
             f.write("\n")
         print(f"\nWrote {args.json}")
