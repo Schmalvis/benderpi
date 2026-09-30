@@ -1,5 +1,69 @@
 # BenderPi Handover Context
-Last updated: 2026-09-29
+Last updated: 2026-09-30
+
+---
+
+## 2026-09-30 — v0.3 SHIPPED for near-field; far-field is open work
+
+**Deployed:** `models/hey_bender_v0.3_r35.onnx` at `oww_threshold` 0.10,
+live 11:38 on 2026-09-30. Rollback is one command, v0.1 is still on disk:
+
+```bash
+bash scripts/deploy_hey_bender.sh hey_bender_v0.1.onnx --threshold 0.1 --no-eval
+```
+
+**Measured, 26 clean held-out clips, threshold 0.10, `--profile near_field`:**
+
+| | v0.1 (was deployed) | v0.3_r35 (now deployed) |
+|---|---|---|
+| near-field recall | 25% | **92%** |
+| far-field recall | 0% | 14% |
+| hard-negative false wakes | 0/28 | 3/28 (11%) |
+| household ambient | 0/h | 0/h |
+| close-range conversation | 0/h | 0/h |
+
+So talking to it from ~1m should work ~11 times in 12, against 3 in 12 before.
+Across the room it still mostly will not answer.
+
+**Scope decision (owner, 2026-09-30):** keep the wake phrase, accept near-field
+now, treat far-field as later work. That is why `eval_wake_model.py` has two
+gate profiles rather than one relaxed set — `full` is unchanged, `near_field`
+gates near-field recall at 70% and household false wakes at zero, and prints
+far-field recall without gating it so a dropped target cannot quietly stop
+being measured.
+
+**What was tried, so nobody repeats it.** Five training runs, ~$3.60 of a $21
+HF balance:
+
+| run | recall @0.35 | note |
+|---|---|---|
+| v0.1 synthetic only | 2/26 | the baseline |
+| v0.2 r20 / r35 | 6/26, 8/26 | trained on the MISLABELLED clips |
+| v0.3 r35 (clean) | 6/26, near-field 92% @0.10 | shipped |
+| livekit-wakeword v1 | 2/26 | no better; see below |
+
+**livekit-wakeword is NOT a drop-in**, contrary to the research summary. The
+same model scoring the same audio reads 0.965 through openWakeWord's streaming
+front-end and 0.005 through livekit's stateless one, so a livekit model needs
+livekit's engine. Its `predict()` also re-scores a full 2s window per call:
+34.8 ms measured on the Pi 5, i.e. 44% of one core at an 80 ms hop, 22% at
+160 ms. The wake loop was deliberately never wired to it. `scripts/
+train_wakeword_livekit_hf.py` works and is kept; it used 14% real clips,
+conv_attention/small, 50k steps — a tuned run (medium, 100k steps, 35% real)
+is untested.
+
+**Far-field follow-up, when it matters.** Every model scored 0/2 on
+`far_normal`, `another_room`, `seated_far`, `moving` and `off_axis`. The
+cheapest untried levers, in order: 100+ positives captured specifically at 3m
+and off-axis; then a tuned livekit run; then the wake phrase itself, which the
+owner has ruled out for now ("bender" sits among vendor, bend, blender,
+gender, lavender, surrender, remember, defender).
+
+**Watch for:** false wakes in ordinary use. Held-out ambient and conversation
+are 0/hour, but v0.3 does wake on 3 of 28 deliberately-adversarial phrases
+("hey vendor", "hey bend"), where v0.1 woke on none. If phantom wakes appear,
+`grep -a "Wake word detected" logs/bender.log` and raise `oww_threshold`
+before suspecting anything else.
 
 ---
 
