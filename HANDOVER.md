@@ -3,6 +3,16 @@ Last updated: 2026-09-30
 
 ---
 
+## Open side investigations
+
+- **Vosk as an STT engine** — `docs/superpowers/plans/2026-10-01-investigate-vosk-stt.md`.
+  Raised 2026-10-01. The appeal is that it STREAMS: measured `stt_transcribe` is
+  508-2227ms (worst 4551ms) of dead air after the speaker stops, in front of the
+  LLM's own 1.0-3.5s. A partial hypothesis could start the turn early. Not
+  started, and not before the Halloween safety work.
+
+---
+
 ## 2026-09-30 — v0.3 SHIPPED for near-field; far-field is open work
 
 **Deployed:** `models/hey_bender_v0.3_r35.onnx` at `oww_threshold` 0.10,
