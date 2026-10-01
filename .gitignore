@@ -57,6 +57,12 @@ timers.json
 .end_session
 .session_active.json
 
+# "say this" IPC: the note the web process writes for the conversation process,
+# and the one-off TTS renders it points at.
+.say_request.json
+.say_request.json.part
+.say_tmp/
+
 # Auto-deploy bad-commit marker (written by scripts/git_pull.sh on rollback)
 .git_pull_bad_sha
 

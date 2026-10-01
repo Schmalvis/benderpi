@@ -336,3 +336,109 @@ class TestTheHouseholdLoopIsCoveredToo:
         import dis
         names = [i.argval for i in dis.get_instructions(wc.main)]
         assert names.index("_start_watchdog_heartbeat") < names.index("_halloween_loop")
+
+
+class TestSayRequests:
+    """The dashboard's "say this" note, served by the process that already owns
+    the speaker. Replaces a stop/play/restart that measured 3.5s of silence and
+    23s of deafness per action."""
+
+    def _fake_say(self, wc, monkeypatch, claims):
+        """Install a fake protocol module that hands out `claims` in order."""
+        played, done = [], []
+        state = {"queue": list(claims)}
+
+        def claim(*a, **k):
+            return state["queue"].pop(0) if state["queue"] else None
+
+        monkeypatch.setattr(wc, "say_request", types.SimpleNamespace(
+            pending=lambda: bool(state["queue"]),
+            claim=claim,
+            done=lambda p: done.append(p["id"]),
+        ), raising=False)
+        monkeypatch.setattr(wc.audio, "play",
+                            lambda wav, **k: played.append(wav), raising=False)
+        monkeypatch.setattr(wc.audio, "open_session", lambda: None, raising=False)
+        monkeypatch.setattr(wc.audio, "close_session", lambda: None, raising=False)
+        return played, done
+
+    def test_a_request_is_played(self, wc, monkeypatch):
+        played, done = self._fake_say(
+            wc, monkeypatch, [{"id": "a", "wav": "/x/clip.wav", "temp": False}])
+        assert wc._serve_say_requests() == 1
+        assert played == ["/x/clip.wav"]
+        assert done == ["a"], "the render must be released even on success"
+
+    def test_several_pending_requests_are_drained(self, wc, monkeypatch):
+        played, _ = self._fake_say(wc, monkeypatch, [
+            {"id": "a", "wav": "/x/1.wav"}, {"id": "b", "wav": "/x/2.wav"}])
+        assert wc._serve_say_requests() == 2
+        assert played == ["/x/1.wav", "/x/2.wav"]
+
+    def test_the_batch_is_capped_so_the_wake_word_cannot_starve(self, wc, monkeypatch):
+        """A dashboard writing requests in a loop must not hold the speaker for
+        ever -- the wake word has to get a turn."""
+        played, _ = self._fake_say(wc, monkeypatch,
+                                   [{"id": str(i), "wav": f"/x/{i}.wav"}
+                                    for i in range(10)])
+        assert wc._serve_say_requests(max_batch=3) == 3
+        assert len(played) == 3
+
+    def test_the_speaker_is_always_closed_again(self, wc, monkeypatch):
+        """The mic cannot reopen until the output stream closes -- the WM8960 is
+        single-rate. A leak here makes Bender permanently deaf."""
+        closed = []
+        self._fake_say(wc, monkeypatch, [{"id": "a", "wav": "/x/1.wav"}])
+        monkeypatch.setattr(wc.audio, "close_session",
+                            lambda: closed.append(1), raising=False)
+        wc._serve_say_requests()
+        assert closed == [1]
+
+    def test_a_bad_wav_does_not_end_the_evening(self, wc, monkeypatch):
+        """This now runs ON the wake loop's thread, so an unhandled error would
+        take the whole assistant down."""
+        closed = []
+        self._fake_say(wc, monkeypatch, [{"id": "a", "wav": "/x/broken.wav"}])
+        monkeypatch.setattr(wc.audio, "close_session",
+                            lambda: closed.append(1), raising=False)
+
+        def boom(*a, **k):
+            raise ValueError("not a RIFF file")
+
+        monkeypatch.setattr(wc.audio, "play", boom, raising=False)
+        assert wc._serve_say_requests() == 0      # survived
+        assert closed == [1], "the speaker must still be released"
+        names = [n for n, _ in wc._metric_counts]
+        assert "say_request_failed" in names
+
+    def test_a_failed_request_is_still_released(self, wc, monkeypatch):
+        """Otherwise a broken render is retried for ever and leaks its file."""
+        _, done = self._fake_say(wc, monkeypatch, [{"id": "a", "wav": "/x/b.wav"}])
+        monkeypatch.setattr(wc.audio, "play",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("dac")),
+                            raising=False)
+        wc._serve_say_requests()
+        assert done == ["a"]
+
+    def test_playing_stamps_progress(self, wc, monkeypatch):
+        """A 15s clip must not look like a wedged loop to the new heartbeat."""
+        self._fake_say(wc, monkeypatch, [{"id": "a", "wav": "/x/1.wav"}])
+        wc._last_progress = 0.0
+        wc._serve_say_requests()
+        assert wc._progress_age() < 5.0
+
+    def test_the_wake_loop_reports_why_it_returned(self, wc):
+        """A say request must NOT start a conversation, so the caller has to be
+        able to tell the two apart."""
+        import dis
+        consts = [c for c in wc.wait_for_wakeword.__code__.co_consts
+                  if isinstance(c, str)]
+        assert "wake" in consts
+        assert "say_request" in consts
+
+    def test_the_household_loop_serves_requests(self, wc):
+        assert "_serve_say_requests" in wc.main.__code__.co_names
+
+    def test_the_halloween_loop_serves_requests(self, wc):
+        """The owner may still want to puppet on the night."""
+        assert "_serve_say_requests" in wc._halloween_loop.__code__.co_names

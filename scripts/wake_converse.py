@@ -35,6 +35,7 @@ import pyaudio
 
 import audio
 import tts_generate
+import say_request
 import stt
 import hailo_hub
 import briefings
@@ -134,6 +135,13 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
         session = None
         try:
             _note_progress()
+            # The owner may still want to puppet on the night -- to greet a
+            # nervous child, or to say something the bank does not cover. The
+            # check sits between sessions, so it never interrupts a child
+            # mid-sentence.
+            if say_request.pending():
+                _serve_say_requests()
+                continue
             leds.set_listening(True)
             text = stt.listen_and_transcribe(after_playback=False)
             if not text:
@@ -368,7 +376,60 @@ def _start_watchdog_heartbeat(stall_limit_s: float = PROGRESS_STALL_LIMIT_S,
     return t, stop
 
 
-def wait_for_wakeword(_oww_model=None):
+def _serve_say_requests(max_batch: int = 3) -> int:
+    """Play every pending dashboard "say this" request. Returns how many played.
+
+    Runs in the conversation process, which already owns the speaker, so this
+    replaces the stop/play/restart dance the web process used to perform:
+    measured 3.5s of silence per soundboard tap and 23s of deafness after it,
+    plus a start-limit kill on the sixth action in five minutes.
+
+    Deliberately defensive, because this now runs ON the wake loop's thread:
+      * every error is caught, so a bad WAV cannot end the evening
+      * progress is stamped, so the systemd heartbeat covers the playback
+      * a batch limit, so a dashboard writing requests in a loop cannot starve
+        the wake word for ever
+    """
+    played = 0
+    while played < max_batch:
+        payload = say_request.claim()
+        if payload is None:
+            break
+        wav = payload["wav"]
+        _note_progress()
+        try:
+            audio.open_session()
+            try:
+                leds.set_talking()
+                audio.play(wav, on_chunk=_check_abort_on_chunk,
+                           on_done=leds.all_off)
+            finally:
+                audio.close_session()
+            played += 1
+            metrics.count("say_request_played", source=payload.get("source", "?"))
+            log.info("Played say request %s (%s)", payload.get("id"),
+                     os.path.basename(wav))
+        except Exception as exc:
+            # Never let a dashboard request kill the wake loop.
+            metrics.count("say_request_failed", error=type(exc).__name__)
+            log.error("Say request %s failed to play (%s): %s",
+                      payload.get("id"), type(exc).__name__, exc)
+            try:
+                leds.all_off()
+            except Exception:
+                pass
+        finally:
+            say_request.done(payload)
+            _note_progress()
+    return played
+
+
+def wait_for_wakeword(_oww_model=None) -> str:
+    """Block until the wake word fires, or a "say this" request arrives.
+
+    Returns the reason it stopped: ``"wake"`` or ``"say_request"``. The caller
+    needs to know, because a say request must NOT start a conversation.
+    """
     oww_model = _oww_model or _load_oww_model(
         os.path.join(BASE_DIR, cfg.oww_model_path)
     )
@@ -455,6 +516,17 @@ def wait_for_wakeword(_oww_model=None):
                     _note_progress()
                     _feed_watchdog()
                     frames_since_hb = 0
+
+                # A dashboard "say this" request. Checked on every frame
+                # because os.path.exists is microseconds against an 80ms
+                # frame, and checking less often would add latency to the one
+                # thing this feature exists to make fast. Returning here hands
+                # the mic back (the reader stops in `finally`) so the caller
+                # can open the speaker -- the same handover a conversation
+                # turn performs.
+                if say_request.pending():
+                    log.info("Say request pending — leaving the wake loop to play it")
+                    return "say_request"
 
                 # Materialise the frame once (reused by the sentinel + predict).
                 pcm_np = np.frombuffer(pcm, dtype=np.int16)
@@ -559,7 +631,7 @@ def wait_for_wakeword(_oww_model=None):
                 if sum(recent_hits) >= required:
                     log.info("Wake word detected (score: %.3f, %d/%d frames over "
                              "threshold)", frame_score, int(sum(recent_hits)), window)
-                    return  # reader stopped in finally
+                    return "wake"  # reader stopped in finally
         except RuntimeError as exc:
             if "stalled" not in str(exc):
                 raise
@@ -703,7 +775,9 @@ def main():
                                   on_flash=leds.set_alert_flash)
                 continue
 
-            wait_for_wakeword()
+            if wait_for_wakeword() == "say_request":
+                _serve_say_requests()
+                continue
             session = ConversationSession(
                 ai=ai,
                 ai_local=ai_local,

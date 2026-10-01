@@ -109,3 +109,134 @@ def test_volume_set():
         resp = client.post("/api/config/volume", json={"level": 75}, headers=auth())
         assert resp.status_code == 200
         assert resp.json()["level"] == 75
+
+
+# ---------------------------------------------------------------------------
+# The "say this" IPC route
+#
+# Measured on-device 2026-10-01: the old route stopped bender-converse, played,
+# and started it again -- 3.5s of silence before a soundboard clip, 23s of
+# deafness afterwards, and a start-limit kill on the SIXTH action in five
+# minutes. Now the request goes to the process that already owns the speaker,
+# and the direct route survives only for when that process is DOWN.
+# ---------------------------------------------------------------------------
+
+def _say_mocks(tmp_wav="/tmp/test.wav"):
+    import types
+    mock_tts = types.ModuleType("tts_generate")
+    mock_tts.speak = lambda text: tmp_wav
+    mock_audio = types.ModuleType("audio")
+    mock_audio.play_oneshot = lambda path, *args: None
+    mock_leds = types.ModuleType("leds")
+    mock_leds.set_talking = lambda: None
+    mock_leds.set_level = lambda level: None
+    mock_leds.all_off = lambda: None
+    return mock_tts, mock_audio, mock_leds
+
+
+def test_speak_uses_the_ipc_route_when_converse_is_running():
+    """No systemctl, no model reload, no start limit."""
+    mock_tts, mock_audio, mock_leds = _say_mocks()
+    requested = {}
+    client = get_client()
+    with patch.dict(sys.modules, {"tts_generate": mock_tts}), \
+         patch("web.routes.puppet.audio", mock_audio), \
+         patch("web.routes.puppet.leds", mock_leds), \
+         patch("web.routes.puppet.converse_is_running", lambda: True), \
+         patch("web.routes.puppet._move_to_say_temp", lambda p: "/repo/.say_tmp/x.wav"), \
+         patch("web.routes.puppet.say_request.sweep_temp", lambda *a, **k: 0), \
+         patch("web.routes.puppet.say_request.request",
+               lambda wav, **kw: requested.update(wav=wav, **kw) or "abc123"), \
+         patch("web.routes.puppet._play_guarded") as direct:
+        resp = client.post("/api/puppet/speak", json={"text": "hello"}, headers=auth())
+    assert resp.status_code == 200
+    assert resp.json()["route"] == "ipc"
+    assert resp.json()["id"] == "abc123"
+    assert requested["temp"] is True, "a one-off render must be marked temp"
+    direct.assert_not_called(), "the service must not be stopped any more"
+
+
+def test_speak_falls_back_to_the_direct_route_when_converse_is_down():
+    """Puppet-only mode: nobody owns the speaker, so take it."""
+    mock_tts, mock_audio, mock_leds = _say_mocks()
+    client = get_client()
+    with patch.dict(sys.modules, {"tts_generate": mock_tts}), \
+         patch("web.routes.puppet.audio", mock_audio), \
+         patch("web.routes.puppet.leds", mock_leds), \
+         patch("web.routes.puppet.converse_is_running", lambda: False), \
+         patch("web.routes.puppet._move_to_say_temp", lambda p: p), \
+         patch("web.routes.puppet.say_request.sweep_temp", lambda *a, **k: 0), \
+         patch("web.routes.puppet.say_request.request") as ipc, \
+         patch("web.routes.puppet._play_guarded") as direct, \
+         patch("os.unlink"):
+        resp = client.post("/api/puppet/speak", json={"text": "hello"}, headers=auth())
+    assert resp.status_code == 200
+    assert resp.json()["route"] == "direct"
+    ipc.assert_not_called()
+    direct.assert_called_once()
+
+
+def test_the_ipc_route_does_not_delete_the_render():
+    """The conversation process plays it LATER. Deleting it on return would
+    hand Bender a missing file -- silence at the door."""
+    mock_tts, mock_audio, mock_leds = _say_mocks()
+    client = get_client()
+    with patch.dict(sys.modules, {"tts_generate": mock_tts}), \
+         patch("web.routes.puppet.audio", mock_audio), \
+         patch("web.routes.puppet.leds", mock_leds), \
+         patch("web.routes.puppet.converse_is_running", lambda: True), \
+         patch("web.routes.puppet._move_to_say_temp", lambda p: "/repo/.say_tmp/x.wav"), \
+         patch("web.routes.puppet.say_request.sweep_temp", lambda *a, **k: 0), \
+         patch("web.routes.puppet.say_request.request", lambda wav, **kw: "id1"), \
+         patch("os.unlink") as unlink:
+        resp = client.post("/api/puppet/speak", json={"text": "hi"}, headers=auth())
+    assert resp.status_code == 200
+    unlink.assert_not_called()
+
+
+def test_the_direct_route_still_deletes_the_render():
+    """It played it inline, so it owns the cleanup."""
+    mock_tts, mock_audio, mock_leds = _say_mocks()
+    client = get_client()
+    with patch.dict(sys.modules, {"tts_generate": mock_tts}), \
+         patch("web.routes.puppet.audio", mock_audio), \
+         patch("web.routes.puppet.leds", mock_leds), \
+         patch("web.routes.puppet.converse_is_running", lambda: False), \
+         patch("web.routes.puppet._move_to_say_temp", lambda p: p), \
+         patch("web.routes.puppet.say_request.sweep_temp", lambda *a, **k: 0), \
+         patch("web.routes.puppet._play_guarded", lambda p: None), \
+         patch("os.unlink") as unlink:
+        resp = client.post("/api/puppet/speak", json={"text": "hi"}, headers=auth())
+    assert resp.status_code == 200
+    unlink.assert_called()
+
+
+def test_a_soundboard_clip_uses_the_ipc_route_too():
+    client = get_client()
+    requested = {}
+    with patch("web.routes.puppet.converse_is_running", lambda: True), \
+         patch("web.routes.puppet.say_request.request",
+               lambda wav, **kw: requested.update(wav=wav, **kw) or "cid"), \
+         patch("web.routes.puppet._play_guarded") as direct, \
+         patch("os.path.isfile", lambda p: True):
+        resp = client.post("/api/puppet/clip",
+                           json={"path": "speech/wav/yo.wav"}, headers=auth())
+    assert resp.status_code == 200
+    assert resp.json()["route"] == "ipc"
+    assert requested.get("temp") is not True, "a library clip must not be deleted"
+    direct.assert_not_called()
+
+
+def test_a_refused_request_falls_back_rather_than_going_silent():
+    """If say_request rejects the path, the operator must still hear something
+    (or get a real error) -- never a silent 200."""
+    client = get_client()
+    with patch("web.routes.puppet.converse_is_running", lambda: True), \
+         patch("web.routes.puppet.say_request.request", lambda wav, **kw: None), \
+         patch("web.routes.puppet._play_guarded") as direct, \
+         patch("os.path.isfile", lambda p: True):
+        resp = client.post("/api/puppet/clip",
+                           json={"path": "speech/wav/yo.wav"}, headers=auth())
+    assert resp.status_code == 200
+    assert resp.json()["route"] == "direct"
+    direct.assert_called_once()

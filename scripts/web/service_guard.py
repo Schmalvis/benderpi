@@ -70,9 +70,35 @@ def _is_converse_active() -> bool:
         return False
 
 
+#: Cache for :func:`converse_is_running`. `systemctl is-active` is a
+#: subprocess fork per call, and the puppet path asks on every request.
+_active_cache: tuple[bool, float] | None = None
+ACTIVE_CACHE_TTL = 2.0
+
+
+def converse_is_running(max_age_s: float = ACTIVE_CACHE_TTL) -> bool:
+    """Is bender-converse up? Cached briefly.
+
+    Used to choose between the "say this" request route (service up, it owns
+    the speaker) and the direct route behind the service guard (service down,
+    nobody owns it). A stale answer is self-correcting: if the service died
+    within the TTL, the request is simply never claimed, and the caller's
+    stale-request sweep removes it.
+    """
+    global _active_cache
+    now = time.monotonic()
+    if _active_cache is not None and now - _active_cache[1] < max_age_s:
+        return _active_cache[0]
+    state = _is_converse_active()
+    _active_cache = (state, now)
+    return state
+
+
 def _stop_converse() -> None:
     if not _IS_LINUX:
         return
+    global _active_cache
+    _active_cache = None
     subprocess.run(
         ["sudo", "systemctl", "stop", "bender-converse"],
         capture_output=True, text=True, timeout=15,
@@ -90,7 +116,8 @@ def _start_converse() -> bool:
     ``systemctl reset-failed bender-converse``; harmless if absent), and the
     result is recorded in :data:`last_start_failed` for callers to surface.
     """
-    global last_start_failed
+    global last_start_failed, _active_cache
+    _active_cache = None
     if not _IS_LINUX:
         return True
     rc = subprocess.run(
