@@ -105,8 +105,34 @@ fi
 echo "$BEHIND new commit(s) available on remote:"
 git log --oneline HEAD..origin/main
 
+# --- The device owns its own bender_config.json -------------------------
+# The file is tracked (so a fresh Pi gets sane overrides) but WRITTEN on the
+# device: deploy_hey_bender.sh switches the wake model, and the web UI's config
+# editor saves the whole blob. Any such write makes the tracked file dirty, and
+# `git pull` then refuses with "Your local changes would be overwritten" —
+# which silently froze deploys twice (2026-09-28, 2026-10-01). The second time
+# the entire difference was a trailing newline.
+#
+# Policy: the DEVICE's copy wins. Values are device state; the tracked copy is
+# a template. New keys shipped in a later commit still take effect, because
+# config.py holds the defaults and only reads this file for overrides.
+CONFIG_SAVED=""
+if ! git diff --quiet -- bender_config.json 2>/dev/null; then
+    CONFIG_SAVED="$(mktemp)"
+    cp bender_config.json "$CONFIG_SAVED"
+    git checkout -- bender_config.json
+    echo "Preserving the device's bender_config.json across the pull"
+fi
+
 # Pull
 git pull origin main --ff-only
+
+if [ -n "$CONFIG_SAVED" ]; then
+    cp "$CONFIG_SAVED" bender_config.json
+    rm -f "$CONFIG_SAVED"
+    echo "Restored the device's bender_config.json (device values win; any NEW"
+    echo "  keys from this commit fall back to the defaults in config.py)"
+fi
 
 NEW_SHA="$(git rev-parse HEAD)"
 

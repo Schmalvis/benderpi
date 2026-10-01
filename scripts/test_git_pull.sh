@@ -105,6 +105,10 @@ EOF
 def hello():
     return "hello"
 EOF
+        # Tracked, but written on the device by deploy_hey_bender.sh and by the
+        # web UI's config editor. That combination froze deploys twice.
+        printf '{\n  "oww_model_path": "models/hey_bender_v0.1.onnx"\n}\n' \
+            > bender_config.json
         # Real python for py_compile fidelity; a stub for pip (no network).
         ln -sf "$(command -v python3)" venv/bin/python
         cat > venv/bin/pip <<'PIPEOF'
@@ -251,6 +255,25 @@ if [ "$RC" -eq 1 ]; then ok "exit 1"; else fail "expected exit 1, got $RC"; fi
 if [ "$ELAPSED" -lt 15 ]; then ok "bounded by timeout (${ELAPSED}s, did not wait full hang)"; else fail "did not bound the hang (${ELAPSED}s)"; fi
 HEAD_SHA="$(cd "$REPO" && git rev-parse HEAD)"
 if [ "$HEAD_SHA" = "$PREV_SHA" ]; then ok "HEAD rolled back after hung restart"; else fail "HEAD not rolled back"; fi
+
+echo "A device-modified bender_config.json does not block the pull"
+BEFORE=$FAIL
+setup_repo
+# the device switched its own wake model, which is what deploy_hey_bender.sh does
+printf '{\n  "oww_model_path": "models/hey_bender_v0.3_r35.onnx"\n}\n' \
+    > "$REPO/bender_config.json"
+# the incoming commit also touches that file — the conflicting case that froze
+# deploys on 2026-09-28 and 2026-10-01
+push_commit_to_remote "config + code change" bash -c \
+    'printf "{\n  \"oww_model_path\": \"models/hey_bender_v0.1.onnx\",\n  \"new_key\": 7\n}\n" > bender_config.json; echo "def f(): return 1" > scripts/hello.py'
+OUT_CFG="$(run_git_pull 2>&1)"
+RC=$?
+[ $RC -eq 0 ] || fail "pull should have succeeded, exit $RC: $(echo "$OUT_CFG" | tail -6)"
+grep -q "hey_bender_v0.3_r35" "$REPO/bender_config.json" \
+    || fail "the DEVICE's config value must survive the pull"
+grep -q "def f()" "$REPO/scripts/hello.py" \
+    || fail "the code change must still land"
+[ $FAIL -eq $BEFORE ] && ok "device config preserved, code still updated"
 
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
