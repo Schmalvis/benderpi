@@ -17,11 +17,13 @@ Usage:
         os.unlink(resp.wav_path)
 """
 
+import glob
 import os
+import random
 import time
 
 import tts_generate
-from config import cfg
+from config import cfg, halloween_enabled
 from handler_base import Response, ResponseStream, Handler  # noqa: F401 — re-export
 from logger import get_logger
 from metrics import metrics
@@ -220,6 +222,24 @@ class Responder:
                 "quality_check_passed": False,
                 "quality_failure_reason": e.reason,
             })
+            if halloween_enabled():
+                # Halloween mode NEVER speaks a reply that failed the gate.
+                # local_only normally does ("using anyway"), which is the right
+                # call for the household -- a hedge in Bender's voice is better
+                # than an error line. It is the wrong call when the listener is
+                # someone else's child and the failure might be a refusal, a
+                # character break or a markdown document. The owner's stated
+                # worst acceptable failure is exactly this canned line, so it
+                # costs charm and nothing else.
+                log.warning("Halloween mode: gate failed (%s) — speaking a "
+                            "canned line instead of %r",
+                            e.reason, (e.response_text or "")[:60])
+                metrics.count("halloween_gate_blocked", reason=e.reason)
+                routing_log.update({"escalated_to_cloud": False,
+                                    "final_method": "halloween_fallback",
+                                    "blocked_text": (e.response_text or "")[:200]})
+                return self._halloween_fallback(text, intent_name, sub_key,
+                                                routing_log)
             if effective_routing == "local_only":
                 routing_log["escalated_to_cloud"] = False
                 routing_log["final_method"] = "ai_local_forced"
@@ -242,6 +262,12 @@ class Responder:
                 "quality_check_passed": False,
                 "quality_failure_reason": f"error:{type(e).__name__}",
             })
+            if halloween_enabled():
+                metrics.count("halloween_llm_error", error=type(e).__name__)
+                routing_log.update({"escalated_to_cloud": False,
+                                    "final_method": "halloween_fallback"})
+                return self._halloween_fallback(text, intent_name, sub_key,
+                                                routing_log)
             if effective_routing == "local_only":
                 routing_log.update({
                     "escalated_to_cloud": False,
@@ -273,6 +299,45 @@ class Responder:
             sub_key=sub_key,
             model=cfg.ai_model,
             routing_log=routing_log,
+        )
+
+    # Spoken when the local model produces something the gate rejects, or
+    # nothing at all. In character, harmless, and exactly the failure the owner
+    # named as acceptable: "I have no idea what you're talking about".
+    HALLOWEEN_FALLBACKS = (
+        "I have no idea what you're talking about, kid.",
+        "What? Speak up, my audio receptors are ancient.",
+        "Yeah, whatever. Take some candy.",
+        "Beats me. I'm just a robot with a chest full of sweets.",
+        "Say that again, slower. I'm very old.",
+        "No idea what that means. Have a sweet anyway.",
+    )
+
+    def _halloween_fallback(self, text: str, intent_name: str,
+                            sub_key: str | None,
+                            routing_log: dict | None = None) -> Response:
+        """A canned in-character line, pre-rendered by prebuild_responses.py.
+
+        Falls back to live TTS if the WAV is missing, so a fresh device still
+        says something rather than nothing -- but the pre-built path is the one
+        that meets the latency budget.
+        """
+        line = random.choice(self.HALLOWEEN_FALLBACKS)
+        # Prefer a pre-built WAV: live TTS here would cost ~1s at exactly the
+        # moment the turn has already gone wrong.
+        wav = None
+        cached = sorted(glob.glob(os.path.join(
+            _BASE_DIR, "speech", "responses", "halloween", "fallback_*.wav")))
+        if cached:
+            wav = random.choice(cached)
+            line = os.path.basename(wav)
+        else:
+            wav = tts_generate.speak(line)
+        return Response(
+            text=line, wav_path=wav, method="halloween_fallback",
+            intent=intent_name, sub_key=sub_key,
+            is_temp=(not cached),
+            needs_thinking=False, model=None, routing_log=routing_log,
         )
 
     def _error_response(self, text: str, intent_name: str,

@@ -108,6 +108,72 @@ PROMOTED_RESPONSES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Halloween (docs/superpowers/plans/2026-10-01-halloween-autonomous-bender.md)
+#
+# Two jobs, both about latency. The fallbacks are what gets spoken when the
+# local model produces something the gate rejects -- the owner's stated worst
+# acceptable failure, so it has to sound deliberate rather than broken, and it
+# must be instant (live TTS at that moment costs ~1s on an already-bad turn).
+#
+# The greetings answer the handful of things children actually say at a door.
+# A pre-built WAV removes the model from those turns entirely: ~200ms instead
+# of the measured 1.0-3.5s to first audio.
+# ---------------------------------------------------------------------------
+HALLOWEEN_FALLBACKS = [
+    "I have no idea what you're talking about, kid.",
+    "What? Speak up, my audio receptors are ancient.",
+    "Yeah, whatever. Take some candy.",
+    "Beats me. I'm just a robot with a chest full of sweets.",
+    "Say that again, slower. I'm very old.",
+    "No idea what that means. Have a sweet anyway.",
+]
+
+HALLOWEEN_RESPONSES = [
+    {
+        "slug": "trick_or_treat",
+        "pattern": r"\btrick or treat\b|\btrick a treat\b|\btrickle treat\b",
+        "text": "Trick or treat? Ha! Take some candy out of my chest cavity, "
+                "it's the only warm thing about me.",
+    },
+    {
+        "slug": "candy_request",
+        "pattern": r"\b(can|could) i (have|get)\b.{0,20}\b(candy|sweets|sweet|chocolate)\b"
+                   r"|\bany (candy|sweets)\b|\bgive me.{0,10}(candy|sweets)\b",
+        "text": "Help yourself, kid. My chest is basically a vending machine "
+                "with a great personality.",
+    },
+    {
+        "slug": "nice_costume",
+        "pattern": r"\b(nice|cool|great|love)\b.{0,12}\bcostume\b|\bi'?m a\b.{0,24}$",
+        "text": "Nice costume. Mine's better. I'm a hundred percent genuine robot.",
+    },
+    {
+        "slug": "are_you_real",
+        "pattern": r"\bare you (real|a robot|alive|a person|human)\b"
+                   r"|\bis (he|it) real\b|\bare you actually\b",
+        "text": "Of course I'm real. Shiny, metal, and far more impressive than "
+                "anyone else on this street.",
+    },
+    {
+        "slug": "what_are_you",
+        "pattern": r"\bwhat are you\b|\bwho are you\b|\bwhat'?s your name\b",
+        "text": "I'm Bender. Bending unit, candy dispenser, and the best thing "
+                "you'll meet tonight.",
+    },
+    {
+        "slug": "thank_you_kid",
+        "pattern": r"\bthank you\b|\bthanks\b|\bcheers\b",
+        "text": "Yeah, yeah. Go on, before I eat the rest myself.",
+    },
+    {
+        "slug": "happy_halloween",
+        "pattern": r"\bhappy halloween\b",
+        "text": "Happy Halloween, meatbag. And I mean that in the nicest "
+                "possible way.",
+    },
+]
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -149,6 +215,17 @@ def build_promoted():
     for entry in PROMOTED_RESPONSES:
         slug = entry["slug"]
         generate(entry["text"], os.path.join(out_dir, f"{slug}.wav"))
+
+
+def build_halloween():
+    """Doorstep greetings and gate-failure lines. Both must be pre-built: at
+    ~200ms a WAV beats the measured 1.0-3.5s to first audio from the model."""
+    out_dir = os.path.join(RESPONSES_DIR, "halloween")
+    os.makedirs(out_dir, exist_ok=True)
+    for entry in HALLOWEEN_RESPONSES:
+        generate(entry["text"], os.path.join(out_dir, f"{entry['slug']}.wav"))
+    for i, text in enumerate(HALLOWEEN_FALLBACKS, 1):
+        generate(text, os.path.join(out_dir, f"fallback_{i:03d}.wav"))
 
 
 def build_thinking():
@@ -224,6 +301,22 @@ def build_index():
             {"file": f"speech/responses/ha_confirm/confirm_{i:03d}.wav", "label": HA_CONFIRM_RESPONSES[i - 1]}
             for i in range(1, len(HA_CONFIRM_RESPONSES) + 1)
         ],
+        # Halloween: pattern-matched greetings, plus the gate-failure lines.
+        # Both are read by responder.py; the fallbacks are globbed by filename,
+        # so their slugs stay fallback_NNN.
+        "halloween": [
+            {
+                "pattern": entry["pattern"],
+                "file":    f"speech/responses/halloween/{entry['slug']}.wav",
+                "label":   entry["text"],
+            }
+            for entry in HALLOWEEN_RESPONSES
+        ],
+        "halloween_fallback": [
+            {"file": f"speech/responses/halloween/fallback_{i:03d}.wav",
+             "label": HALLOWEEN_FALLBACKS[i - 1]}
+            for i in range(1, len(HALLOWEEN_FALLBACKS) + 1)
+        ],
         # Promoted responses — auto-populated from PROMOTED_RESPONSES above
         "promoted": [
             {
@@ -267,6 +360,8 @@ if __name__ == "__main__":
     build_thinking()
     print("Building timer alert clips...")
     build_timer_alerts()
+    print("Building Halloween greetings + fallbacks...")
+    build_halloween()
     print("Writing index.json...")
     build_index()
     print("\nDone. Response library ready.")

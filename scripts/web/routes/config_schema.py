@@ -123,6 +123,12 @@ class BenderConfigUpdate(BaseModel):
     vad_aggressiveness: int | None = None
     silence_frames: int | None = None
     max_record_seconds: int | None = None
+    halloween_mode: bool | None = None
+    halloween_cooldown_s: float | None = None
+    halloween_max_turns: int | None = None
+    halloween_idle_timeout_s: float | None = None
+    halloween_max_tokens: int | None = None
+    halloween_max_sentences: int | None = None
     stt_onset_frames: int | None = None
     stt_vad_warmup_frames: int | None = None
     stt_speech_onset_timeout_s: float | None = None

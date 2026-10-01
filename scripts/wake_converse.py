@@ -46,7 +46,7 @@ from conversation_log import SessionLogger
 from responder import Responder
 from handlers.timer_alert import TimerAlertRunner
 from logger import get_logger
-from config import cfg
+from config import cfg, halloween_enabled
 from metrics import metrics
 from session import ConversationSession, FutureVisionProvider
 
@@ -66,6 +66,96 @@ def _remove_session_file():
                 os.unlink(p)
         except OSError:
             pass
+
+
+def _halloween_turn_loop(session, first_text: str, log_) -> None:
+    """Carry on a doorstep conversation after the opening line.
+
+    Deliberately short: `halloween_max_turns` and a ~6s idle window, because a
+    child who has stopped talking has walked away, and a session left open
+    holds the mic and the LEDs.
+    """
+    max_turns = max(1, int(getattr(cfg, "halloween_max_turns", 6)))
+    idle = float(getattr(cfg, "halloween_idle_timeout_s", 6.0))
+    text = first_text
+    for turn in range(max_turns):
+        result = session.handle_turn(text)
+        if result.should_end:
+            session.end(result.end_reason or "end")
+            return
+        if turn == max_turns - 1:
+            break
+        last_reply = time.monotonic()
+        text = stt.listen_and_transcribe(after_playback=True)
+        if not text:
+            if time.monotonic() - last_reply > idle:
+                session.end("timeout")
+                return
+            text = stt.listen_and_transcribe(after_playback=False)
+            if not text:
+                session.end("timeout")
+                return
+        log_.info("Heard: %r", text)
+    session.end("max_turns")
+
+
+def _halloween_loop(ai, ai_local, responder, log_) -> None:
+    """Open-mic doorstep mode: no wake word, speech is the trigger.
+
+    A trick-or-treater will never say "hey bender", so this mode listens for
+    ANY speech that clears the existing capture gates (`stt_onset_frames`,
+    `stt_min_speech_ms`, `stt_speech_onset_timeout_s`) and treats it as the
+    start of a turn.
+
+    The greeting clip is the instant acknowledgement: `session.start()` plays a
+    real Bender WAV in under 200ms, which covers the 1.0-3.5s the local model
+    needs for its first sentence. Nothing here waits for the LLM before making
+    a sound.
+
+    A cooldown follows every session, because several children talking at once
+    would otherwise start overlapping sessions.
+    """
+    cooldown = float(getattr(cfg, "halloween_cooldown_s", 2.0))
+    log_.warning("HALLOWEEN MODE: no wake word, open mic. Kid-safe prompt, "
+                 "local-only, %d-turn sessions, %.1fs cooldown.",
+                 int(getattr(cfg, "halloween_max_turns", 6)), cooldown)
+    while True:
+        session = None
+        try:
+            leds.set_listening(True)
+            text = stt.listen_and_transcribe(after_playback=False)
+            if not text:
+                continue
+            log_.info("Heard (open mic): %r", text)
+            session = ConversationSession(
+                ai=ai,
+                ai_local=ai_local,
+                responder=responder,
+                session_log=SessionLogger(),
+                vision=None,
+                on_audio_chunk=_check_abort_on_chunk,
+            )
+            session.start()          # plays the greeting = instant acknowledgement
+            _halloween_turn_loop(session, text, log_)
+            session = None
+            metrics.count("halloween_session")
+            time.sleep(cooldown)
+        except KeyboardInterrupt:
+            if session is not None:
+                session.end("interrupt")
+            raise
+        except RuntimeError as exc:
+            # A mic stall must not end the evening. Log, close the session and
+            # keep listening; the mic watchdog escalates on its own if the
+            # device is genuinely wedged.
+            log_.error("Halloween mode error, continuing: %s", exc)
+            metrics.count("halloween_error", error=str(exc)[:80])
+            if session is not None:
+                try:
+                    session.end("error")
+                except Exception:
+                    pass
+            time.sleep(cooldown)
 
 
 def _recover_corrupt_mic(selftest: dict) -> None:
@@ -477,6 +567,16 @@ def main():
         log.info("systemd READY=1 sent (Type=notify)")
     except Exception as exc:
         log.debug("sd_notify not available: %s", exc)
+    if halloween_enabled():
+        # Local-only is not a preference here. The owner's worst acceptable
+        # failure is silence or "no idea what you're talking about", so there
+        # is no reason to send a child's speech to a cloud API.
+        if ai is not None:
+            log_cloud = "cloud responder present but unused in Halloween mode"
+            log.warning(log_cloud)
+        _halloween_loop(None, ai_local, responder, log)
+        return
+
     while True:
         session = None
         try:

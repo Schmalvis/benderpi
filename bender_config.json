@@ -220,6 +220,12 @@
     "do_not"
   ],
   "silence_frames": 25,
+  "halloween_mode": false,
+  "halloween_cooldown_s": 2.0,
+  "halloween_max_turns": 6,
+  "halloween_idle_timeout_s": 6.0,
+  "halloween_max_tokens": 48,
+  "halloween_max_sentences": 2,
   "stt_onset_frames": 3,
   "stt_vad_warmup_frames": 5,
   "stt_speech_onset_timeout_s": 6.0,

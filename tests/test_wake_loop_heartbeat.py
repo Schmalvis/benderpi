@@ -140,7 +140,12 @@ def _patch_all_deps(monkeypatch):
         thinking_sound=False,
         simple_intent_max_words=6,
     )
-    fake_config = _make_fake_module("config", cfg=fake_cfg)
+    # The real config module exports halloween_enabled() as a STRICT predicate
+    # (literally True, never merely truthy), and wake_converse imports it. The
+    # stub must mirror that, or importing the module under test fails.
+    fake_config = _make_fake_module(
+        "config", cfg=fake_cfg,
+        halloween_enabled=lambda: getattr(fake_cfg, "halloween_mode", False) is True)
     monkeypatch.setitem(sys.modules, "config", fake_config)
 
     monkeypatch.setitem(sys.modules, "dotenv",

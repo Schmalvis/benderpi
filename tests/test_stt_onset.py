@@ -192,8 +192,12 @@ class TestWakeLoopWiring:
             return f.read()
 
     def test_idle_clock_restarts_after_handle_turn(self):
+        """Anchored inside the WAKE-WORD loop. Halloween mode has its own turn
+        loop with the same handle_turn() call and no idle clock, so searching
+        the file from the top finds the wrong one."""
         src = self._src()
-        turn = src.index("result = session.handle_turn(text)")
+        loop = src.index("wait_for_wakeword()\n            session = ConversationSession(")
+        turn = src.index("result = session.handle_turn(text)", loop)
         stamp = src.index("last_heard = time.monotonic()", turn)
         assert stamp - turn < 400, "last_heard must be stamped right after handle_turn"
         assert "last_heard = time.time()" not in src

@@ -98,6 +98,22 @@ class Config:
     # Consecutive VAD-positive 30ms frames before a capture "starts". One frame
     # let door slams start 750ms captures that were then rejected and re-entered
     # (eight in nine seconds, live 2026-08-04). 3 = 90ms of continuous voice.
+    # ---- Halloween autonomous mode (docs/superpowers/plans/2026-10-01-...) ----
+    #   A trick-or-treater will never say "hey bender", so this mode drops the
+    #   wake word entirely: any speech that clears the capture gates starts a
+    #   turn. The greeting clip doubles as the instant acknowledgement, which
+    #   is what hides the LLM's 1-3.5s time-to-first-audio.
+    halloween_mode: bool = False
+    #   One reply per utterance, with a gap afterwards. Several children talking
+    #   at once would otherwise stack overlapping sessions.
+    halloween_cooldown_s: float = 2.0
+    #   Short exchanges. A doorstep conversation is not a chat session.
+    halloween_max_turns: int = 6
+    halloween_idle_timeout_s: float = 6.0
+    #   Hard caps for this mode: measured decode is 5.6-6.9 tok/s, so 48 tokens
+    #   is ~7s of decode and two sentences is ~6s of speech.
+    halloween_max_tokens: int = 48
+    halloween_max_sentences: int = 2
     stt_onset_frames: int = 3
     stt_vad_warmup_frames: int = 5    # frames fed to a fresh VAD and ignored for onset
     # Seconds to wait for speech onset before giving up on a capture (0 = wait
@@ -481,3 +497,14 @@ class Config:
 
 # Singleton — import as: from config import cfg
 cfg = Config()
+
+def halloween_enabled() -> bool:
+    """True only when `halloween_mode` is literally True.
+
+    Deliberately strict rather than truthy. This flag drops the wake word,
+    swaps in the kid-safe prompt, forces local-only and blocks any reply that
+    fails the gate -- so it must never switch itself on because something
+    handed us a stub, a Mock or the string "false". A test with a MagicMock cfg
+    did exactly that and silently put the responder into Halloween mode.
+    """
+    return getattr(cfg, "halloween_mode", False) is True

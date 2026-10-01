@@ -10,8 +10,32 @@ import time
 import requests
 
 import hailo_hub
-from ai_response import BENDER_SYSTEM_PROMPT
-from config import cfg
+from ai_response import BENDER_SYSTEM_PROMPT, HALLOWEEN_SYSTEM_PROMPT
+
+
+def active_system_prompt() -> str:
+    """The household prompt, or the kid-safe one in Halloween mode.
+
+    Read at call time rather than import time so flipping `halloween_mode` and
+    restarting is the whole switch -- and so a future runtime toggle works
+    without another code change.
+    """
+    return HALLOWEEN_SYSTEM_PROMPT if halloween_enabled() else BENDER_SYSTEM_PROMPT
+
+
+def active_max_tokens() -> int:
+    """Halloween mode caps decode harder: measured 5.6-6.9 tok/s, so 48 tokens
+    is ~7s of decode where 80 is ~12s, and a child is standing in the cold."""
+    if halloween_enabled():
+        return int(getattr(cfg, "halloween_max_tokens", 48))
+    return int(getattr(cfg, "ai_hailo_max_tokens", 80))
+
+
+def active_max_sentences() -> int:
+    if halloween_enabled():
+        return int(getattr(cfg, "halloween_max_sentences", 2))
+    return int(getattr(cfg, "ai_max_sentences", 3))
+from config import cfg, halloween_enabled
 from logger import get_logger
 from metrics import metrics
 
@@ -153,7 +177,7 @@ def _hailo_sampling_kwargs() -> dict:
         top_p=float(getattr(cfg, "ai_hailo_top_p", 0.9)),
         do_sample=True,
         seed=random.randrange(1, 2 ** 31),
-        max_generated_tokens=int(getattr(cfg, "ai_hailo_max_tokens", 80)),
+        max_generated_tokens=active_max_tokens(),
     )
     penalty = getattr(cfg, "ai_hailo_frequency_penalty", None)
     if penalty is not None:
@@ -165,7 +189,7 @@ def _ollama_options() -> dict:
     """Ollama decode options, kept in step with the Hailo parameters so a
     failover turn sounds like the same Bender."""
     opts = {
-        "num_predict": int(getattr(cfg, "ai_hailo_max_tokens", 80)),
+        "num_predict": active_max_tokens(),
         "temperature": float(getattr(cfg, "ai_temperature", 0.7)),
         "top_p": float(getattr(cfg, "ai_hailo_top_p", 0.9)),
     }
@@ -416,7 +440,7 @@ class _HailoLLMResponder:
         if self._context_fresh:
             messages.append({
                 "role": "system",
-                "content": [{"type": "text", "text": BENDER_SYSTEM_PROMPT}],
+                "content": [{"type": "text", "text": active_system_prompt()}],
             })
         messages.append({
             "role": "user",
@@ -539,7 +563,7 @@ class _HailoLLMResponder:
                 derailed: str | None = None  # template output after the reply
                 derail_reason = "control_tokens"
                 capped = False               # stopped at ai_max_sentences
-                max_sentences = int(getattr(cfg, "ai_max_sentences", 3))
+                max_sentences = active_max_sentences()
                 for token in gen:
                     if token == _IM_END:
                         ended_clean = True
@@ -841,7 +865,7 @@ class _OllamaResponder:
                 json={
                     "model": cfg.local_llm_model,
                     "messages": [
-                        {"role": "system", "content": BENDER_SYSTEM_PROMPT},
+                        {"role": "system", "content": active_system_prompt()},
                         *self.history,
                     ],
                     "stream": False,
@@ -888,7 +912,7 @@ class _OllamaResponder:
                 json={
                     "model": cfg.local_llm_model,
                     "messages": [
-                        {"role": "system", "content": BENDER_SYSTEM_PROMPT},
+                        {"role": "system", "content": active_system_prompt()},
                         *self.history,
                     ],
                     "stream": True,
