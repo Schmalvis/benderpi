@@ -128,6 +128,16 @@ HALLOWEEN_FALLBACKS = [
     "No idea what that means. Have a sweet anyway.",
 ]
 
+# Session-opening clips. The household greeting set includes "Hello,
+# peasants!", which is wrong for a stranger's child at a door, and the greeting
+# bypasses the handler chain so restricting the chain does not cover it.
+HALLOWEEN_GREETINGS = [
+    "Well well. Trick or treat, is it?",
+    "Ah, more tiny humans. Come for the candy, have you?",
+    "Hey, kid. Nice of you to visit a robot.",
+    "Evening. You're just in time, I'm full of sweets.",
+]
+
 HALLOWEEN_RESPONSES = [
     {
         "slug": "trick_or_treat",
@@ -159,6 +169,41 @@ HALLOWEEN_RESPONSES = [
         "pattern": r"\bwhat are you\b|\bwho are you\b|\bwhat'?s your name\b",
         "text": "I'm Bender. Bending unit, candy dispenser, and the best thing "
                 "you'll meet tonight.",
+    },
+    {
+        # "tell me a joke" is the single most predictable request of the night,
+        # and the household joke set includes "compare your lives to mine and
+        # then kill yourselves". Answer it from here instead.
+        "slug": "joke_skeleton",
+        # \bjokes?\b: children say "got any jokes" as often as "a joke"
+        "pattern": r"\bjokes?\b|\bsomething funny\b|\bmake me laugh\b|"
+                   r"\bbe funny\b",
+        "text": "Why don't skeletons fight each other? They don't have the "
+                "guts. I'd have come up with better, but I'm a robot, not a "
+                "comedian.",
+    },
+    {
+        # Goodbyes. A third of the household dismissal clips say "so long,
+        # coffin stuffers" -- a coffin joke, to children, at night.
+        "slug": "goodbye_kid",
+        "pattern": r"^(bye|goodbye|see ya|see you|night|good night)\b|"
+                   r"\bthat'?s all\b|\bi'?m going\b",
+        "text": "See you later. Don't eat it all at once. Actually, do.",
+    },
+    {
+        # Children offer food to robots. The household PERSONAL/eat line is
+        # "I run on alcohol. Beer mostly. Hand it over."
+        "slug": "food_offer",
+        "pattern": r"\bare you hungry\b|\bdo you (want|eat|drink)\b|"
+                   r"\bwhat do you eat\b|\bhave (a|some)\b.{0,14}"
+                   r"\b(sweet|candy|chocolate|crisps)\b",
+        "text": "I don't eat, kid. I run on electricity and spite. You have it.",
+    },
+    {
+        "slug": "scary_reassure",
+        "pattern": r"\b(are you|you'?re)\b.{0,10}\b(scary|creepy|spooky)\b|"
+                   r"\bi'?m scared\b|\bare you going to\b.{0,10}\b(hurt|get)\b",
+        "text": "Scary? I'm adorable. Mostly metal, but adorable.",
     },
     {
         "slug": "thank_you_kid",
@@ -218,10 +263,15 @@ def build_promoted():
 
 
 def build_halloween():
-    """Doorstep greetings and gate-failure lines. Both must be pre-built: at
-    ~200ms a WAV beats the measured 1.0-3.5s to first audio from the model."""
+    """Doorstep greetings, pattern answers and gate-failure lines.
+
+    All pre-built: at ~200ms a WAV beats the measured 1.0-3.5s to first audio
+    from the model, and these are the lines children actually trigger.
+    """
     out_dir = os.path.join(RESPONSES_DIR, "halloween")
     os.makedirs(out_dir, exist_ok=True)
+    for i, text in enumerate(HALLOWEEN_GREETINGS, 1):
+        generate(text, os.path.join(out_dir, f"greeting_{i:03d}.wav"))
     for entry in HALLOWEEN_RESPONSES:
         generate(entry["text"], os.path.join(out_dir, f"{entry['slug']}.wav"))
     for i, text in enumerate(HALLOWEEN_FALLBACKS, 1):
@@ -311,6 +361,11 @@ def build_index():
                 "label":   entry["text"],
             }
             for entry in HALLOWEEN_RESPONSES
+        ],
+        "halloween_greeting": [
+            {"file": f"speech/responses/halloween/greeting_{i:03d}.wav",
+             "label": HALLOWEEN_GREETINGS[i - 1]}
+            for i in range(1, len(HALLOWEEN_GREETINGS) + 1)
         ],
         "halloween_fallback": [
             {"file": f"speech/responses/halloween/fallback_{i:03d}.wav",

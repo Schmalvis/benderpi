@@ -26,7 +26,7 @@ import json
 import os
 import re
 
-from config import cfg
+from config import cfg, halloween_enabled
 from logger import get_logger
 from metrics import metrics
 
@@ -294,10 +294,30 @@ def _promoted_patterns() -> list:
             _promoted_cache = []
     return _promoted_cache
 
+_halloween_cache = None
+
+
+def _halloween_patterns() -> list:
+    """Doorstep patterns from index.json, cached. Halloween mode only.
+
+    Same entry shape as "promoted" (pattern + file), so these reuse the
+    existing PROMOTED handler rather than needing a parallel path.
+    """
+    global _halloween_cache
+    if _halloween_cache is None:
+        try:
+            with open(_INDEX_PATH) as f:
+                _halloween_cache = json.load(f).get("halloween", [])
+        except Exception:
+            _halloween_cache = []
+    return _halloween_cache
+
+
 def reload_promoted():
     """Call after running prebuild_responses.py to pick up new promotions."""
-    global _promoted_cache
+    global _promoted_cache, _halloween_cache
     _promoted_cache = None
+    _halloween_cache = None
 
 
 def _check_all_intents(t: str) -> list[str]:
@@ -346,6 +366,16 @@ def classify(text: str) -> tuple[str, str | None]:
     # strip a one-word thanks cost a 3–8s LLM turn instead of a clip.
     t = re.sub(r"[.!?,]+$", "", t).strip()
     word_count = len(t.split())
+
+    # Halloween mode checks its own bank FIRST, before every household intent.
+    # Order is the whole point: "happy halloween" otherwise matches
+    # PERSONAL/feelings and plays a household line telling a child to keep a
+    # secret, and "are you hungry" matches PERSONAL/eat and asks a child to
+    # hand over beer. Verified by running classify() on 2026-10-01.
+    if halloween_enabled():
+        for entry in _halloween_patterns():
+            if re.search(entry["pattern"], t, re.IGNORECASE):
+                return ("PROMOTED", entry["file"])
 
     # Most specific first
     if _match_any(t, TIMER_PATTERNS):

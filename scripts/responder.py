@@ -60,18 +60,47 @@ class Responder:
         from handlers.time_handler import TimeHandler
         from handlers.vision_handler import VisionHandler
 
-        handlers = [
-            RealClipHandler(index_path=idx_path, base_dir=self._base_dir),
-            PreGenHandler(index_path=idx_path, base_dir=self._base_dir),
-            PromotedHandler(index_path=idx_path, base_dir=self._base_dir),
-            ContextualHandler(),
-            WeatherHandler(),
-            NewsHandler(),
-            TimeHandler(),
-            HAHandler(),
-            TimerHandler(),
-            VisionHandler(),
-        ]
+        if halloween_enabled():
+            # ONE handler, by design. Reviewed 2026-10-01: gating only the
+            # model left the entire handler chain reachable by children, and
+            # every finding below was verified by running classify():
+            #   RealClipHandler  - "tell me a joke" picks 1 of 8 household
+            #                      clips, one of which is "compare your lives
+            #                      to mine and then kill yourselves"; a third
+            #                      of goodbyes say "so long, coffin stuffers"
+            #   PreGenHandler    - "happy halloween" tells a child to keep a
+            #                      secret; "are you hungry" asks for beer;
+            #                      "can I be your friend" says they couldn't
+            #                      afford it
+            #   HAHandler        - "turn off the lights" actuates the house
+            #   NewsHandler      - "what's happening" reads BBC headlines
+            #   VisionHandler    - photographs the children AND calls the
+            #                      cloud with the HOUSEHOLD prompt
+            #   ContextualHandler- same cloud call, plus reads out device
+            #                      telemetry and insults the listener
+            #   TimerHandler     - a child can set an alarm for next week
+            # The household clips are all still there and unchanged; this mode
+            # simply never selects them. Everything not matched by the
+            # Halloween bank falls through to the gated local model.
+            handlers = [
+                PromotedHandler(index_path=idx_path, base_dir=self._base_dir),
+            ]
+            log.warning("HALLOWEEN MODE: handler chain restricted to the "
+                        "Halloween bank; household clips, Home Assistant, "
+                        "news, vision and timers are all disabled")
+        else:
+            handlers = [
+                RealClipHandler(index_path=idx_path, base_dir=self._base_dir),
+                PreGenHandler(index_path=idx_path, base_dir=self._base_dir),
+                PromotedHandler(index_path=idx_path, base_dir=self._base_dir),
+                ContextualHandler(),
+                WeatherHandler(),
+                NewsHandler(),
+                TimeHandler(),
+                HAHandler(),
+                TimerHandler(),
+                VisionHandler(),
+            ]
         self._dispatch: dict[str, list[Handler]] = {}
         for h in handlers:
             for intent_name in h.intents:

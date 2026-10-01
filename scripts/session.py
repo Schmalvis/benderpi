@@ -27,7 +27,7 @@ from handler_base import Response, ResponseStream, load_clips_from_index
 from handlers.clip_handler import RealClipHandler
 from logger import get_logger
 from metrics import metrics
-from config import cfg
+from config import cfg, halloween_enabled
 from responder import Responder
 
 log = get_logger("session")
@@ -93,6 +93,15 @@ class TurnResult:
 # ConversationSession
 # ---------------------------------------------------------------------------
 
+def _halloween_greeting() -> "str | None":
+    """A random curated doorstep greeting, or None if the bank is missing."""
+    import glob
+    import random
+    clips = sorted(glob.glob(os.path.join(
+        _BASE_DIR, "speech", "responses", "halloween", "greeting_*.wav")))
+    return random.choice(clips) if clips else None
+
+
 class ConversationSession:
     def __init__(
         self,
@@ -135,6 +144,33 @@ class ConversationSession:
                 "(wake word)", "GREETING", None, "silent",
                 response_text="(silent — LED only)",
             )
+        elif halloween_enabled():
+            # The greeting bypasses the handler chain, so restricting the chain
+            # does not restrict this. The household greeting set includes
+            # "Hello, peasants!"; this mode uses its own curated clips.
+            wav = _halloween_greeting()
+            leds.set_talking()
+            if wav:
+                audio.play(wav, on_chunk=self._on_chunk, on_done=leds.all_off)
+                self._session_log.log_turn(
+                    "(open mic)", "GREETING", None, "halloween_greeting",
+                    response_text=os.path.basename(wav),
+                )
+            else:
+                # No bank on disk: say something harmless rather than nothing.
+                # prebuild_responses.py has not been run (speech/responses is
+                # gitignored, so a git pull does not ship it).
+                text = "Well well. Trick or treat, is it?"
+                log.warning("No Halloween greeting clips on disk — using live "
+                            "TTS. Run scripts/prebuild_responses.py.")
+                audio.play_stream(
+                    tts_generate.speak_streaming(text),
+                    on_chunk=self._on_chunk, on_done=leds.all_off,
+                )
+                self._session_log.log_turn(
+                    "(open mic)", "GREETING", None, "halloween_greeting_tts",
+                    response_text=text,
+                )
         else:
             greeting_resp = self._greeting_handler.handle("(wake word)", "GREETING")
             if greeting_resp:
