@@ -66,6 +66,11 @@ rollback() {
         echo "DEPLOY FAILED: git reset --hard $PREV_SHA also failed — repo may be in a bad state, manual intervention required"
         exit 1
     fi
+    # reset --hard just overwrote bender_config.json with the tracked template,
+    # discarding the restore above. Put the device's copy back BEFORE the
+    # service restarts on the rolled-back commit, or a routine gate failure
+    # silently reverts the device's own settings.
+    restore_device_config
     # Best-effort: bring the venv back in line with the reverted commit.
     # Extra packages left over from the bad commit are harmless and NOT
     # worth chasing with a venv rebuild on a solo hobbyist box.
@@ -116,23 +121,38 @@ git log --oneline HEAD..origin/main
 # Policy: the DEVICE's copy wins. Values are device state; the tracked copy is
 # a template. New keys shipped in a later commit still take effect, because
 # config.py holds the defaults and only reads this file for overrides.
-CONFIG_SAVED=""
+# The save lives in the repo dir, NOT mktemp: the restore has to survive a
+# `set -e` exit and a `git reset --hard`, and an orphaned temp file in /tmp is
+# unrecoverable state. This path is gitignored and untouched by reset --hard,
+# like .git_pull_bad_sha.
+CONFIG_SAVED="$REPO_DIR/.bender_config.device.json"
+CONFIG_PRESERVED=0
 if ! git diff --quiet -- bender_config.json 2>/dev/null; then
-    CONFIG_SAVED="$(mktemp)"
     cp bender_config.json "$CONFIG_SAVED"
     git checkout -- bender_config.json
+    CONFIG_PRESERVED=1
     echo "Preserving the device's bender_config.json across the pull"
 fi
+
+restore_device_config() {
+    # Idempotent, and safe to call from the EXIT trap and from rollback().
+    [ "$CONFIG_PRESERVED" = "1" ] || return 0
+    [ -f "$CONFIG_SAVED" ] || return 0
+    cp "$CONFIG_SAVED" bender_config.json
+    echo "Restored the device's bender_config.json (device values win; any NEW"
+    echo "  keys from this commit fall back to the defaults in config.py)"
+}
+
+# A bare `git pull` under `set -e` skipped the restore entirely on any pull
+# failure, leaving the device on the tracked template — which would silently
+# turn halloween_mode off, or revert the wake model, on Halloween night.
+# The trap covers every exit path, including rollback()'s `exit 1`.
+trap 'restore_device_config' EXIT
 
 # Pull
 git pull origin main --ff-only
 
-if [ -n "$CONFIG_SAVED" ]; then
-    cp "$CONFIG_SAVED" bender_config.json
-    rm -f "$CONFIG_SAVED"
-    echo "Restored the device's bender_config.json (device values win; any NEW"
-    echo "  keys from this commit fall back to the defaults in config.py)"
-fi
+restore_device_config
 
 NEW_SHA="$(git rev-parse HEAD)"
 

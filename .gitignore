@@ -67,3 +67,7 @@ web/node_modules/
 # Wake-word training captures — recordings of the household. Audio of real
 # people (and whatever is said near the device) never enters git, public or not.
 data/wake_samples/
+
+# The device's own bender_config.json, saved by git_pull.sh across a pull so a
+# failed pull or a gate rollback cannot revert the device's settings.
+.bender_config.device.json

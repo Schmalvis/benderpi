@@ -275,6 +275,31 @@ grep -q "def f()" "$REPO/scripts/hello.py" \
     || fail "the code change must still land"
 [ $FAIL -eq $BEFORE ] && ok "device config preserved, code still updated"
 
+echo "A gate rollback does not revert the device's config"
+BEFORE=$FAIL
+setup_repo
+printf '{\n  "halloween_mode": true\n}\n' > "$REPO/bender_config.json"
+# a commit that changes the config AND fails the restart gate
+push_commit_to_remote "config change + bad restart" bash -c \
+    'printf "{\n  \"halloween_mode\": false\n}\n" > bender_config.json; echo "x = 1" > scripts/hello.py'
+FAIL_RESTART=1 run_git_pull >/dev/null 2>&1
+grep -q '"halloween_mode": true' "$REPO/bender_config.json" \
+    || fail "rollback reverted the device's config: $(cat "$REPO/bender_config.json")"
+[ $FAIL -eq $BEFORE ] && ok "device config survives a rollback"
+
+echo "A failed pull does not revert the device's config"
+BEFORE=$FAIL
+setup_repo
+printf '{\n  "halloween_mode": true\n}\n' > "$REPO/bender_config.json"
+# a second dirty tracked file makes the pull itself abort
+echo "locally edited" >> "$REPO/requirements.txt"
+push_commit_to_remote "touches both files" bash -c \
+    'printf "{\n  \"halloween_mode\": false\n}\n" > bender_config.json; echo "# upstream" >> requirements.txt'
+run_git_pull >/dev/null 2>&1
+grep -q '"halloween_mode": true' "$REPO/bender_config.json" \
+    || fail "a failed pull left the tracked template: $(cat "$REPO/bender_config.json")"
+[ $FAIL -eq $BEFORE ] && ok "device config survives a failed pull"
+
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -ne 0 ]; then
