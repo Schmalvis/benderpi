@@ -134,6 +134,38 @@ if ! git diff --quiet -- bender_config.json 2>/dev/null; then
     echo "Preserving the device's bender_config.json across the pull"
 fi
 
+# speech/responses/index.json is a COMMITTED build artifact, and
+# prebuild_responses.py rewrites it wherever it runs. A device-side prebuild
+# therefore leaves a dirty tracked file, and `git pull --ff-only` then aborts
+# with "Please commit your changes or stash them before you merge" on EVERY
+# tick, for ever -- the deploy freeze that hit on 2026-09-28, 2026-09-29 and
+# again at 21:01 on 2026-10-01.
+#
+# The policy here is the OPPOSITE of bender_config.json above, deliberately:
+#   bender_config.json - device state (wake threshold, halloween_mode). DEVICE
+#                        WINS, because only the device knows its own settings.
+#   index.json         - generated from the committed lists in
+#                        prebuild_responses.py. REPO WINS, because the repo
+#                        holds the source those lists come from, and a
+#                        device-side prebuild can always regenerate it.
+#
+# Discarding it is safe but not silent: the WAVs it points at are gitignored,
+# so if the pull brings NEW index entries their audio has to be rendered on the
+# device with prebuild_responses.py. The log line says so.
+_INDEX_JSON="speech/responses/index.json"
+if ! git diff --quiet -- "$_INDEX_JSON" 2>/dev/null; then
+    echo "Discarding the device's modified $_INDEX_JSON (the repo version wins:"
+    echo "  it is generated from committed lists). If this pull adds new entries,"
+    echo "  render their WAVs: venv/bin/python scripts/prebuild_responses.py"
+    git checkout -- "$_INDEX_JSON"
+elif [ -f "$_INDEX_JSON" ] && ! git ls-files --error-unmatch "$_INDEX_JSON" >/dev/null 2>&1; then
+    # UNTRACKED, which also aborts the pull ("untracked working tree files
+    # would be overwritten by merge") the first time a commit starts tracking
+    # it. That is the fresh-Pi case: clone, run prebuild, then pull.
+    echo "Removing an untracked $_INDEX_JSON so the pull can track it"
+    rm -f "$_INDEX_JSON"
+fi
+
 restore_device_config() {
     # Idempotent, and safe to call from the EXIT trap and from rollback().
     [ "$CONFIG_PRESERVED" = "1" ] || return 0

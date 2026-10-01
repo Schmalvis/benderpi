@@ -300,6 +300,39 @@ grep -q '"halloween_mode": true' "$REPO/bender_config.json" \
     || fail "a failed pull left the tracked template: $(cat "$REPO/bender_config.json")"
 [ $FAIL -eq $BEFORE ] && ok "device config survives a failed pull"
 
+echo "A device-modified index.json does not freeze the deploy"
+BEFORE=$FAIL
+setup_repo
+# first make it a TRACKED artifact, as it is in the real repo
+push_commit_to_remote "track the index" bash -c \
+    'mkdir -p speech/responses; printf "{\n  \"halloween\": [\"base\"]\n}\n" > speech/responses/index.json'
+run_git_pull >/dev/null 2>&1
+# now the device runs prebuild_responses.py, dirtying it
+printf '{\n  "halloween": ["old"]\n}\n' > "$REPO/speech/responses/index.json"
+push_commit_to_remote "new index" bash -c \
+    'printf "{\n  \"halloween\": [\"new\"]\n}\n" > speech/responses/index.json'
+run_git_pull >/dev/null 2>&1
+grep -q '"new"' "$REPO/speech/responses/index.json" \
+    || fail "the repo version must win for index.json: $(cat "$REPO/speech/responses/index.json")"
+[ "$(cd "$REPO" && git rev-parse HEAD)" = "$(cd "$REMOTE" && git rev-parse HEAD)" ] \
+    || fail "the pull was still blocked by the dirty index.json"
+[ $FAIL -eq $BEFORE ] && ok "a dirty index.json is discarded, not a freeze"
+
+echo "An UNTRACKED index.json does not freeze the deploy either (fresh Pi)"
+BEFORE=$FAIL
+setup_repo
+mkdir -p "$REPO/speech/responses"
+# fresh clone, prebuild run locally, THEN a commit starts tracking the file
+printf '{\n  "halloween": ["local"]\n}\n' > "$REPO/speech/responses/index.json"
+push_commit_to_remote "start tracking the index" bash -c \
+    'mkdir -p speech/responses; printf "{\n  \"halloween\": [\"tracked\"]\n}\n" > speech/responses/index.json'
+run_git_pull >/dev/null 2>&1
+[ "$(cd "$REPO" && git rev-parse HEAD)" = "$(cd "$REMOTE" && git rev-parse HEAD)" ] \
+    || fail "an untracked index.json still blocked the pull"
+grep -q '"tracked"' "$REPO/speech/responses/index.json" \
+    || fail "the newly tracked index.json did not land"
+[ $FAIL -eq $BEFORE ] && ok "an untracked index.json is cleared, not a freeze"
+
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -ne 0 ]; then
