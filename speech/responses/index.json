@@ -169,7 +169,7 @@
       "label": "Of course I'm real. Shiny, metal, and far more impressive than anyone else on this street."
     },
     {
-      "pattern": "\\bwhat are you\\b|\\bwho are you\\b|\\bwhat'?s your name\\b",
+      "pattern": "\\bwhat are you\\b|\\bwho are you\\b|\\bwhat(?:'?s| is) your name\\b|\\bwhat do they call you\\b",
       "file": "speech/responses/halloween/what_are_you.wav",
       "label": "I'm Bender. Bending unit, candy dispenser, and the best thing you'll meet tonight."
     },

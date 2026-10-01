@@ -119,6 +119,11 @@ class TestClassifierRoutes:
         ("are you real", "are_you_real"),
         ("what are you", "what_are_you"),
         ("what's your name", "what_are_you"),
+        # Found by running the real classifier ON THE DEVICE: the
+        # contraction-only pattern missed the uncontracted form.
+        ("what is your name", "what_are_you"),
+        ("whats your name", "what_are_you"),
+        ("what do they call you", "what_are_you"),
         ("can I have some candy", "candy_request"),
         ("thank you", "thank_you_kid"),
         ("bye", "goodbye_kid"),

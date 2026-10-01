@@ -166,7 +166,11 @@ HALLOWEEN_RESPONSES = [
     },
     {
         "slug": "what_are_you",
-        "pattern": r"\bwhat are you\b|\bwho are you\b|\bwhat'?s your name\b",
+        # "what IS your name" as well as "what's": found by running the real
+        # classifier on the device, where the contraction-only pattern missed
+        # it. Children say both.
+        "pattern": r"\bwhat are you\b|\bwho are you\b|"
+                   r"\bwhat(?:'?s| is) your name\b|\bwhat do they call you\b",
         "text": "I'm Bender. Bending unit, candy dispenser, and the best thing "
                 "you'll meet tonight.",
     },
