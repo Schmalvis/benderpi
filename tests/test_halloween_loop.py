@@ -321,3 +321,18 @@ class TestItRefusesToRunDegraded:
         import dis
         names = [i.argval for i in dis.get_instructions(wc.main)]
         assert "wait_for_wakeword" in names
+
+
+class TestTheHouseholdLoopIsCoveredToo:
+    """Only wait_for_wakeword() ever fed the watchdog, so nothing covered a
+    household session either. A 3-turn session at the measured 7-19s per turn,
+    plus captures, can pass WatchdogSec=120 and be killed mid-reply."""
+
+    def test_the_household_loop_stamps_progress(self, wc):
+        assert "_note_progress" in wc.main.__code__.co_names
+
+    def test_both_modes_share_one_heartbeat(self, wc):
+        """Started before the mode branch, so neither mode can miss it."""
+        import dis
+        names = [i.argval for i in dis.get_instructions(wc.main)]
+        assert names.index("_start_watchdog_heartbeat") < names.index("_halloween_loop")

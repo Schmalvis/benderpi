@@ -693,6 +693,7 @@ def main():
     while True:
         session = None
         try:
+            _note_progress()
             # Check for fired timers before listening for wake word
             import timers as timers_mod
             fired = timers_mod.check_fired()
@@ -720,6 +721,12 @@ def main():
             # playback reverb. Re-entries after an empty capture do not.
             played_since_capture = True
             while True:
+                # Nothing fed the systemd watchdog DURING a household session
+                # either -- only wait_for_wakeword() ever did. A session of
+                # three AI turns at the measured 7-19s each, plus captures,
+                # can pass WatchdogSec=120 and be killed mid-reply. Stamping
+                # here covers the whole conversation, not just the idle wait.
+                _note_progress()
                 leds.set_listening(True)
                 rec_start = time.monotonic()
                 text = stt.listen_and_transcribe(after_playback=played_since_capture)
@@ -748,6 +755,7 @@ def main():
                 if ai_local:
                     ai_local.reset_hailo()
                 result = session.handle_turn(text)
+                _note_progress()
                 # The idle clock starts when Bender finishes replying, not when
                 # the user finished speaking — otherwise an 8s answer used up
                 # the whole silence_timeout before the user could respond.
