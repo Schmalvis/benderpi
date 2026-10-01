@@ -1,6 +1,8 @@
 """Shared test fixtures for BenderPi tests."""
 import os
 import sys
+
+import pytest
 import types
 
 # Ensure scripts/ is importable
@@ -74,3 +76,32 @@ if "pyaudio" not in sys.modules:
         _pa.paComplete = 1
         _pa.PyAudio = lambda *a, **k: types.SimpleNamespace()
         sys.modules["pyaudio"] = _pa
+
+
+# ---------------------------------------------------------------------------
+# Module-state hygiene for wake_converse
+#
+# Several test files import wake_converse AFTER replacing config, audio,
+# metrics and logger with fakes, which is the only way to import it off-device.
+# They do `sys.modules.pop("wake_converse")` before importing, but nothing put
+# it back, so the FAKE-config module stayed in sys.modules for the rest of the
+# session. The next file to `import wake_converse` silently got that one.
+#
+# Live consequence, found 2026-10-01: with test_wake_loop_heartbeat.py running
+# before test_oww_smoothing.py, the wake loop saw fake thresholds
+# (wake_stall_seconds 0.2, mic_stall_max_reinits 0), declared a stall on the
+# second frame and raised SystemExit -- five failures and one hang. Alphabetical
+# order normally hid it, because "oww" sorts before "wake"; adding any test file
+# that sorts earlier exposes it. It also means a random-order run could fail
+# for reasons unrelated to the code under test.
+#
+# So: if a test leaves a wake_converse in sys.modules that was not there when
+# it started, drop it. The next importer re-imports against real config.
+@pytest.fixture(autouse=True)
+def _drop_faked_wake_converse():
+    had = "wake_converse" in sys.modules
+    before = sys.modules.get("wake_converse")
+    yield
+    now = sys.modules.get("wake_converse")
+    if now is not None and (not had or now is not before):
+        sys.modules.pop("wake_converse", None)

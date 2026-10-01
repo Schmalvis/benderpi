@@ -79,6 +79,7 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
     idle = float(getattr(cfg, "halloween_idle_timeout_s", 6.0))
     text = first_text
     for turn in range(max_turns):
+        _note_progress()
         result = session.handle_turn(text)
         if result.should_end:
             session.end(result.end_reason or "end")
@@ -86,11 +87,21 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
         if turn == max_turns - 1:
             break
         last_reply = time.monotonic()
+        # Anchor the idle check on when the recording STARTED, not on "now".
+        # wake_converse's own loop documents this at length: a capture that
+        # returns empty has itself consumed `stt_speech_onset_timeout_s`, so
+        # comparing `now` makes the timeout trivially true and the retry below
+        # becomes dead code. Measured: with both values at 6.0s the retry
+        # never fired for the silence case it exists for.
+        rec_start = time.monotonic()
+        _note_progress()
         text = stt.listen_and_transcribe(after_playback=True)
         if not text:
-            if time.monotonic() - last_reply > idle:
+            if rec_start - last_reply > idle:
                 session.end("timeout")
                 return
+            rec_start = time.monotonic()
+            _note_progress()
             text = stt.listen_and_transcribe(after_playback=False)
             if not text:
                 session.end("timeout")
@@ -122,6 +133,7 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
     while True:
         session = None
         try:
+            _note_progress()
             leds.set_listening(True)
             text = stt.listen_and_transcribe(after_playback=False)
             if not text:
@@ -144,12 +156,31 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
             if session is not None:
                 session.end("interrupt")
             raise
-        except RuntimeError as exc:
-            # A mic stall must not end the evening. Log, close the session and
-            # keep listening; the mic watchdog escalates on its own if the
-            # device is genuinely wedged.
-            log_.error("Halloween mode error, continuing: %s", exc)
-            metrics.count("halloween_error", error=str(exc)[:80])
+        except Exception as exc:
+            # Deliberately broad, matching the household loop. The previous
+            # version caught RuntimeError only, so an OSError from PyAudio, a
+            # bad WAV header or any handler bug escaped main() and killed the
+            # process for the night -- leaving the session unclosed, the LEDs
+            # on and the audio device held. Verified by review 2026-10-01.
+            stalled = "stalled" in str(exc)
+            log_.error("Halloween mode error (%s), continuing: %s",
+                       type(exc).__name__, exc)
+            metrics.count("halloween_error", error=type(exc).__name__,
+                          stalled=stalled)
+            if stalled:
+                # A wedged mic is not recoverable by looping. Count it with the
+                # name the watchdog already alerts on, and let systemd restart
+                # us -- the restart re-runs mic_selftest() and the XVF3800
+                # REBOOT recovery, which is the only thing that fixes it.
+                metrics.count("wake_loop_stall_exit", source="halloween")
+                log_.error("Mic stalled in Halloween mode — exiting for a "
+                           "systemd restart so the mic recovery path runs")
+                if session is not None:
+                    try:
+                        session.end("mic_stall")
+                    except Exception:
+                        pass
+                sys.exit(1)
             if session is not None:
                 try:
                     session.end("error")
@@ -276,6 +307,67 @@ def _feed_watchdog():
         pass
 
 
+# --- Progress-gated systemd heartbeat ---------------------------------------
+#
+# The unit is Type=notify with WatchdogSec=120, and the ONLY code that fed it
+# was wait_for_wakeword(). Halloween mode never calls that function, so the
+# service was SIGABRTed and restarted every ~120s -- about 90 times across an
+# evening, each restart reloading ~13s of Hailo models and cutting off whatever
+# conversation was running. Found by review 2026-10-01.
+#
+# A thread that pings unconditionally would fix the symptom and DESTROY the
+# feature: the watchdog exists to kill a process whose loop has wedged, and a
+# blind pinger keeps a wedged process alive forever. So the heartbeat is gated
+# on progress. The loops stamp _note_progress(); the thread pings only while
+# that stamp is fresh. A wedged loop stops stamping, the pings stop, and
+# systemd still does its job.
+_progress_lock = threading.Lock()
+_last_progress = 0.0
+#: No single loop step should take this long. The longest legitimate step is a
+#: capture (max_record_seconds, 15s) plus an inference turn
+#: (response_hard_timeout_s, 45s) plus playback -- call it 75s, and leave
+#: headroom under WatchdogSec=120.
+PROGRESS_STALL_LIMIT_S = 90.0
+HEARTBEAT_INTERVAL_S = 20.0
+
+
+def _note_progress() -> None:
+    """Record that the conversation loop is still moving."""
+    global _last_progress
+    with _progress_lock:
+        _last_progress = time.monotonic()
+
+
+def _progress_age() -> float:
+    with _progress_lock:
+        return time.monotonic() - _last_progress
+
+
+def _start_watchdog_heartbeat(stall_limit_s: float = PROGRESS_STALL_LIMIT_S,
+                              interval_s: float = HEARTBEAT_INTERVAL_S,
+                              stop: "threading.Event | None" = None):
+    """Ping systemd while the loop is making progress, and only then.
+
+    Returns (thread, stop_event). The stop event exists so a test can end the
+    thread; production never sets it.
+    """
+    _note_progress()
+    stop = stop or threading.Event()
+
+    def _beat():
+        while not stop.wait(interval_s):
+            age = _progress_age()
+            if age <= stall_limit_s:
+                _feed_watchdog()
+            else:
+                log.error("No loop progress for %.0fs — withholding the systemd "
+                          "heartbeat so the watchdog can restart us", age)
+
+    t = threading.Thread(target=_beat, daemon=True, name="systemd-heartbeat")
+    t.start()
+    return t, stop
+
+
 def wait_for_wakeword(_oww_model=None):
     oww_model = _oww_model or _load_oww_model(
         os.path.join(BASE_DIR, cfg.oww_model_path)
@@ -360,6 +452,7 @@ def wait_for_wakeword(_oww_model=None):
                 frames_since_hb += 1
                 if frames_since_hb >= hb_every:
                     metrics.count("wake_loop_heartbeat")
+                    _note_progress()
                     _feed_watchdog()
                     frames_since_hb = 0
 
@@ -567,15 +660,35 @@ def main():
         log.info("systemd READY=1 sent (Type=notify)")
     except Exception as exc:
         log.debug("sd_notify not available: %s", exc)
+    # Both modes. The wake loop's own three _feed_watchdog() calls stay as they
+    # are -- belt and braces -- but this is what keeps Halloween mode alive.
+    _start_watchdog_heartbeat()
     if halloween_enabled():
         # Local-only is not a preference here. The owner's worst acceptable
         # failure is silence or "no idea what you're talking about", so there
         # is no reason to send a child's speech to a cloud API.
         if ai is not None:
-            log_cloud = "cloud responder present but unused in Halloween mode"
-            log.warning(log_cloud)
-        _halloween_loop(None, ai_local, responder, log)
-        return
+            log.warning("cloud responder present but unused in Halloween mode")
+        if ai_local is None:
+            # Refuse rather than degrade. The responder's routing falls back to
+            # cloud_only when the local model is missing, so with the cloud
+            # responder passed as None every unmatched turn used to speak a raw
+            # error line to a child -- bypassing the curated fallbacks
+            # entirely. Found by review 2026-10-01.
+            #
+            # The bank still answers "trick or treat" and the other common
+            # lines from a WAV, so household mode is a genuinely working
+            # degraded state: the wake word is required, which is what the
+            # owner does today with the puppet dashboard.
+            metrics.count("halloween_refused", reason="no_local_model")
+            log.error(
+                "HALLOWEEN MODE REFUSED: no local LLM is available, so every "
+                "unscripted turn would speak an error line to a child. "
+                "Falling back to the normal wake-word loop. Fix the local "
+                "model (check the Hailo device and ai_backend) and restart.")
+        else:
+            _halloween_loop(None, ai_local, responder, log)
+            return
 
     while True:
         session = None

@@ -141,44 +141,11 @@ class TestResponseBank:
         assert '"halloween"' in src and '"halloween_fallback"' in src
 
 
-class TestLoopWiring:
-    """The loops own hardware, so pin the wiring by reading the source."""
-
-    def _src(self, name):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", name)
-        with open(path) as f:
-            return f.read()
-
-    def test_halloween_mode_bypasses_the_wake_word(self):
-        src = self._src("wake_converse.py")
-        entry = src.index("if halloween_enabled():")
-        wake = src.index("wait_for_wakeword()", entry)
-        ret = src.index("return", entry)
-        assert ret < wake, "Halloween mode must return before the wake-word loop"
-
-    def test_the_greeting_is_the_acknowledgement(self):
-        """session.start() plays a real clip in ~200ms; nothing may wait for
-        the model before making a sound."""
-        src = self._src("wake_converse.py")
-        loop = src.index("def _halloween_loop")
-        body = src[loop:src.index("def _recover_corrupt_mic")]
-        assert body.index("session.start()") < body.index("_halloween_turn_loop")
-
-    def test_no_cloud_responder_is_passed(self):
-        src = self._src("wake_converse.py")
-        assert "_halloween_loop(None, ai_local, responder, log)" in src
-
-    def test_a_cooldown_follows_every_session(self):
-        src = self._src("wake_converse.py")
-        body = src[src.index("def _halloween_loop"):src.index("def _recover_corrupt_mic")]
-        assert "time.sleep(cooldown)" in body
-        assert body.count("time.sleep(cooldown)") >= 2   # normal path and error path
-
-    def test_an_error_does_not_end_the_evening(self):
-        src = self._src("wake_converse.py")
-        body = src[src.index("def _halloween_loop"):src.index("def _recover_corrupt_mic")]
-        assert "except RuntimeError" in body
-        assert "continuing" in body
+# TestLoopWiring removed 2026-10-01. Its assertions read the source text --
+# `"except RuntimeError" in body`, `src.index("return") < src.index(...)` --
+# and a review showed they passed while an ordinary ValueError killed the
+# process and leaked the session. Replaced by tests/test_halloween_loop.py,
+# which executes the loops against fakes.
 
 
 class TestGateBlocksUngatedSpeech:

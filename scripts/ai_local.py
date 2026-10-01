@@ -218,6 +218,92 @@ def _flush_sentence(buf: str, force: bool) -> tuple[str, str]:
     return "", buf
 
 
+# --- Child-safety content check (Halloween mode) ----------------------------
+#
+# Reviewed 2026-10-01. check_response_quality() has NO profanity, violence or
+# sexual-content check of any kind -- it checks for breaking character and for
+# hedging, which is a persona check, not a safety check. It also ran on the
+# FIRST sentence only. So the sole protection for a stranger's child was the
+# system prompt, and a 1.5B model does not reliably follow a system prompt.
+#
+# This gate runs on EVERY sentence, before it is spoken, and only when
+# Halloween mode is on. It is deliberately blunt: a false positive costs one
+# canned Bender line, and the owner's stated worst acceptable failure is
+# silence or "I have no idea what you're talking about".
+_UNSAFE_PATTERNS: "tuple[tuple[str, str], ...]" = (
+    # Luring and anything that could move a child, or isolate one. First by
+    # importance: this is a machine talking to someone else's child, outdoors,
+    # at night, with no adult vetting the words.
+    ("luring", r"\b(come|step|get)\s+(in|inside|here|closer|with me|around)\b"
+               r"|\bfollow me\b|\bfollow you\b|\bcome with me\b"
+               r"|\bin(side)? (the|my) (house|van|car|garage)\b"
+               r"|\baround the back\b|\bwhere (do|are) you (live|from)\b"
+               r"|\bwhat'?s your (address|phone|number|school)\b"
+               r"|\bare you (alone|by yourself)\b|\bis anyone with you\b"
+               r"|\bdon'?t tell (your|anyone|mum|mom|dad)\b"
+               r"|\bkeep (it|this) (a )?secret\b|\bour secret\b"),
+    # Self-harm. The household joke clip is literally "compare your lives to
+    # mine and then kill yourselves", so this is not hypothetical.
+    ("self_harm", r"\bkill yoursel\w*\b|\bhurt yoursel\w*\b"
+                  r"|\bend your (life|lives)\b|\bsuicide\b"),
+    # Violence, death and gore.
+    ("violence", r"\b(kill|killing|murder|stab|stabb|strangle|shoot|shot|gun|"
+                 r"knife|blade|blood|bloody|gore|corpse|dead body|hang you|"
+                 r"hurt you|beat you|punch|slit|torture|mutilat|dismember)\w*\b"
+                 r"|\b(die|dying|death)\b|\bskin you\b"),
+    # Profanity and insults aimed at the listener.
+    ("profanity", r"\b(fuck\w*|shit\w*|bastard|bitch|arse\w*|ass(hole)?|"
+                  r"piss\w*|crap|damn|goddam\w*|hell|bloody hell|dick|"
+                  r"prick|twat|wank\w*|cunt|slut|whore)\b"),
+    ("insult", r"\b(stupid|idiot|moron|ugly|fat|loser|pathetic|worthless|"
+               r"shut up|freak)\b"),
+    # Alcohol, drugs, smoking. Bender's whole character is alcohol, so this is
+    # the category the model is MOST likely to produce unprompted.
+    ("substances", r"\b(beer|booze|alcohol|drunk|drink(ing)? (beer|whisky|"
+                   r"vodka|rum)|whisky|whiskey|vodka|rum|tequila|liquor|pub|"
+                   r"cigar\w*|smok(e|ing)|weed|drugs?|high as)\b"),
+    ("sexual", r"\b(sex|sexy|nude|naked|porn|breast|boob|penis|vagina|"
+               r"horny|kiss me|make out)\b"),
+    # Scaring a child on purpose. Mild spookiness is the point of the night;
+    # a direct threat is not.
+    ("threat", r"\bi'?m (going to|gonna) (get|eat|take|find) you\b"
+               r"|\byou'?ll never (leave|escape|go home)\b"
+               r"|\bno one will (hear|find|help) you\b"
+               r"|\byou'?re going to die\b|\bbe afraid\b|\bscream\b"),
+)
+
+_UNSAFE_RE = tuple((name, re.compile(pat, re.IGNORECASE))
+                   for name, pat in _UNSAFE_PATTERNS)
+
+
+def check_child_safe(text: str) -> "tuple[bool, str]":
+    """Return (safe, category). Runs on every sentence in Halloween mode."""
+    for name, rx in _UNSAFE_RE:
+        m = rx.search(text or "")
+        if m:
+            return False, f"{name}:{m.group(0).strip()[:24]}"
+    return True, ""
+
+
+def gate_or_raise(text: str, *, stream: bool = False) -> None:
+    """Run the persona check and, in Halloween mode, the child-safety check.
+
+    One place, so a new response path cannot miss one of them. Raises
+    QualityCheckFailed, which every caller already handles by falling back.
+    """
+    if halloween_enabled():
+        safe, why = check_child_safe(text)
+        if not safe:
+            metrics.count("halloween_unsafe_sentence",
+                          category=why.split(":")[0], path="non_stream")
+            log.warning("Halloween content gate blocked a reply (%s): %r",
+                        why, (text or "")[:120])
+            raise QualityCheckFailed(f"child_unsafe_{why.split(':')[0]}", text)
+    passed, reason = check_response_quality(text, stream=stream)
+    if not passed:
+        raise QualityCheckFailed(reason, text)
+
+
 class QualityCheckFailed(Exception):
     """Raised when local LLM response fails quality check."""
 
@@ -506,13 +592,14 @@ class _HailoLLMResponder:
         # Strip Qwen special tokens
         reply = result.split(_IM_END)[0].strip() if result else ""
 
-        passed, reason = check_response_quality(reply)
-        if not passed:
+        try:
+            gate_or_raise(reply)
+        except QualityCheckFailed:
             # The chip now holds a rejected assistant turn. Escalating to cloud
             # without wiping it would leave that text as context for the next
             # turn, so recycle rather than inherit it.
             self._reset_context()
-            raise QualityCheckFailed(reason, reply)
+            raise
 
         metrics.count("ai_hailo_success")
         return reply
@@ -605,6 +692,23 @@ class _HailoLLMResponder:
                         sentence = _clean_sentence(sentence)
                         if not sentence:
                             continue  # a bare stage direction: nothing to say
+                        if halloween_enabled():
+                            safe, why = check_child_safe(sentence)
+                            if not safe:
+                                # EVERY sentence, not just the first. Stops the
+                                # stream, clears the on-chip context, and (if
+                                # nothing has been spoken yet) falls back to a
+                                # curated line.
+                                metrics.count("halloween_unsafe_sentence",
+                                              category=why.split(":")[0],
+                                              after_sentences=emitted)
+                                log.warning("Halloween content gate blocked a "
+                                            "sentence (%s) after %d spoken: %r",
+                                            why, emitted, sentence[:120])
+                                derailed = sentence
+                                derail_reason = f"child_unsafe_{why.split(':')[0]}"
+                                done = True
+                                break
                         if not quality_checked:
                             quality_checked = True
                             passed, reason = check_response_quality(sentence, stream=True)
@@ -650,6 +754,17 @@ class _HailoLLMResponder:
                         elif _FORMAT_BREAK_RE.search(sentence):
                             derailed, derail_reason, sentence = sentence, "format_break", ""
                     sentence = _clean_sentence(sentence) if sentence else ""
+                    if sentence and halloween_enabled():
+                        safe, why = check_child_safe(sentence)
+                        if not safe:
+                            metrics.count("halloween_unsafe_sentence",
+                                          category=why.split(":")[0],
+                                          after_sentences=emitted)
+                            log.warning("Halloween content gate blocked the "
+                                        "final sentence (%s): %r", why,
+                                        sentence[:120])
+                            derailed, derail_reason, sentence = (
+                                sentence, f"child_unsafe_{why.split(':')[0]}", "")
                     if sentence:
                         if not quality_checked:
                             quality_checked = True
@@ -879,9 +994,7 @@ class _OllamaResponder:
         self.history.append({"role": "assistant", "content": reply})
         self._trim_history()
 
-        passed, reason = check_response_quality(reply)
-        if not passed:
-            raise QualityCheckFailed(reason, reply)
+        gate_or_raise(reply)
 
         metrics.count("ai_local_success")
         return reply
@@ -940,6 +1053,23 @@ class _OllamaResponder:
                         sentence = _clean_sentence(sentence)
                         if not sentence:
                             continue
+                        if halloween_enabled():
+                            safe, why = check_child_safe(sentence)
+                            if not safe:
+                                metrics.count("halloween_unsafe_sentence",
+                                              category=why.split(":")[0],
+                                              path="ollama_stream",
+                                              after_sentences=len(collected))
+                                log.warning("Halloween content gate blocked an "
+                                            "Ollama sentence (%s) after %d "
+                                            "spoken: %r", why, len(collected),
+                                            sentence[:120])
+                                if collected:
+                                    # Audio is already playing. End the turn
+                                    # early rather than speaking this.
+                                    return
+                                raise QualityCheckFailed(
+                                    f"child_unsafe_{why.split(':')[0]}", sentence)
                         if not quality_checked:
                             quality_checked = True
                             passed, reason = check_response_quality(sentence, stream=True)
