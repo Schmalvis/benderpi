@@ -147,6 +147,107 @@
       "label": "Executed. Feel free to thank me anytime. Go on."
     }
   ],
+  "halloween": [
+    {
+      "pattern": "\\btrick or treat\\b|\\btrick a treat\\b|\\btrickle treat\\b",
+      "file": "speech/responses/halloween/trick_or_treat.wav",
+      "label": "Trick or treat? Ha! Take some candy out of my chest cavity, it's the only warm thing about me."
+    },
+    {
+      "pattern": "\\b(can|could) i (have|get)\\b.{0,20}\\b(candy|sweets|sweet|chocolate)\\b|\\bany (candy|sweets)\\b|\\bgive me.{0,10}(candy|sweets)\\b",
+      "file": "speech/responses/halloween/candy_request.wav",
+      "label": "Help yourself, kid. My chest is basically a vending machine with a great personality."
+    },
+    {
+      "pattern": "\\b(nice|cool|great|love)\\b.{0,12}\\bcostume\\b|\\bi'?m a\\b.{0,24}$",
+      "file": "speech/responses/halloween/nice_costume.wav",
+      "label": "Nice costume. Mine's better. I'm a hundred percent genuine robot."
+    },
+    {
+      "pattern": "\\bare you (real|a robot|alive|a person|human)\\b|\\bis (he|it) real\\b|\\bare you actually\\b",
+      "file": "speech/responses/halloween/are_you_real.wav",
+      "label": "Of course I'm real. Shiny, metal, and far more impressive than anyone else on this street."
+    },
+    {
+      "pattern": "\\bwhat are you\\b|\\bwho are you\\b|\\bwhat'?s your name\\b",
+      "file": "speech/responses/halloween/what_are_you.wav",
+      "label": "I'm Bender. Bending unit, candy dispenser, and the best thing you'll meet tonight."
+    },
+    {
+      "pattern": "\\bjokes?\\b|\\bsomething funny\\b|\\bmake me laugh\\b|\\bbe funny\\b",
+      "file": "speech/responses/halloween/joke_skeleton.wav",
+      "label": "Why don't skeletons fight each other? They don't have the guts. I'd have come up with better, but I'm a robot, not a comedian."
+    },
+    {
+      "pattern": "^(bye|goodbye|see ya|see you|night|good night)\\b|\\bthat'?s all\\b|\\bi'?m going\\b",
+      "file": "speech/responses/halloween/goodbye_kid.wav",
+      "label": "See you later. Don't eat it all at once. Actually, do."
+    },
+    {
+      "pattern": "\\bare you hungry\\b|\\bdo you (want|eat|drink)\\b|\\bwhat do you eat\\b|\\bhave (a|some)\\b.{0,14}\\b(sweet|candy|chocolate|crisps)\\b",
+      "file": "speech/responses/halloween/food_offer.wav",
+      "label": "I don't eat, kid. I run on electricity and spite. You have it."
+    },
+    {
+      "pattern": "\\b(are you|you'?re)\\b.{0,10}\\b(scary|creepy|spooky)\\b|\\bi'?m scared\\b|\\bare you going to\\b.{0,10}\\b(hurt|get)\\b",
+      "file": "speech/responses/halloween/scary_reassure.wav",
+      "label": "Scary? I'm adorable. Mostly metal, but adorable."
+    },
+    {
+      "pattern": "\\bthank you\\b|\\bthanks\\b|\\bcheers\\b",
+      "file": "speech/responses/halloween/thank_you_kid.wav",
+      "label": "Yeah, yeah. Go on, before I eat the rest myself."
+    },
+    {
+      "pattern": "\\bhappy halloween\\b",
+      "file": "speech/responses/halloween/happy_halloween.wav",
+      "label": "Happy Halloween, meatbag. And I mean that in the nicest possible way."
+    }
+  ],
+  "halloween_greeting": [
+    {
+      "file": "speech/responses/halloween/greeting_001.wav",
+      "label": "Well well. Trick or treat, is it?"
+    },
+    {
+      "file": "speech/responses/halloween/greeting_002.wav",
+      "label": "Ah, more tiny humans. Come for the candy, have you?"
+    },
+    {
+      "file": "speech/responses/halloween/greeting_003.wav",
+      "label": "Hey, kid. Nice of you to visit a robot."
+    },
+    {
+      "file": "speech/responses/halloween/greeting_004.wav",
+      "label": "Evening. You're just in time, I'm full of sweets."
+    }
+  ],
+  "halloween_fallback": [
+    {
+      "file": "speech/responses/halloween/fallback_001.wav",
+      "label": "I have no idea what you're talking about, kid."
+    },
+    {
+      "file": "speech/responses/halloween/fallback_002.wav",
+      "label": "What? Speak up, my audio receptors are ancient."
+    },
+    {
+      "file": "speech/responses/halloween/fallback_003.wav",
+      "label": "Yeah, whatever. Take some candy."
+    },
+    {
+      "file": "speech/responses/halloween/fallback_004.wav",
+      "label": "Beats me. I'm just a robot with a chest full of sweets."
+    },
+    {
+      "file": "speech/responses/halloween/fallback_005.wav",
+      "label": "Say that again, slower. I'm very old."
+    },
+    {
+      "file": "speech/responses/halloween/fallback_006.wav",
+      "label": "No idea what that means. Have a sweet anyway."
+    }
+  ],
   "promoted": [
     {
       "pattern": "^__never_match_user_input__$",
