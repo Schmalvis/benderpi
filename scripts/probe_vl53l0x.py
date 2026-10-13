@@ -227,6 +227,12 @@ def main() -> int:
                          "higher is slower but reaches further (try 200000)")
     ap.add_argument("--histogram", action="store_true",
                     help="print a distance histogram at the end")
+    ap.add_argument("--long-range", action="store_true",
+                    help="trade accuracy for reach: lower the signal rate "
+                         "limit to 0.1 MCPS (from 0.25) and raise the timing "
+                         "budget. ST's own long-range profile also widens the "
+                         "VCSEL pulse period, which the Adafruit driver does "
+                         "not expose, so this is only part of that profile.")
     ap.add_argument("--baseline", action="store_true",
                     help="CROSSTALK CHECK: sample with NOTHING in front of the "
                          "sensor and report whether the enclosure is visible "
@@ -284,11 +290,26 @@ def main() -> int:
         print("      It is wired well enough to be addressed, not well enough")
         print("      to measure. Check SDA/SCL continuity and the ground.")
         return 1
+    if args.long_range:
+        # The signal rate limit is the minimum return rate the sensor accepts
+        # as a real echo. Lowering it accepts weaker echoes, so it reaches
+        # further off a poor reflector. A person in clothing is a poor
+        # reflector: the 2000 mm in the datasheet is a white target.
+        #
+        # ST's long-range profile (AN4545) is 0.1 MCPS AND a VCSEL pulse
+        # period of 18/14 instead of 14/10. The Adafruit driver exposes the
+        # first and not the second, so this flag cannot reach the full
+        # profile. Measure what it does give before buying a different part.
+        before = sensor.signal_rate_limit
+        sensor.signal_rate_limit = 0.1
+        print(f"long range: signal rate limit {before} -> "
+              f"{sensor.signal_rate_limit} MCPS")
     if args.budget_us:
         sensor.measurement_timing_budget = args.budget_us
     print(f"sensor ready at {hex(args.address)}, "
           f"timing budget {sensor.measurement_timing_budget} us, "
-          f"io timeout {tmo:.2f} s")
+          f"io timeout {tmo:.2f} s, "
+          f"signal rate limit {sensor.signal_rate_limit} MCPS")
     if args.baseline:
         return baseline_check(sensor, args)
 
