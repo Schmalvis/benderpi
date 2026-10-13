@@ -442,3 +442,67 @@ class TestSayRequests:
     def test_the_halloween_loop_serves_requests(self, wc):
         """The owner may still want to puppet on the night."""
         assert "_serve_say_requests" in wc._halloween_loop.__code__.co_names
+
+
+class TestPresenceGate:
+    """The open mic has no trigger of its own.
+
+    Measured 2026-10-10 by replaying 5.25h of recorded speech near the array
+    through the real capture gates: 88.6 sessions/hour, Bender in a session 79%
+    of the time. Each false session makes him deaf for 22-45s, so the child who
+    actually arrived is ignored. `stt_min_speech_rms` cannot gate it --
+    `voiced_rms` does not track distance on the XVF3800 (close_normal median
+    342, seated_far 1432).
+
+    The gate's two jobs: block the mic when nobody is there, and get out of the
+    way entirely when the sensor is missing or broken.
+    """
+
+    def test_a_shut_gate_never_opens_the_mic(self, wc, monkeypatch):
+        listens = []
+
+        def listen(after_playback=True):
+            listens.append(after_playback)
+            raise KeyboardInterrupt       # would be reached only on a bug
+
+        wc.stt = types.SimpleNamespace(listen_and_transcribe=listen,
+                                       release=lambda: None)
+        passes = [0]
+
+        def never(timeout_s):
+            passes[0] += 1
+            if passes[0] >= 3:
+                raise KeyboardInterrupt   # end the harness after a few passes
+            return False
+
+        monkeypatch.setattr(wc.presence, "wait_for_presence", never)
+        with pytest.raises(KeyboardInterrupt):
+            wc._halloween_loop(None, object(), object(), wc.log)
+        assert listens == [], "the mic opened with nobody at the door"
+
+    def test_an_open_gate_lets_a_child_through(self, wc, monkeypatch):
+        monkeypatch.setattr(wc.presence, "wait_for_presence", lambda t: True)
+        session = _Session()
+        _drive(wc, ["trick or treat"], session, stop_after=1)
+        assert session.turns == ["trick or treat"]
+
+    def test_an_unusable_sensor_leaves_the_loop_as_it_was(self, wc):
+        """Fail open. A missing or dead sensor must not make Bender deaf --
+        the owner's worst acceptable failure is silence, not chatter.
+
+        presence.wait_for_presence() is NOT patched here, so the real one runs
+        against a dev box with no VL53L0X and no driver.
+        """
+        session = _Session()
+        _drive(wc, ["trick or treat"], session, stop_after=1)
+        assert session.turns == ["trick or treat"]
+
+    def test_the_gate_is_actually_called_by_the_loop(self, wc):
+        """A gate nothing calls is this project's recurring failure mode."""
+        assert "presence" in wc._halloween_loop.__code__.co_names
+
+    def test_the_household_wake_loop_is_not_gated(self, wc):
+        """The gate is for the open mic only. The household loop has a wake
+        word, so a distance sensor there would just stop Bender answering from
+        across the room."""
+        assert "presence" not in wc.wait_for_wakeword.__code__.co_names

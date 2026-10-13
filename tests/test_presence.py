@@ -1,0 +1,453 @@
+"""Tests for the VL53L0X presence gate (scripts/presence.py).
+
+The gate sits in front of the Halloween open mic. Its most important property
+is not accuracy -- it is failing OPEN. A missing, unwired or broken sensor must
+leave `_halloween_loop` exactly as it was, because the owner's stated worst
+failure is a silent Bender, not a chatty one. Half of these tests are about
+that path.
+"""
+import sys
+import types
+
+import pytest
+
+import presence
+
+
+class FakeSensor:
+    """Stands in for adafruit_vl53l0x.VL53L0X.
+
+    `ranges` is consumed one reading per `.range` access. An element that is an
+    exception class or instance is raised instead of returned, so a read
+    failure can be scripted.
+    """
+
+    def __init__(self, ranges):
+        self.ranges = list(ranges)
+        self.reads = 0
+        self.measurement_timing_budget = 33000
+
+    @property
+    def range(self):
+        self.reads += 1
+        if not self.ranges:
+            return 8190                      # nothing in range
+        value = self.ranges.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        if isinstance(value, type) and issubclass(value, BaseException):
+            raise value("scripted read failure")
+        return value
+
+
+@pytest.fixture
+def gate(monkeypatch):
+    """Reset module state, enable the gate, record metrics, inject a sensor."""
+    presence._reset_for_tests()
+    counts = []
+
+    fake_metrics = types.SimpleNamespace(
+        count=lambda name, **tags: counts.append((name, tags)),
+    )
+    monkeypatch.setattr(presence, "metrics", fake_metrics)
+
+    for key, value in (
+        ("presence_sensor_enabled", True),
+        ("presence_max_mm", 2000),
+        ("presence_clear_mm", 2400),
+        ("presence_confirm_reads", 2),
+        ("presence_poll_s", 0.001),
+        ("presence_min_mm", 0),
+    ):
+        monkeypatch.setattr(presence.cfg, key, value, raising=False)
+
+    def install(ranges):
+        sensor = FakeSensor(ranges)
+        presence._sensor = sensor
+        return sensor
+
+    yield types.SimpleNamespace(install=install, counts=counts)
+    presence._reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Failing open -- the property that protects Halloween night
+# ---------------------------------------------------------------------------
+
+def test_disabled_gate_is_unavailable_and_opens(monkeypatch):
+    presence._reset_for_tests()
+    monkeypatch.setattr(presence.cfg, "presence_sensor_enabled", False,
+                        raising=False)
+    assert presence.available() is False
+    # The whole point: a gate that is off must not block the mic.
+    assert presence.wait_for_presence(0.0) is True
+    presence._reset_for_tests()
+
+
+def test_missing_driver_fails_open(monkeypatch, gate):
+    # No sensor injected, and no adafruit_vl53l0x on a dev box.
+    monkeypatch.setitem(sys.modules, "adafruit_vl53l0x", None)
+    monkeypatch.delitem(sys.modules, "adafruit_vl53l0x")
+    assert presence.available() is False
+    assert presence.wait_for_presence(0.0) is True
+    assert any(n == "presence_sensor_unavailable" for n, _ in gate.counts)
+
+
+def test_repeated_read_errors_mark_the_sensor_dead_and_open(gate):
+    gate.install([OSError] * 10)
+    for _ in range(presence._MAX_ERRORS):
+        assert presence.distance_mm() is None
+    assert presence._dead is True
+    assert presence.available() is False
+    # Dead sensor must not block the mic.
+    assert presence.wait_for_presence(0.0) is True
+    assert any(n == "presence_sensor_dead" for n, _ in gate.counts)
+
+
+def test_a_single_read_error_does_not_kill_the_gate(gate):
+    gate.install([OSError, 900, 900])
+    assert presence.distance_mm() is None      # the error
+    assert presence._dead is False
+    assert presence.distance_mm() == 900       # recovered
+    assert presence._errors == 0
+
+
+# ---------------------------------------------------------------------------
+# Absence
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("reading", [0, 8000, 8190, 20000])
+def test_out_of_range_readings_count_as_absent(gate, reading):
+    gate.install([reading])
+    assert presence.distance_mm() is None
+
+
+def test_absent_sensor_keeps_the_gate_shut(gate):
+    gate.install([8190] * 10)
+    assert presence.present() is False
+    assert presence.present() is False
+
+
+# ---------------------------------------------------------------------------
+# Confirmation and hysteresis
+# ---------------------------------------------------------------------------
+
+def test_arrival_needs_two_agreeing_reads(gate):
+    gate.install([1000, 1000])
+    assert presence.present() is False      # one read is not enough
+    assert presence.present() is True       # second read confirms
+
+
+def test_one_stray_near_read_does_not_open_the_gate(gate):
+    # A single spurious reading between out-of-range reads must not trigger,
+    # the same reason oww_frames_required exists for the wake model.
+    gate.install([8190, 1000, 8190, 8190])
+    for _ in range(4):
+        assert presence.present() is False
+
+
+def test_gate_holds_inside_the_hysteresis_band(gate):
+    gate.install([1000, 1000, 2200, 2200, 2300])
+    assert presence.present() is False
+    assert presence.present() is True
+    # 2200 and 2300 are past presence_max_mm (2000) but inside
+    # presence_clear_mm (2400), so the gate must stay open.
+    assert presence.present() is True
+    assert presence.present() is True
+    assert presence.present() is True
+
+
+def test_gate_closes_past_the_clear_distance(gate):
+    gate.install([1000, 1000, 2500, 2500])
+    presence.present()
+    assert presence.present() is True
+    assert presence.present() is True       # one far read is not enough
+    assert presence.present() is False      # second confirms they left
+
+
+def test_going_out_of_range_closes_the_gate(gate):
+    gate.install([1000, 1000, 8190, 8190])
+    presence.present()
+    assert presence.present() is True
+    assert presence.present() is True
+    assert presence.present() is False
+
+
+def test_arrival_and_departure_are_counted(gate):
+    gate.install([1000, 1000, 8190, 8190])
+    for _ in range(4):
+        presence.present()
+    names = [n for n, _ in gate.counts]
+    assert "presence_arrived" in names
+    assert "presence_left" in names
+
+
+def test_confirm_reads_of_one_triggers_immediately(gate, monkeypatch):
+    monkeypatch.setattr(presence.cfg, "presence_confirm_reads", 1,
+                        raising=False)
+    gate.install([1000])
+    assert presence.present() is True
+
+
+# ---------------------------------------------------------------------------
+# wait_for_presence
+# ---------------------------------------------------------------------------
+
+def test_wait_returns_true_once_confirmed(gate):
+    gate.install([8190, 1000, 1000])
+    assert presence.wait_for_presence(5.0) is True
+
+
+def test_wait_times_out_when_nobody_is_there(gate):
+    gate.install([8190] * 200)
+    assert presence.wait_for_presence(0.02) is False
+
+
+def test_wait_is_bounded_so_the_watchdog_keeps_being_fed(gate):
+    # The service is Type=notify with WatchdogSec=120. A gate that blocked
+    # indefinitely would be killed by systemd, so the wait must return.
+    import time
+    gate.install([8190] * 500)
+    t0 = time.monotonic()
+    assert presence.wait_for_presence(0.05) is False
+    assert time.monotonic() - t0 < 2.0
+
+
+# ---------------------------------------------------------------------------
+# Crosstalk floor -- Bender's own head
+# ---------------------------------------------------------------------------
+
+class TestCrosstalkFloor:
+    """The sensor times its own IR pulse back, so it cannot tell Bender's eye
+    socket from a child. A recessed mounting reads the socket as a near target.
+
+    That failure LATCHES THE GATE OPEN forever while looking exactly like a
+    working sensor, which makes it worse than the sensor simply dying. Dying
+    fails open too, but it says so.
+    """
+
+    def test_the_floor_is_off_by_default(self):
+        import config
+        assert config.Config().presence_min_mm == 0
+
+    def test_readings_at_or_under_the_floor_are_discarded(self, gate, monkeypatch):
+        monkeypatch.setattr(presence.cfg, "presence_min_mm", 150, raising=False)
+        gate.install([150, 149, 80])
+        assert presence.distance_mm() is None     # exactly on the floor
+        assert presence.distance_mm() is None
+        assert presence.distance_mm() is None
+
+    def test_readings_above_the_floor_pass(self, gate, monkeypatch):
+        monkeypatch.setattr(presence.cfg, "presence_min_mm", 150, raising=False)
+        gate.install([151, 900])
+        assert presence.distance_mm() == 151
+        assert presence.distance_mm() == 900
+
+    def test_an_enclosure_reflection_cannot_latch_the_gate_open(self, gate,
+                                                                monkeypatch):
+        """The whole point. A steady short reading from inside the head must
+        not read as a child standing at the door."""
+        monkeypatch.setattr(presence.cfg, "presence_min_mm", 150, raising=False)
+        gate.install([120] * 20)                  # the eye socket, not a child
+        for _ in range(10):
+            assert presence.present() is False
+
+    def test_without_the_floor_an_enclosure_reflection_does_latch(self, gate):
+        """Proves the floor is load-bearing, not decoration. With it off, the
+        same readings open the gate and keep it open."""
+        gate.install([120] * 20)
+        presence.present()
+        assert presence.present() is True
+        assert presence.present() is True
+
+    def test_the_floor_is_counted_so_a_bad_mounting_is_visible(self, gate,
+                                                               monkeypatch):
+        monkeypatch.setattr(presence.cfg, "presence_min_mm", 150, raising=False)
+        gate.install([120])
+        presence.distance_mm()
+        assert any(n == "presence_below_floor" for n, _ in gate.counts)
+
+    def test_a_child_at_the_door_is_not_discarded_by_a_sane_floor(self, gate,
+                                                                  monkeypatch):
+        """Guard against over-gating: the floor must reject the enclosure and
+        nothing else. Nobody stands 150mm from Bender's face."""
+        monkeypatch.setattr(presence.cfg, "presence_min_mm", 150, raising=False)
+        gate.install([600, 600])
+        assert presence.present() is False
+        assert presence.present() is True
+
+
+# ---------------------------------------------------------------------------
+# XSHUT recovery
+# ---------------------------------------------------------------------------
+
+class FakeLine:
+    """Stands in for digitalio.DigitalInOut on the XSHUT pin."""
+
+    def __init__(self):
+        self.value = True
+        self.history = []
+        self.deinited = False
+
+    def __setattr__(self, name, value):
+        if name == "value" and "history" in self.__dict__:
+            self.history.append(value)
+        object.__setattr__(self, name, value)
+
+    def deinit(self):
+        self.deinited = True
+
+
+class TestXshutRecovery:
+    """The breakout exposes an active-low shutdown pin. Wiring it lets a wedged
+    sensor be power-cycled in place, the same move `xvf3800_reboot_on_corrupt`
+    makes for the mic array instead of waiting for a human.
+
+    Without it the sensor stays dead until the process restarts -- survivable,
+    because the gate fails open, but it means an evening with no gate.
+    """
+
+    @pytest.fixture
+    def wired(self, gate, monkeypatch):
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 17,
+                            raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_max_resets", 3,
+                            raising=False)
+        line = FakeLine()
+        monkeypatch.setattr(presence, "_xshut_line", lambda: line)
+        return types.SimpleNamespace(gate=gate, line=line)
+
+    def test_no_pin_configured_means_no_reset(self, gate, monkeypatch):
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 0,
+                            raising=False)
+        assert presence._xshut_line() is None
+        assert presence._reset_via_xshut() is False
+
+    def test_a_wedged_sensor_is_power_cycled(self, wired, monkeypatch):
+        healthy = FakeSensor([900] * 10)
+        monkeypatch.setattr(presence, "_open_locked", lambda: healthy)
+        wired.gate.install([OSError] * presence._MAX_ERRORS)
+
+        for _ in range(presence._MAX_ERRORS):
+            presence.distance_mm()
+
+        # Active low: driven low, then released high.
+        assert wired.line.history == [False, True]
+        assert presence._dead is False
+        assert presence.distance_mm() == 900
+
+    def test_recovery_is_counted_like_the_mic_array_recovery(self, wired,
+                                                             monkeypatch):
+        monkeypatch.setattr(presence, "_open_locked",
+                            lambda: FakeSensor([900] * 5))
+        wired.gate.install([OSError] * presence._MAX_ERRORS)
+        for _ in range(presence._MAX_ERRORS):
+            presence.distance_mm()
+        names = [n for n, _ in wired.gate.counts]
+        assert "presence_sensor_dead" in names
+        assert "presence_sensor_reset" in names
+        assert "presence_sensor_recovered" in names
+
+    def test_a_failed_reset_leaves_the_gate_open(self, wired, monkeypatch):
+        monkeypatch.setattr(presence, "_open_locked", lambda: None)
+        wired.gate.install([OSError] * presence._MAX_ERRORS)
+        for _ in range(presence._MAX_ERRORS):
+            presence.distance_mm()
+        assert presence._dead is True
+        assert presence.available() is False
+        assert presence.wait_for_presence(0.0) is True
+        assert any(n == "presence_sensor_reset_failed"
+                   for n, _ in wired.gate.counts)
+
+    def test_resets_are_capped_so_a_dead_sensor_cannot_spin_the_loop(
+            self, wired, monkeypatch):
+        monkeypatch.setattr(presence, "_open_locked", lambda: None)
+        for _ in range(5):
+            presence._reset_via_xshut()
+        assert presence._resets == 3            # presence_max_resets
+        assert any(n == "presence_resets_exhausted"
+                   for n, _ in wired.gate.counts)
+
+    def test_the_gate_still_fails_open_while_resets_are_exhausted(
+            self, wired, monkeypatch):
+        monkeypatch.setattr(presence, "_open_locked", lambda: None)
+        for _ in range(5):
+            presence._reset_via_xshut()
+        # The property that protects the night survives every failure path.
+        assert presence.wait_for_presence(0.0) is True
+
+    def test_close_releases_the_xshut_line(self, gate, monkeypatch):
+        line = FakeLine()
+        monkeypatch.setattr(presence, "_xshut", line, raising=False)
+        presence.close()
+        assert line.deinited is True
+
+
+class TestXshutOnOpen:
+    """The open path must drive XSHUT before it touches the bus.
+
+    MEASURED on-device 2026-10-13: the breakout carries no pull-up on XSHUT,
+    and a Raspberry Pi GPIO left as an input rests on its internal pull-down.
+    So the pin sat low and held the sensor in reset. A bus scan returned only
+    0x1a, the WM8960 codec. Driving the pin high made 0x29 appear, with
+    identification registers 0xEE / 0xAA / 0x10.
+
+    The pin used to be driven only inside `_reset_via_xshut()`, which needs
+    `_MAX_ERRORS` consecutive READ failures to run. No read ever started: the
+    failed open set `_dead`, and `_get_sensor()` then returned None for the
+    life of the process. A correctly wired sensor stayed dead for good.
+    """
+
+    def _fake_driver(self, order):
+        module = types.ModuleType("adafruit_vl53l0x")
+
+        def ctor(i2c, address=0x29):
+            order.append("i2c")
+            return FakeSensor([900])
+
+        module.VL53L0X = ctor
+        return module
+
+    def test_open_drives_xshut_before_talking_to_the_bus(self, gate,
+                                                         monkeypatch):
+        order = []
+        line = FakeLine()
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 17,
+                            raising=False)
+        monkeypatch.setattr(presence, "_xshut_line",
+                            lambda: (order.append("xshut"), line)[1])
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._fake_driver(order))
+
+        sensor = presence._open_locked()
+
+        assert sensor is not None
+        assert order == ["xshut", "i2c"]
+
+    def test_an_unwired_pin_does_not_block_the_open(self, gate, monkeypatch):
+        order = []
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 0,
+                            raising=False)
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._fake_driver(order))
+
+        sensor = presence._open_locked()
+
+        assert sensor is not None
+        assert order == ["i2c"]
+
+    def test_xshut_is_driven_even_when_the_driver_is_missing(self, gate,
+                                                             monkeypatch):
+        """Order matters more than the outcome. The pin goes high first, so a
+        later retry or reset starts from a sensor that is actually running."""
+        order = []
+        line = FakeLine()
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 17,
+                            raising=False)
+        monkeypatch.setattr(presence, "_xshut_line",
+                            lambda: (order.append("xshut"), line)[1])
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x", None)
+        monkeypatch.delitem(sys.modules, "adafruit_vl53l0x")
+
+        assert presence._open_locked() is None
+        assert order == ["xshut"]

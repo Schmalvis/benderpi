@@ -39,6 +39,12 @@ huggingface_hub==1.7.1
 # ── Systemd integration ──────────────────────────────────────────────────────
 systemd-python>=235  # requires apt: libsystemd-dev pkg-config
 
+# ── Presence sensor (VL53L0X time-of-flight) ────────────────────────────────
+# Gates the Halloween open mic (scripts/presence.py). Optional at runtime:
+# presence.py fails open when the import fails, so a device without the sensor
+# keeps working. Pinned so a driver change cannot move the readings.
+adafruit-circuitpython-vl53l0x==3.6.19
+
 # ── Utilities ────────────────────────────────────────────────────────────────
 python-dotenv==1.2.2
 pyusb>=1.2  # scripts/xvf3800.py: REBOOT the reSpeaker XVF3800 over its USB control interface

@@ -233,5 +233,7 @@
   "stt_avg_logprob_min": -1.0,
   "stt_compression_ratio_max": 2.4,
   "hailo_stt_enabled": true,
-  "vlm_enabled": false
+  "vlm_enabled": false,
+  "presence_sensor_enabled": false,
+  "presence_xshut_gpio": 17
 }

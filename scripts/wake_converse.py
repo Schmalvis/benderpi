@@ -40,6 +40,7 @@ import stt
 import hailo_hub
 import briefings
 import leds
+import presence
 import vision
 from ai_response import AIResponder
 from ai_local import LocalAIResponder
@@ -126,6 +127,10 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
 
     A cooldown follows every session, because several children talking at once
     would otherwise start overlapping sessions.
+
+    `presence_sensor_enabled` adds a VL53L0X distance gate in front of the mic,
+    because the open mic answers whatever speech is nearby -- see the comment on
+    the gate below for the measured rate. The gate fails open by design.
     """
     cooldown = float(getattr(cfg, "halloween_cooldown_s", 2.0))
     log_.warning("HALLOWEEN MODE: no wake word, open mic. Kid-safe prompt, "
@@ -141,6 +146,20 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
             # mid-sentence.
             if say_request.pending():
                 _serve_say_requests()
+                continue
+            # Distance gate. Open mic has no trigger of its own: measured
+            # 2026-10-10 on 5.25h of recorded speech near the array, it starts
+            # 88.6 sessions/hour and sits in a session 79% of the time. Each
+            # false session makes Bender DEAF for 22-45s, which is the failure
+            # that matters -- the child who actually arrived is ignored.
+            #
+            # wait_for_presence() is bounded and returns True immediately when
+            # the sensor is unusable, so a missing or broken sensor leaves this
+            # loop exactly as it was. Looping back feeds the systemd watchdog
+            # and lets a puppet say-request through between passes.
+            if not presence.wait_for_presence(
+                    float(getattr(cfg, "presence_wait_slice_s", 5.0))):
+                leds.set_listening(False)
                 continue
             leds.set_listening(True)
             text = stt.listen_and_transcribe(after_playback=False)

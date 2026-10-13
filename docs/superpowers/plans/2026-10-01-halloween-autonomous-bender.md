@@ -58,6 +58,18 @@ The risk is the street triggering him, which is what `stt_min_speech_rms`
 exists for and has never been set. The call recording will give the data to
 set it.
 
+> **Superseded 2026-10-10 by measurement.** Two claims in this section are
+> wrong. (1) `stt_min_speech_rms` cannot gate the street: replaying 5.25h of
+> recorded speech through the real capture gates showed `voiced_rms` does not
+> track distance on the XVF3800 -- `close_normal` has the LOWEST median of any
+> condition (342) and `seated_far` reads 1432, so any level floor rejects the
+> child at the door before the voice across the room (at 1200: 57% of far-field
+> cut, 56% of near-field cut too). (2) The camera is **not** an IMX500. It is a
+> Camera Module 3 (IMX708) with no on-sensor accelerator, and the doorstep is
+> dark on 31 October. The gate that shipped instead is a VL53L0X distance
+> sensor (`scripts/presence.py`, `presence_sensor_enabled`, fails open).
+> The open mic itself measured 88.6 sessions/hour, in a session 79% of the time.
+
 **Camera trigger, if time allows.** The IMX500 runs detection on its own
 silicon, so person detection does not touch the Hailo NPU and does not
 conflict with the LLM's KV-cache (the reason `vlm_enabled` is false). A

@@ -49,11 +49,12 @@ A Raspberry Pi 5 voice assistant with the personality of Bender Bending Rodrigue
 |---|---|
 | Board | Raspberry Pi 5 |
 | AI Accelerator | Hailo AI HAT+ (Hailo-10H, 40 TOPS NPU) — LLM + STT + vision inference |
-| Camera | Raspberry Pi AI Camera (IMX500) — used for VLM / scene analysis |
+| Camera | Raspberry Pi Camera Module 3 (IMX708, autofocus via dw9807) — used for VLM / scene analysis. **Not** the AI Camera: there is no on-sensor accelerator, so all vision inference runs on the Hailo NPU or the CPU |
 | Audio HAT | ReSpeaker 2-Mic Pi HAT (WM8960 codec) — I2S, 2x MEMS mics |
 | Speaker | 3W passive, connected to ReSpeaker HAT |
 | LEDs | 45x WS2812B addressable RGB |
 | LED Data | GPIO 10 / SPI MOSI — SPI enabled in `/boot/firmware/config.txt` |
+| Presence sensor | VL53L0X time-of-flight, I2C bus 1 at `0x29` (GPIO 2 SDA / GPIO 3 SCL), **XSHUT on GPIO 17 / pin 11**. **Optional** — gates the Halloween open mic. Bus 1 otherwise holds only `0x1a`, the WM8960 codec, so there is no address clash. Needs `adafruit-circuitpython-vl53l0x` |
 | ALSA card | Card 2 (`seeed-2mic-voicecard`, `hw:2,0`) |
 
 ### Critical audio constraint
@@ -90,7 +91,9 @@ bender/
 │   ├── handler_base.py       — base classes/utilities shared by intent handlers
 │   ├── ai_local.py           — local LLM responder: Hailo NPU primary, Ollama CPU fallback
 │   ├── hailo_hub.py          — process-lifetime owner of the Hailo VDevice + resident Whisper/Qwen handles
-│   ├── camera.py             — Picamera2 (IMX500) singleton, thread-safe ref-counted access
+│   ├── camera.py             — Picamera2 (IMX708) singleton, thread-safe ref-counted access
+│   ├── presence.py           — VL53L0X distance gate for the Halloween open mic (fails open)
+│   ├── probe_vl53l0x.py      — standalone VL53L0X probe: is it on the bus, and what does it read?
 │   ├── vision.py             — scene analysis orchestrator (composes camera.py + vlm.py)
 │   ├── vlm.py                — Qwen2-VL-2B vision-language scene description via Hailo
 │   ├── time_parser.py        — natural-language time expression parser (pure stdlib)
@@ -113,6 +116,11 @@ bender/
 ├── venv/                     — Python venv (gitignored)
 ├── .env                      — secrets (gitignored)
 ├── .env.example              — template
+├── hardware/                 — printable parts. vl53l0x_eye_mount.scad builds both
+│                             halves of the presence sensor's eye mount:
+│                             eye_mount.stl (carrier) and eye_mount_lid.stl
+│                             (press-fit back lid that retains the PCB).
+│                             part = "carrier" | "lid" selects which one
 ├── bender_config.json        — runtime-overridable config defaults
 ├── watchdog_config.json      — health check thresholds
 ├── HANDOVER.md               — session handover context (decisions, priorities, notes)
@@ -189,6 +197,17 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `stt_min_speech_rms` | `0` (off) | Voiced-audio level floor. Background chatter and a TV carry across a room at a much lower level than someone addressing the device, but the right floor is room-specific, so this ships disabled. Set it from the `stt_capture` metric (below) rather than by guesswork |
 | `hailo_stt_enabled` | `true` | Route STT through the Hailo NPU (Whisper) rather than CPU faster-whisper |
 | `vlm_enabled` | `false` | Gate for Qwen2-VL scene description (`vlm.py`) — off by default because the VLM cannot be resident alongside the LLM (KV-Cache singleton, see below) |
+| `presence_sensor_enabled` | `false` | Gate the **Halloween open mic** behind a VL53L0X time-of-flight sensor (`scripts/presence.py`). Halloween mode drops the wake word, so any nearby speech starts a session — **measured 2026-10-10** by replaying 5.25h of recorded speech near the array through the real capture gates: **465 sessions, 88.6/hour, Bender in a session 79% of the time**. The cost is not noise, it is **deafness**: a false session runs a greeting, one reply and two empty 6s captures before timing out, so the child who actually arrived is ignored for 22–45s. `stt_min_speech_rms` **cannot** gate this, although the Halloween plan assumed it could — the same measurement found `voiced_rms` does not track distance on the XVF3800 (`close_normal` has the **lowest** median of any condition at 342; `seated_far` reads 1432), so a level floor rejects the child at the door before the voice across the room: at 1200 it cuts 57% of far-field and 56% of near-field. The camera cannot gate it either — the board is a **Camera Module 3 (IMX708)** with no on-sensor accelerator, and a doorstep on 31 October is dark. **Fails open by design**: a missing, unwired or broken sensor leaves `_halloween_loop` exactly as it was, because the owner's worst acceptable failure is a silent Bender, not a chatty one. Verify the hardware first with `venv/bin/python scripts/probe_vl53l0x.py --xshut 17` |
+| `presence_max_mm` | `2000` | Gate distance in millimetres. 2m is the stated doorstep requirement and also the VL53L0X's specified limit **in good conditions** — a dark Halloween costume reflects less, so real reach is shorter. Set it from the probe output, not from the datasheet |
+| `presence_min_mm` | `0` (off) | **Crosstalk floor.** The VL53L0X times its own IR pulse back, so it cannot tell Bender's eye socket from a child: any enclosure surface inside the ~25° cone returns a short, *stable* reading with nobody there. That failure **latches the gate open forever while looking exactly like a working sensor** — worse than the sensor dying, because dying fails open and says so. Readings at or under this are discarded and counted (`presence_below_floor`). Ships at 0 because the right value depends on the mounting: set it from `scripts/probe_vl53l0x.py --xshut 17 --baseline`. **Mount flush with an open aperture and no window** — a cover needs crosstalk calibration the Adafruit driver does not expose. On this build the left eye's blank pupil square mirrors the camera in the right eye and puts the sensor flush; recessing it in the head cavity does not |
+| `presence_clear_mm` | `2400` | Hysteresis. Once someone is inside the gate they stay inside until they pass this, so a child standing on the boundary does not flap the mic open and shut |
+| `presence_confirm_reads` | `2` | Consecutive agreeing readings before the gate changes state, entering or leaving. Same reason `oww_frames_required` exists: one stray reading must not open the mic |
+| `presence_poll_s` | `0.1` | Seconds between sensor reads while waiting |
+| `presence_i2c_address` | `0x29` | Sensor address. Bus 1 holds only `0x1a` (the WM8960 codec) on this device, so the default does not clash |
+| `presence_timing_budget_us` | `200000` | VL53L0X measurement timing budget. Longer reaches further at fewer reads per second — the doorstep needs reach, not frame rate |
+| `presence_xshut_gpio` | `0` (code default), **`17` shipped in `bender_config.json`** | GPIO driving the breakout's active-low **XSHUT** pin. Wired, a wedged sensor is power-cycled in place instead of staying dead until the next restart — the same move `xvf3800_reboot_on_corrupt` makes for the mic array. Metric triple mirrors it: `presence_sensor_dead` → `presence_sensor_reset` → `presence_sensor_recovered` (or `presence_sensor_reset_failed`). GPIO 17 (pin 11) is free on this build: GPIO 10 is SPI MOSI for the LEDs, 2/3 are I2C, and I2S audio holds 18–21. **Wiring it is not optional on this breakout.** XSHUT is active low and the board carries **no pull-up** on it, so a GPIO left as an input rests on the Pi's internal pull-down and holds the sensor in reset: measured on-device 2026-10-13, a bus scan returned only `0x1a` until the pin was driven high, then `0x29` with identification registers `0xEE / 0xAA / 0x10`. Boot after the release is **2 ms** (5/5 at every delay from 2–400 ms); `presence._XSHUT_BOOT_S` waits 50 ms, a 25× margin. `_open_locked()` drives the pin **before any I2C traffic** — it previously only did so inside `_reset_via_xshut()`, which needs `_MAX_ERRORS` consecutive *read* failures, so a correctly wired sensor stayed dead for the life of the process |
+| `presence_max_resets` | `3` | XSHUT power-cycles allowed per process. After the last one the gate fails open for good, so a broken sensor cannot spin the trigger loop (`presence_resets_exhausted`) |
+| `presence_wait_slice_s` | `5.0` | How long `wait_for_presence()` polls before returning to the loop. **Not** a gate value: the service is `Type=notify` with `WatchdogSec=120`, so the wait must be bounded for the loop to keep calling `_note_progress()` and to keep serving puppet say-requests between passes |
 
 ### Hailo residency (`scripts/hailo_hub.py`)
 

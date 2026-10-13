@@ -1,0 +1,9 @@
+# Reference geometry, not ours to redistribute. The eye mount is fitted
+# against these, so keep them locally. Fetch them from the NAS /3D-Printing
+# share if a fresh clone needs them.
+body.stl
+cover.stl
+
+# The first mount design. Superseded 2026-10-12 by vl53l0x_eye_mount.scad,
+# which splits the part into a carrier plus a press-fit back lid.
+*.superseded

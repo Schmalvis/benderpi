@@ -114,6 +114,53 @@ class Config:
     #   is ~7s of decode and two sentences is ~6s of speech.
     halloween_max_tokens: int = 48
     halloween_max_sentences: int = 2
+    #   ---- Presence gate (VL53L0X time-of-flight sensor) ----
+    #   Open-mic mode has no trigger: measured 2026-10-10 on 5.25h of recorded
+    #   speech near the array, it starts 88.6 sessions/hour and sits in a
+    #   session 79% of the time. `stt_min_speech_rms` cannot gate it --
+    #   `voiced_rms` does not track distance on the XVF3800 (close_normal
+    #   median 342, seated_far 1432), so any level floor rejects the child at
+    #   the door before the voice across the room. A distance sensor can.
+    #   Ships OFF. Turn it on only once `scripts/probe_vl53l0x.py` shows the
+    #   sensor reading sensibly at the spot Bender will stand.
+    presence_sensor_enabled: bool = False
+    #   Gate distance. The owner's doorstep requirement is 2m. The VL53L0X is
+    #   specified to 2000mm in good conditions, so this is its edge -- a dark
+    #   costume reflects less and will register closer. Set from the probe.
+    presence_max_mm: int = 2000
+    #   Crosstalk floor. The VL53L0X cannot tell Bender's own eye socket from a
+    #   child: it times its own IR pulse back, so any enclosure surface inside
+    #   the ~25-degree cone returns a short, STABLE reading with nobody there.
+    #   That failure latches the gate OPEN forever, which looks exactly like a
+    #   working sensor. Readings at or under this are treated as the enclosure,
+    #   not a person. Ships at 0 (off) because the right value depends on the
+    #   mounting -- set it from `scripts/probe_vl53l0x.py --baseline`, which
+    #   measures what the sensor reads with nothing in front of it.
+    presence_min_mm: int = 0
+    #   Hysteresis: once someone is in, they stay in until they pass this.
+    #   Stops a child standing on the boundary flapping the gate.
+    presence_clear_mm: int = 2400
+    #   Consecutive agreeing reads before the gate changes state. Same reason
+    #   `oww_frames_required` exists: one stray reading must not open the mic.
+    presence_confirm_reads: int = 2
+    presence_poll_s: float = 0.1
+    presence_i2c_address: int = 0x29
+    #   A longer timing budget reaches further at fewer reads per second. The
+    #   doorstep needs reach, not frame rate.
+    presence_timing_budget_us: int = 200000
+    #   XSHUT recovery. The breakout exposes an active-low shutdown pin. Wire it
+    #   to a free GPIO and a wedged sensor can be power-cycled in place,
+    #   exactly as `xvf3800_reboot_on_corrupt` recovers the mic array rather
+    #   than waiting for a human. 0 = not wired, so the sensor stays dead until
+    #   the process restarts. GPIO 17 (pin 11) is free on this build: GPIO 10
+    #   is SPI MOSI for the LEDs, 2/3 are I2C, and I2S audio holds 18-21.
+    presence_xshut_gpio: int = 0
+    #   Give up after this many resets, so a broken sensor cannot spin the
+    #   trigger loop. After the last one the gate fails open for good.
+    presence_max_resets: int = 3
+    #   Seconds the trigger loop waits for someone before looping back to feed
+    #   the systemd watchdog and serve puppet say-requests. Not a gate value.
+    presence_wait_slice_s: float = 5.0
     stt_onset_frames: int = 3
     stt_vad_warmup_frames: int = 5    # frames fed to a fresh VAD and ignored for onset
     # Seconds to wait for speech onset before giving up on a capture (0 = wait
