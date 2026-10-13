@@ -398,11 +398,13 @@ class TestXshutOnOpen:
     life of the process. A correctly wired sensor stayed dead for good.
     """
 
-    def _fake_driver(self, order):
+    def _fake_driver(self, order, seen=None):
         module = types.ModuleType("adafruit_vl53l0x")
 
-        def ctor(i2c, address=0x29):
+        def ctor(i2c, address=0x29, io_timeout_s=0):
             order.append("i2c")
+            if seen is not None:
+                seen["io_timeout_s"] = io_timeout_s
             return FakeSensor([900])
 
         module.VL53L0X = ctor
@@ -451,3 +453,85 @@ class TestXshutOnOpen:
 
         assert presence._open_locked() is None
         assert order == ["xshut"]
+
+
+class TestIoTimeoutIsAlwaysBounded:
+    """Every driver poll loop must be bounded, or a stalled sensor hangs us.
+
+    The Adafruit driver polls the sensor's status registers in FIVE places and
+    bounds none of them unless `io_timeout_s` is set. The parameter defaults
+    to 0, which means off.
+
+    MEASURED on-device 2026-10-13, minutes after the sensor was mounted behind
+    the eye: `probe_vl53l0x.py --baseline` sat in `read_range()`'s poll loop
+    for over three minutes in process state D (`wchan: i2c_dw_xfer`). It
+    printed nothing and would never have returned.
+
+    A hang defeats the whole fail-open design. `_halloween_loop` would block
+    forever, stop calling `_note_progress()`, miss the `WatchdogSec=120` ping,
+    and systemd would kill and restart the service. Fail-open only covers
+    exceptions. So the driver has to be made to raise one.
+    """
+
+    def _driver(self, seen):
+        module = types.ModuleType("adafruit_vl53l0x")
+
+        def ctor(i2c, address=0x29, io_timeout_s=0):
+            seen["io_timeout_s"] = io_timeout_s
+            return FakeSensor([900])
+
+        module.VL53L0X = ctor
+        return module
+
+    def test_the_open_passes_a_positive_timeout(self, gate, monkeypatch):
+        seen = {}
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._driver(seen))
+
+        assert presence._open_locked() is not None
+        assert seen["io_timeout_s"] > 0, "a zero timeout means an unbounded poll"
+
+    def test_the_timeout_covers_three_measurement_budgets(self, gate,
+                                                          monkeypatch):
+        """One budget is the expected wait, so one budget is not a margin."""
+        seen = {}
+        monkeypatch.setattr(presence.cfg, "presence_timing_budget_us", 200000,
+                            raising=False)
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._driver(seen))
+
+        presence._open_locked()
+
+        assert seen["io_timeout_s"] == pytest.approx(0.8)
+
+    def test_a_short_budget_still_gets_the_floor(self, gate, monkeypatch):
+        """The constructor calibrates BEFORE the budget is applied, using the
+        driver's own ~33 ms default. A budget-derived timeout alone could be
+        shorter than that calibration needs."""
+        seen = {}
+        monkeypatch.setattr(presence.cfg, "presence_timing_budget_us", 20000,
+                            raising=False)
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._driver(seen))
+
+        presence._open_locked()
+
+        assert seen["io_timeout_s"] == pytest.approx(0.5)
+
+    def test_a_driver_timeout_is_counted_and_escalates_like_any_read_error(
+            self, gate):
+        """The driver raises RuntimeError on expiry. `distance_mm()` already
+        counts any exception towards `_MAX_ERRORS` and the XSHUT reset, so the
+        bound plugs straight into the recovery that is already tested."""
+        # Install through the fixture, so the real `_get_sensor()` runs and the
+        # `_dead` short-circuit is exercised rather than patched away.
+        gate.install([RuntimeError("Timeout waiting for VL53L0X!")]
+                     * presence._MAX_ERRORS)
+
+        for _ in range(presence._MAX_ERRORS):
+            assert presence.distance_mm() is None
+
+        assert presence._dead is True
+        # Fail open: a dead sensor must never shut the mic.
+        assert presence.wait_for_presence(0.01) is True
+

@@ -124,6 +124,33 @@ def _xshut_line():
     return _xshut
 
 
+def _io_timeout_s(budget_us: int) -> float:
+    """Seconds to wait for one measurement before declaring the read failed.
+
+    The Adafruit driver polls the sensor's status registers in FIVE places and
+    bounds none of them unless `io_timeout_s` is set. It defaults to 0, which
+    means off. So a sensor that stops asserting its interrupt hangs the caller
+    for good, in uninterruptible I2C transfers, with no log line and no error.
+
+    MEASURED on-device 2026-10-13, minutes after the sensor was mounted behind
+    the eye: `probe_vl53l0x.py --baseline` sat in `read_range()`'s poll loop
+    for over 3 minutes in process state D (`wchan: i2c_dw_xfer`). It printed
+    nothing. It would never have returned.
+
+    A hang is worse here than an error. `_halloween_loop` would block forever,
+    stop calling `_note_progress()`, miss the `WatchdogSec=120` ping, and
+    systemd would kill and restart the service. The fail-open rule only covers
+    exceptions, so an unbounded poll defeats it entirely.
+
+    Three measurement budgets plus 200 ms. The budget IS the measurement time,
+    so one budget is the expected wait, and three leaves room for a retry
+    inside the driver. The 0.5 s floor covers the constructor's own reference
+    calibration, which runs BEFORE `measurement_timing_budget` is applied and
+    so uses the driver's ~33 ms default.
+    """
+    return max(0.5, 3.0 * (budget_us / 1e6) + 0.2)
+
+
 def _reset_via_xshut() -> bool:
     """Power-cycle the sensor through XSHUT and re-open it.
 
@@ -205,8 +232,12 @@ def _open_locked():
 
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
-        sensor = adafruit_vl53l0x.VL53L0X(i2c, address=address)
         budget = int(getattr(cfg, "presence_timing_budget_us", 200000))
+        # io_timeout_s must be passed to the constructor, not set after it:
+        # the constructor's own calibration uses two of the five unbounded
+        # poll loops. See _io_timeout_s().
+        sensor = adafruit_vl53l0x.VL53L0X(
+            i2c, address=address, io_timeout_s=_io_timeout_s(budget))
         if budget:
             # A longer budget reaches further, at fewer reads per second. The
             # doorstep needs reach, not frame rate.
@@ -219,9 +250,10 @@ def _open_locked():
         _dead = True
         return None
 
-    log.info("Presence sensor ready at %s (budget %s us, gate <= %d mm)",
+    log.info("Presence sensor ready at %s (budget %s us, io timeout %.2f s, "
+             "gate <= %d mm)",
              hex(address), getattr(sensor, "measurement_timing_budget", "?"),
-             int(getattr(cfg, "presence_max_mm", 2000)))
+             _io_timeout_s(budget), int(getattr(cfg, "presence_max_mm", 2000)))
     metrics.count("presence_sensor_ready", address=hex(address))
     return sensor
 

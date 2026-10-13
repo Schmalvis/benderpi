@@ -87,6 +87,26 @@ def release_xshut(gpio: int):
     return line
 
 
+def io_timeout_s(budget_us: int) -> float:
+    """Seconds to wait for one measurement before raising.
+
+    The Adafruit driver polls the sensor's status registers in FIVE places and
+    bounds none of them unless `io_timeout_s` is set. It defaults to 0, which
+    means off.
+
+    MEASURED on-device 2026-10-13: with the sensor mounted behind the eye, a
+    --baseline run sat in `read_range()`'s poll loop for over 3 minutes in
+    process state D (`wchan: i2c_dw_xfer`), printed nothing, and would never
+    have returned. A probe that hangs is worse than a probe that fails: it
+    tells you nothing and it looks like patience.
+
+    Three measurement budgets plus 200 ms. The 0.5 s floor covers the
+    constructor's reference calibration, which runs before the budget is
+    applied and so uses the driver's ~33 ms default.
+    """
+    return max(0.5, 3.0 * (budget_us / 1e6) + 0.2)
+
+
 def scan(i2c) -> list:
     if not lock_bus(i2c):
         raise SystemExit("could not lock the I2C bus (another process holds it)")
@@ -114,19 +134,37 @@ def baseline_check(sensor, args) -> int:
     print()
     input("Press Enter when the field is clear... ")
 
+    print(f"Sampling for {args.seconds:.0f} s. Ctrl-C stops early.")
+    print()
+
+    # Print progress. The first version of this loop printed nothing until it
+    # finished, so a hung read (see io_timeout_s) was indistinguishable from a
+    # working one: on 2026-10-13 the owner watched a silent run for over three
+    # minutes before anyone knew it was stuck. A probe must always show that it
+    # is still moving.
     reads, in_range, errors = [], 0, 0
     t0 = time.monotonic()
-    while time.monotonic() - t0 < args.seconds:
+    next_tick = 0.0
+    while True:
+        elapsed = time.monotonic() - t0
+        if elapsed >= args.seconds:
+            break
         try:
             mm = sensor.range
         except Exception as exc:
             errors += 1
-            print(f"  read error: {type(exc).__name__}: {exc}")
+            print(f"  {elapsed:>5.1f}s  read error: {type(exc).__name__}: {exc}")
             time.sleep(args.interval)
             continue
         reads.append(mm)
         if 0 < mm < 8000:
             in_range += 1
+        if elapsed >= next_tick:
+            flag = "IN RANGE" if 0 < mm < 8000 else "clear"
+            print(f"  {elapsed:>5.1f}s  {len(reads):>4} reads  "
+                  f"last {mm:>5} mm  {flag}  "
+                  f"(in range so far {in_range})")
+            next_tick = elapsed + 2.0
         time.sleep(args.interval)
 
     total = len(reads)
@@ -234,11 +272,23 @@ def main() -> int:
         print("      venv/bin/pip install adafruit-circuitpython-vl53l0x")
         return 2
 
-    sensor = adafruit_vl53l0x.VL53L0X(i2c, address=args.address)
+    # The timeout goes in the constructor, not after it: two of the driver's
+    # five unbounded poll loops run during its reference calibration.
+    tmo = io_timeout_s(args.budget_us or 33000)
+    try:
+        sensor = adafruit_vl53l0x.VL53L0X(i2c, address=args.address,
+                                          io_timeout_s=tmo)
+    except RuntimeError as exc:
+        print(f"FAIL: the sensor answered on the bus but never finished its "
+              f"own calibration: {exc}")
+        print("      It is wired well enough to be addressed, not well enough")
+        print("      to measure. Check SDA/SCL continuity and the ground.")
+        return 1
     if args.budget_us:
         sensor.measurement_timing_budget = args.budget_us
     print(f"sensor ready at {hex(args.address)}, "
-          f"timing budget {sensor.measurement_timing_budget} us")
+          f"timing budget {sensor.measurement_timing_budget} us, "
+          f"io timeout {tmo:.2f} s")
     if args.baseline:
         return baseline_check(sensor, args)
 
