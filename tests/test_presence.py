@@ -723,3 +723,59 @@ class TestSignalRateLimit:
         assert self._open(monkeypatch, sensor, 0.1) is None
         # Fail open: a sensor we could not configure must never shut the mic.
         assert presence.wait_for_presence(0.01) is True
+
+
+class TestMetricsSingletonIsImported:
+    """`presence.metrics` must be the writer, not the module.
+
+    This class deliberately does NOT use the `gate` fixture. The fixture
+    monkeypatches `presence.metrics` with a recorder, and that is exactly what
+    hid the bug: `presence.py` had `import metrics`, which binds the MODULE,
+    whose `count` lives on the `MetricsWriter` class and not on the module.
+    Every one of the 15 `metrics.count(...)` calls in the gate raised
+    `AttributeError`, and no test could see it.
+
+    MEASURED on-device 2026-10-13, the first time the real gate ran against the
+    real sensor. The sensor opened correctly, logged its ready line, and then
+    `_open_locked()` died on `metrics.count("presence_sensor_ready", ...)`.
+
+    The fail-open rule does NOT cover this. It covers exceptions from the
+    sensor, caught inside `distance_mm()`. This one is raised by the gate's own
+    bookkeeping, propagates out of `available()`, and takes `_halloween_loop`
+    down with it. So a crash, not a silent open mic.
+    """
+
+    def test_count_is_callable_on_the_imported_object(self):
+        assert callable(getattr(presence.metrics, "count", None))
+
+    def test_timer_is_callable_on_the_imported_object(self):
+        assert callable(getattr(presence.metrics, "timer", None))
+
+    def test_it_is_not_the_module(self):
+        import types
+        assert not isinstance(presence.metrics, types.ModuleType)
+
+    def test_it_is_the_same_object_every_module_shares(self):
+        """One writer, one file, one lock. A second instance would race on
+        metrics.jsonl and rotate it independently."""
+        import metrics as metrics_module
+        assert presence.metrics is metrics_module.metrics
+
+    def test_every_metrics_call_in_the_gate_uses_a_real_method(self):
+        """Catch a typo'd metric call without executing every branch."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(presence)
+        used = {
+            node.func.attr
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "metrics"
+        }
+        assert used, "no metrics calls found; this test has gone stale"
+        missing = sorted(n for n in used
+                         if not callable(getattr(presence.metrics, n, None)))
+        assert not missing, f"presence.py calls metrics.{missing} which do not exist"

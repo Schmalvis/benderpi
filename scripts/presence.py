@@ -63,9 +63,16 @@ import atexit
 import threading
 import time
 
-import metrics
 from config import cfg
 from logger import get_logger
+# The SINGLETON, not the module. `import metrics` binds the module, whose
+# `count` lives on the MetricsWriter class, so every `metrics.count(...)` here
+# raised AttributeError. It crashed `_open_locked()` on the first real run
+# against the sensor, 2026-10-13, and the fail-open rule does not cover it: the
+# error propagates out of `available()` and takes `_halloween_loop` down. Every
+# other module in scripts/ already imports it this way. See
+# TestMetricsSingletonIsImported, which checks this without monkeypatching.
+from metrics import metrics
 
 log = get_logger("presence")
 
