@@ -26,6 +26,7 @@ class FakeSensor:
         self.ranges = list(ranges)
         self.reads = 0
         self.measurement_timing_budget = 33000
+        self.signal_rate_limit = 0.25        # the driver default
 
     @property
     def range(self):
@@ -535,3 +536,190 @@ class TestIoTimeoutIsAlwaysBounded:
         # Fail open: a dead sensor must never shut the mic.
         assert presence.wait_for_presence(0.01) is True
 
+
+
+class TestXshutIsPulsedNotJustDrivenHigh:
+    """Opening the sensor must PULSE XSHUT low, not simply drive it high.
+
+    Driving an already-high pin high is not a reset, and the sensor carries no
+    other reset. This cost a whole afternoon.
+
+    MEASURED on-device 2026-10-13. A probe run wedged the sensor. It still
+    answered its address, returned a stale 8190 mm for three reads, raised
+    `OSError [Errno 121]` (a bus NACK), then timed out on every read, 35 in a
+    row, with no recovery. Three further probe processes reproduced the
+    identical failure at the identical read, because:
+
+      - `digitalio` leaves the line in its last state when the process exits.
+        `pinctrl get 17` read `op dh pd | hi` with nothing running.
+      - Each new process found XSHUT high and drove it high again.
+      - The wedged sensor was never power-cycled, so it looked like dead
+        hardware for ever.
+
+    A low pulse restored it. So the open path must pulse, and the fix must not
+    regress: a regression here is indistinguishable from a broken breakout.
+    """
+
+    def _fake_driver(self, order):
+        module = types.ModuleType("adafruit_vl53l0x")
+
+        def ctor(i2c, address=0x29, io_timeout_s=0):
+            order.append("i2c")
+            return FakeSensor([900])
+
+        module.VL53L0X = ctor
+        return module
+
+    def _wire(self, monkeypatch, order, line):
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 17,
+                            raising=False)
+        monkeypatch.setattr(presence, "_xshut_line",
+                            lambda: (order.append("xshut"), line)[1])
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._fake_driver(order))
+
+    def test_the_open_drives_the_pin_low_then_high(self, gate, monkeypatch):
+        order, line = [], FakeLine()
+        self._wire(monkeypatch, order, line)
+
+        assert presence._open_locked() is not None
+        # A bare [True] would mean the pin was only driven high. That is the
+        # bug: it leaves a wedged sensor wedged.
+        assert line.history == [False, True]
+        assert line.value is True
+
+    def test_the_pulse_happens_before_any_bus_traffic(self, gate, monkeypatch):
+        order, line = [], FakeLine()
+        self._wire(monkeypatch, order, line)
+
+        assert presence._open_locked() is not None
+        assert order == ["xshut", "i2c"]
+
+    def test_an_already_high_pin_is_still_pulsed(self, gate, monkeypatch):
+        """The exact on-device case. The pin starts high, as a previous process
+        left it, and the open must still power-cycle the sensor."""
+        order, line = [], FakeLine()
+        line.value = True
+        line.history.clear()
+        self._wire(monkeypatch, order, line)
+
+        assert presence._open_locked() is not None
+        assert False in line.history, "an already-high pin was never driven low"
+
+    def test_a_failed_pulse_does_not_stop_the_open(self, gate, monkeypatch):
+        """Fail open. A GPIO that cannot be driven must not make Bender deaf."""
+        order = []
+
+        class Stubborn(FakeLine):
+            def __setattr__(self, name, value):
+                if name == "value" and "history" in self.__dict__:
+                    raise OSError("GPIO busy")
+                object.__setattr__(self, name, value)
+
+        self._wire(monkeypatch, order, Stubborn())
+
+        assert presence._open_locked() is not None
+        assert order == ["xshut", "i2c"]
+
+    def test_the_reset_path_pulses_through_the_same_helper(self, gate,
+                                                           monkeypatch):
+        """One pulse implementation, so the two paths cannot drift apart."""
+        line = FakeLine()
+        line.history.clear()
+
+        presence._pulse_xshut(line)
+
+        assert line.history == [False, True]
+
+
+class TestSignalRateLimit:
+    """`presence_signal_rate_mcps` must reach the sensor, or reach is halved.
+
+    The signal rate limit is the minimum return rate the sensor accepts as a
+    real echo. The driver default of 0.25 MCPS is tuned for a good reflector.
+    A child in a Halloween costume is a poor one.
+
+    MEASURED on-device 2026-10-13, sensor mounted behind the left eye, walking
+    in from 3 m and back out, 0 errors in every run:
+
+        0.25 MCPS    reliable to  641 mm, max  872 mm
+        0.0938 MCPS  reliable to 1196 mm, max 1267 mm
+
+    Crosstalk did not come back at the lower limit: the empty-field baseline
+    read 0 of 135 in range. That check is not optional, because a weaker echo
+    threshold can start accepting the enclosure's own reflection, and that
+    latches the gate OPEN for ever while looking like a working sensor.
+    """
+
+    def _driver(self, sensor):
+        module = types.ModuleType("adafruit_vl53l0x")
+        module.VL53L0X = lambda i2c, address=0x29, io_timeout_s=0: sensor
+        return module
+
+    def _open(self, monkeypatch, sensor, rate):
+        monkeypatch.setattr(presence.cfg, "presence_xshut_gpio", 0,
+                            raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_signal_rate_mcps", rate,
+                            raising=False)
+        monkeypatch.setitem(sys.modules, "adafruit_vl53l0x",
+                            self._driver(sensor))
+        return presence._open_locked()
+
+    def test_a_configured_rate_is_applied(self, gate, monkeypatch):
+        sensor = FakeSensor([900])
+        assert self._open(monkeypatch, sensor, 0.1) is sensor
+        assert sensor.signal_rate_limit == 0.1
+
+    def test_zero_leaves_the_driver_default_alone(self, gate, monkeypatch):
+        """Opting out must not write anything. 0 means 'do not touch'."""
+        sensor = FakeSensor([900])
+        assert self._open(monkeypatch, sensor, 0) is sensor
+        assert sensor.signal_rate_limit == 0.25
+
+    def test_none_leaves_the_driver_default_alone(self, gate, monkeypatch):
+        """A null in bender_config.json must behave like 0, not crash."""
+        sensor = FakeSensor([900])
+        assert self._open(monkeypatch, sensor, None) is sensor
+        assert sensor.signal_rate_limit == 0.25
+
+    def test_the_rate_is_set_before_the_timing_budget(self, gate, monkeypatch):
+        """Order matters to the driver, so pin it down.
+
+        `measurement_timing_budget` recomputes the sensor's range timeouts.
+        Setting the signal rate limit afterwards would leave them computed for
+        the old limit.
+        """
+        order = []
+
+        class Recorder(FakeSensor):
+            armed = False               # armed after __init__, see below
+
+            def __setattr__(self, name, value):
+                if self.armed and name in ("signal_rate_limit",
+                                           "measurement_timing_budget"):
+                    order.append(name)
+                object.__setattr__(self, name, value)
+
+        monkeypatch.setattr(presence.cfg, "presence_timing_budget_us", 200000,
+                            raising=False)
+        sensor = Recorder([900])
+        sensor.armed = True            # ignore the writes __init__ itself made
+        self._open(monkeypatch, sensor, 0.1)
+
+        assert order == ["signal_rate_limit", "measurement_timing_budget"]
+
+    def test_a_sensor_that_rejects_the_rate_fails_open(self, gate, monkeypatch):
+        """An older driver without the property must not make Bender deaf."""
+        class Picky(FakeSensor):
+            armed = False
+
+            def __setattr__(self, name, value):
+                if self.armed and name == "signal_rate_limit":
+                    raise AttributeError("no such property")
+                object.__setattr__(self, name, value)
+
+        sensor = Picky([900])
+        sensor.armed = True
+        assert self._open(monkeypatch, sensor, 0.1) is None
+        # Fail open: a sensor we could not configure must never shut the mic.
+        assert presence.wait_for_presence(0.01) is True

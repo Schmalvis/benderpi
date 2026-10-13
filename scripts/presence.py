@@ -124,6 +124,36 @@ def _xshut_line():
     return _xshut
 
 
+def _pulse_xshut(line) -> None:
+    """Power-cycle the sensor: drive XSHUT low, then release it high.
+
+    Driving an already-high pin high is not a reset. That distinction cost a
+    whole afternoon on 2026-10-13 and it is the reason this helper exists.
+
+    MEASURED on-device that day. The sensor wedged during a probe run: it
+    answered its address, returned a stale 8190 for three reads, then raised
+    `OSError [Errno 121]` (a bus NACK) and after that timed out on every read,
+    35 in a row, with no recovery. Three further probe processes saw the exact
+    same failure at the exact same read, because:
+
+      - `digitalio` leaves the line in its last state when the process exits.
+        `pinctrl get 17` read `op dh pd | hi` with nothing running.
+      - So every new process found XSHUT already high and drove it high again.
+      - The wedged sensor was never reset, and looked identically broken
+        forever.
+
+    A low pulse is the only way back. The sensor carries no other reset.
+
+    `_XSHUT_BOOT_S` is 50 ms. Measured boot after the release is 2 ms, 5 of 5
+    at every delay from 2 ms to 400 ms, so that is a 25x margin. The same wait
+    serves as the low time: the datasheet asks for a minimum of 100 us.
+    """
+    line.value = False              # active low: sensor off
+    time.sleep(_XSHUT_BOOT_S)
+    line.value = True               # release: sensor boots at 0x29
+    time.sleep(_XSHUT_BOOT_S)
+
+
 def _io_timeout_s(budget_us: int) -> float:
     """Seconds to wait for one measurement before declaring the read failed.
 
@@ -174,10 +204,7 @@ def _reset_via_xshut() -> bool:
                 _resets, limit)
     metrics.count("presence_sensor_reset", attempt=_resets)
     try:
-        line.value = False          # active low: sensor off
-        time.sleep(_XSHUT_BOOT_S)
-        line.value = True           # release: sensor boots at 0x29
-        time.sleep(_XSHUT_BOOT_S)   # measured boot is 2 ms; be generous
+        _pulse_xshut(line)
     except Exception as exc:
         log.error("XSHUT toggle failed: %s", exc)
         metrics.count("presence_xshut_error", error=type(exc).__name__)
@@ -215,8 +242,18 @@ def _open_locked():
     # _MAX_ERRORS consecutive READ failures to run. No read ever started,
     # because the failed open set _dead and _get_sensor() then returned None
     # for the life of the process. So a correctly wired sensor stayed dead.
-    if _xshut_line() is not None:
-        time.sleep(_XSHUT_BOOT_S)
+    #
+    # The pin must be PULSED, not just driven high. A sensor left wedged by a
+    # previous process keeps XSHUT high across the process exit, so driving it
+    # high changes nothing and the sensor stays wedged for ever. See
+    # _pulse_xshut() for the on-device measurement that proved it.
+    _line = _xshut_line()
+    if _line is not None:
+        try:
+            _pulse_xshut(_line)
+        except Exception as exc:
+            log.warning("XSHUT pulse failed on open: %s", exc)
+            metrics.count("presence_xshut_error", error=type(exc).__name__)
     try:
         # Lazy imports: the module must import on a dev clone with no Blinka,
         # and tests inject a fake sensor instead.
@@ -238,9 +275,38 @@ def _open_locked():
         # poll loops. See _io_timeout_s().
         sensor = adafruit_vl53l0x.VL53L0X(
             i2c, address=address, io_timeout_s=_io_timeout_s(budget))
+        # The signal rate limit is the minimum return rate the sensor accepts
+        # as a real echo. Lowering it accepts weaker echoes, so it reaches
+        # further off a poor reflector. A person in clothing is a poor
+        # reflector: the 2000 mm in the datasheet is for a white target.
+        #
+        # MEASURED on-device 2026-10-13, sensor mounted behind the left eye,
+        # walking in from 3 m and back out. All runs 0 errors:
+        #
+        #   0.25 MCPS (driver default)  reliable to  641 mm, max  872 mm
+        #   0.0938 MCPS                 reliable to 1196 mm, max 1267 mm
+        #
+        # So the default reaches barely past arm's reach, and this nearly
+        # doubles it. Crosstalk did NOT come back at the lower limit: the
+        # empty-field baseline read 0 of 135 in range. That had to be checked,
+        # because a weaker echo threshold can start accepting the enclosure's
+        # own reflection, which latches the gate OPEN for ever.
+        #
+        # Set to 0 or null to leave the driver default alone.
+        #
+        # ST's long-range profile (AN4545) also changes the VCSEL pulse period
+        # to 18/14 from 14/10. The Adafruit driver does not expose that, so
+        # this is as far as the public API reaches.
+        rate = float(getattr(cfg, "presence_signal_rate_mcps", 0) or 0)
+        if rate > 0:
+            sensor.signal_rate_limit = rate
         if budget:
-            # A longer budget reaches further, at fewer reads per second. The
-            # doorstep needs reach, not frame rate.
+            # Shorter is better here, and that was not obvious. A longer budget
+            # is the usual advice for reach, but measured on this build the
+            # 200 ms budget reached 1267 mm against 1233 mm at 500 ms, and read
+            # every 0.40 s against 0.70 s. So 500 ms bought nothing but delay:
+            # at `presence_confirm_reads` of 2 the gate armed in 1.40 s instead
+            # of 0.80 s. The signal rate limit above does the reaching.
             sensor.measurement_timing_budget = budget
     except Exception as exc:
         log.error("Presence sensor at %s failed to initialise: %s",
@@ -251,9 +317,11 @@ def _open_locked():
         return None
 
     log.info("Presence sensor ready at %s (budget %s us, io timeout %.2f s, "
-             "gate <= %d mm)",
+             "signal rate %s MCPS, gate <= %d mm)",
              hex(address), getattr(sensor, "measurement_timing_budget", "?"),
-             _io_timeout_s(budget), int(getattr(cfg, "presence_max_mm", 2000)))
+             _io_timeout_s(budget),
+             getattr(sensor, "signal_rate_limit", "?"),
+             int(getattr(cfg, "presence_max_mm", 2000)))
     metrics.count("presence_sensor_ready", address=hex(address))
     return sensor
 

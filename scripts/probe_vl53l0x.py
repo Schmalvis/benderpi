@@ -65,7 +65,7 @@ def lock_bus(i2c, timeout_s: float = 2.5):
 
 
 def release_xshut(gpio: int):
-    """Drive the breakout's active-low XSHUT pin high, then wait for boot.
+    """Power-cycle the sensor over XSHUT: drive the pin low, then release high.
 
     XSHUT carries no pull-up on this breakout. A Raspberry Pi GPIO left as an
     input rests on its own internal pull-down, so the pin sits low and holds
@@ -76,13 +76,25 @@ def release_xshut(gpio: int):
     answers at 0x29 two milliseconds after the release, 5 of 5 times, at
     every delay from 2 ms to 400 ms. 50 ms is a 25x margin.
 
+    The pin is PULSED low first, and this is not optional. The first version of
+    this function only drove the pin high, which is not a reset when the pin is
+    already high. Same day, same sensor: a probe run wedged the sensor (stale
+    8190 for three reads, then `OSError [Errno 121]`, then 35 consecutive
+    timeouts and no recovery). `digitalio` leaves the line in its last state
+    at process exit, so `pinctrl get 17` read `op dh pd | hi` with nothing
+    running. Every later probe process drove that already-high pin high, reset
+    nothing, and reproduced the identical failure at the identical read. The
+    probe looked like broken hardware for three runs.
+
     Returns the held line. The caller MUST keep the reference. Dropping it
     releases the pin, and the sensor falls back into reset.
     """
     import board
     import digitalio
     line = digitalio.DigitalInOut(getattr(board, f"D{gpio}"))
-    line.switch_to_output(value=True)
+    line.switch_to_output(value=False)   # active low: sensor off
+    time.sleep(0.05)
+    line.value = True                    # release: sensor boots at 0x29
     time.sleep(0.05)
     return line
 
@@ -114,6 +126,15 @@ def scan(i2c) -> list:
         return sorted(i2c.scan())
     finally:
         i2c.unlock()
+
+
+# Strays at or under this, with an empty field, are the enclosure reflecting
+# the sensor's own pulse. Strays beyond it are weak echoes at the edge of the
+# sensor's reach. The two need opposite fixes, so the baseline check must tell
+# them apart. 300 mm is well outside any plausible mount geometry on this build
+# (the die sits ~7 mm behind the aperture, the eye socket rim ~20-30 mm out) and
+# well inside the 400-600 mm a child stands at to reach the candy.
+_CROSSTALK_MAX_MM = 300
 
 
 def baseline_check(sensor, args) -> int:
@@ -192,7 +213,7 @@ def baseline_check(sensor, args) -> int:
           f"(spread {spread} mm)")
     print()
 
-    if pct >= 50 and spread <= 200:
+    if pct >= 50 and spread <= 200 and hi <= _CROSSTALK_MAX_MM:
         print("FAIL: the sensor is looking at Bender, not at the doorstep.")
         print(f"  A steady {med} mm with an empty field is the enclosure.")
         print("  Fix the MOUNTING first. Move the sensor flush to the surface,")
@@ -201,8 +222,50 @@ def baseline_check(sensor, args) -> int:
         print("  Only do that if a person never stands that close.")
         return 1
 
+    if pct >= 50 and spread <= 200:
+        # Steady, but too far to be the enclosure. Something real is in the
+        # cone: a wall, a door, a parked car. The same floor advice would be
+        # just as wrong here as in the MARGINAL branch below, because the floor
+        # discards everything under it.
+        print(f"FAIL: a steady {med} mm with an empty field, too far to be the")
+        print("  enclosure. Something real stands in the cone at that distance.")
+        print("  Re-aim Bender at open space, not at a wall or a door.")
+        print("  Do NOT raise presence_min_mm to cover it. It is a FLOOR, so it")
+        print(f"  would discard every real reading under {hi} mm as well.")
+        return 1
+
+    # Where the stray sits decides what to do about it, and the first version
+    # of this branch ignored that. It told the owner to set presence_min_mm to
+    # the maximum stray whatever the distance. On 2026-10-13 the long-range
+    # baseline returned ONE reading, at 1220 mm, and the probe advised
+    # `presence_min_mm = 1220`. That floor discards every reading at or under
+    # it, so it would have discarded the whole detection zone and the gate
+    # would never have opened. Advice that silently disables the feature is
+    # worse than no advice.
     print("MARGINAL: some stray readings, but not a steady one.")
-    print(f"  Set presence_min_mm to {hi} to discard them.")
+    print()
+    if hi <= _CROSSTALK_MAX_MM:
+        # Near the sensor, with an empty field, means the enclosure. The cone
+        # is about 25 degrees wide, so a rim inside it returns its own echo.
+        print(f"  All of them are within {_CROSSTALK_MAX_MM} mm. That is the")
+        print("  enclosure, not a person. Fix the MOUNTING first: flush to the")
+        print("  surface, a wider aperture, no window over it.")
+        print(f"  If you cannot, set presence_min_mm to {hi}.")
+        print("  A person must never stand that close for that to be safe.")
+    else:
+        # Far from the sensor means a weak echo accepted at the edge of the
+        # sensor's reach. A floor cannot help: presence_min_mm discards
+        # everything BELOW it, so a far floor deletes the detection zone.
+        print(f"  They sit at {lo}-{hi} mm, far from the sensor. This is the")
+        print("  noise ceiling of this configuration, not crosstalk.")
+        print("  Do NOT raise presence_min_mm. It is a FLOOR: it would discard")
+        print(f"  every real reading under {hi} mm and the gate would never open.")
+        print()
+        print(f"  Instead keep presence_max_mm comfortably under {lo} mm, so a")
+        print("  stray falls outside the gate. presence_confirm_reads then")
+        print("  needs two in a row, which a 1-in-%d stray rate will not give."
+              % max(1, total // max(1, in_range)))
+    print()
     print("  Then re-run this check and confirm it passes.")
     return 0
 
@@ -254,7 +317,7 @@ def main() -> int:
         except Exception as exc:
             print(f"FAIL: cannot drive XSHUT on GPIO {args.xshut}: {exc}")
             return 2
-        print(f"XSHUT released on GPIO {args.xshut}")
+        print(f"XSHUT pulsed low then high on GPIO {args.xshut} (sensor power-cycled)")
 
     i2c = busio.I2C(board.SCL, board.SDA)
     addrs = scan(i2c)

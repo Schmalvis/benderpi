@@ -145,9 +145,28 @@ class Config:
     presence_confirm_reads: int = 2
     presence_poll_s: float = 0.1
     presence_i2c_address: int = 0x29
-    #   A longer timing budget reaches further at fewer reads per second. The
-    #   doorstep needs reach, not frame rate.
+    #   Measurement timing budget. The usual advice is that longer reaches
+    #   further, and on this build that is false. MEASURED on-device 2026-10-13,
+    #   sensor mounted behind the left eye, 0 errors in every run:
+    #       200 ms budget -> max 1267 mm, one read every 0.40 s
+    #       500 ms budget -> max 1233 mm, one read every 0.70 s
+    #   So 500 ms bought nothing but delay: at `presence_confirm_reads` of 2 the
+    #   gate armed in 1.40 s instead of 0.80 s. Reach comes from the signal rate
+    #   limit below, not from the budget.
     presence_timing_budget_us: int = 200000
+    #   Minimum return rate accepted as a real echo, in MCPS. The driver default
+    #   of 0.25 suits a good reflector. A child in a Halloween costume is a poor
+    #   one, so the 2000 mm in the datasheet (a white target) does not apply.
+    #   MEASURED on-device 2026-10-13, walking in from 3 m and back out:
+    #       0.25 MCPS   reliable to  641 mm, max  872 mm
+    #       0.0938 MCPS reliable to 1196 mm, max 1267 mm
+    #   Nearly double the reach. 0 or null leaves the driver default alone.
+    #   Lowering it can un-mask crosstalk, because a weaker echo threshold may
+    #   start accepting the enclosure's own reflection, and that latches the
+    #   gate OPEN for ever. It did not here: the empty-field baseline read 0 of
+    #   135 in range at 0.0938 MCPS. Re-run `probe_vl53l0x.py --baseline` after
+    #   any change to this value or to the mounting.
+    presence_signal_rate_mcps: float = 0.0
     #   XSHUT recovery. The breakout exposes an active-low shutdown pin. Wire it
     #   to a free GPIO and a wedged sensor can be power-cycled in place,
     #   exactly as `xvf3800_reboot_on_corrupt` recovers the mic array rather
