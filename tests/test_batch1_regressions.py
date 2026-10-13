@@ -32,16 +32,25 @@ sys.modules.setdefault("anthropic", MagicMock())
 
 class TestSpeakFromIterSanitises:
     def _run(self, sentences):
+        """Return what reached Piper, in the order speak_from_iter YIELDED it.
+
+        The first version of this helper appended to a list from inside
+        `_speak_single` and returned that list. `speak_from_iter` runs a
+        3-worker ThreadPoolExecutor, so the list recorded the order the
+        workers happened to START, not the order of the sentences -- and the
+        fake also built its return path from `len(seen)`, read from three
+        threads at once. `test_plain_sentences_pass_through_in_order` therefore
+        failed at random under load, roughly one full-suite run in three.
+
+        The product code was never wrong: `speak_from_iter` yields through a
+        FIFO deque, so Bender's speech cannot come out jumbled. Only the
+        measurement was. So measure the yields.
+        """
         import tts_generate
-        seen = []
 
-        def fake_single(text):
-            seen.append(text)
-            return f"/tmp/{len(seen)}.wav"
-
-        with patch.object(tts_generate, "_speak_single", side_effect=fake_single):
-            list(tts_generate.speak_from_iter(iter(sentences)))
-        return seen
+        with patch.object(tts_generate, "_speak_single",
+                          side_effect=lambda text: text):
+            return list(tts_generate.speak_from_iter(iter(sentences)))
 
     def test_emoji_and_control_tokens_never_reach_piper(self):
         seen = self._run([
