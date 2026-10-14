@@ -605,6 +605,7 @@ sudo udevadm trigger --attr-match=idVendor=2886 --attr-match=idProduct=001a`.
 - **Dashboard** — health, performance metrics, usage stats, watchdog alerts
 - **Logs** — conversation browser, system log viewer, metrics explorer, downloads
 - **Config** — edit bender_config.json and watchdog_config.json, LED colour/brightness, speech rate
+- **Halloween mode** — a Normal/Halloween switch at the top of the Config page. It sets `halloween_mode` **and** `presence_sensor_enabled` together, because an open mic with no distance gate starts 88.6 sessions/hour from ordinary room speech and the gate fails open, so coupling them cannot cause silence. Clearing the gate checkbox decouples them and shows what that costs. In Halloween mode the AI Backend, Home Assistant, Vision and LED sections are hidden: none of them apply at the door. General, Maintenance and Watchdog stay. The gate's own controls (gate distance, release distance, confirming reads) and the session limits appear only when they are in use. **Neither flag takes effect until `bender-converse` restarts**, so the save shows the usual `restart_required` banner. The `presence_*` keys are now modelled in `config_schema.py` rather than passing through on `extra="allow"`, and `presence_clear_mm` must exceed `presence_max_mm` or the save is refused with 422 — equal values would flap the mic open and shut on a child standing at the boundary
 - **Actions** — restart service, refresh briefings, rebuild responses, puppet-only mode toggle
 
 ### Config PUT validation

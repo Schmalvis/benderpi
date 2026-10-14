@@ -145,6 +145,29 @@
     }
   }
 
+  // Halloween mode. Two config flags drive the night, and `wake_converse.py`
+  // reads them in two different places:
+  //   halloween_mode           -> _halloween_loop instead of the wake-word loop
+  //   presence_sensor_enabled  -> the distance gate inside that loop
+  // Neither has any effect until bender-converse restarts, because `cfg` is an
+  // import-time singleton.
+  $: halloweenOn = $config.halloween_mode === true;
+  $: gateOn = $config.presence_sensor_enabled === true;
+
+  function setHalloweenMode(on) {
+    config.update(c => {
+      const next = { ...c, halloween_mode: on };
+      // One switch sets both. An open mic with no distance gate starts 88.6
+      // sessions/hour from ordinary room speech (measured 2026-10-10 on 5.25h
+      // of recordings) and leaves Bender in a session 79% of the time, so the
+      // child who actually arrives is ignored for 22-45s. The gate fails open
+      // when the sensor is missing or broken, so coupling it to the mode can
+      // never cause silence. Clear the checkbox below to decouple them.
+      if (on && c.presence_sensor_enabled !== true) next.presence_sensor_enabled = true;
+      return next;
+    });
+  }
+
   const routingOptions = [
     { value: 'local_first', label: 'Local First' },
     { value: 'local_only', label: 'Local Only' },
@@ -217,6 +240,145 @@
     </div>
   {/if}
 
+  <!-- Halloween mode -->
+  <details open class="bg-bg-card border rounded-lg overflow-hidden {halloweenOn ? 'border-warning' : 'border-border'}">
+    <summary class={summaryClass + ' px-4'}>Halloween</summary>
+    <div class="px-4 pb-4 pt-2 space-y-4">
+
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {halloweenOn ? 'bg-bg-input text-text-muted border border-border' : 'bg-accent text-bg-base'}"
+          on:click={() => setHalloweenMode(false)}>
+          Normal
+        </button>
+        <button
+          type="button"
+          class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {halloweenOn ? 'bg-warning text-bg-base' : 'bg-bg-input text-text-muted border border-border'}"
+          on:click={() => setHalloweenMode(true)}>
+          Halloween
+        </button>
+      </div>
+
+      {#if halloweenOn}
+        <div class="bg-warning/10 border border-warning text-warning rounded px-3 py-2 text-sm space-y-1">
+          <p class="font-medium">The wake word is off in Halloween mode.</p>
+          <p class="text-[11px] opacity-90">
+            Any nearby speech starts a session. Replies are local only, capped
+            at {$config.halloween_max_sentences ?? 2} sentences and
+            {$config.halloween_max_turns ?? 6} turns.
+          </p>
+          <p class="text-[11px] opacity-90">
+            Halloween mode refuses to start if the local model is unavailable.
+            It falls back to the wake-word loop and logs HALLOWEEN MODE REFUSED,
+            rather than speaking an error line to a child.
+          </p>
+        </div>
+      {/if}
+
+      <div class="flex items-center gap-3">
+        <input
+          id="presence_sensor_enabled"
+          type="checkbox"
+          class="w-4 h-4 accent-accent"
+          bind:checked={$config.presence_sensor_enabled}
+        />
+        <label for="presence_sensor_enabled" class="text-text-default text-sm">
+          Presence gate (VL53L0X distance sensor)
+        </label>
+      </div>
+
+      {#if halloweenOn && !gateOn}
+        <div class="bg-error/10 border border-error text-error rounded px-3 py-2 text-[11px] space-y-1">
+          <p class="font-medium">No distance gate. Bender will talk to the room.</p>
+          <p class="opacity-90">
+            Measured 2026-10-10 on 5.25h of recorded speech: 88.6 sessions/hour,
+            in a session 79% of the time. Each false session makes Bender deaf
+            for 22-45s, so the child who actually arrives is ignored.
+          </p>
+        </div>
+      {/if}
+
+      {#if gateOn}
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class={labelClass} for="presence_max_mm">Gate distance (mm)</label>
+            <input id="presence_max_mm" type="number" min="0" max="8000" step="50"
+                   class={inputClass} bind:value={$config.presence_max_mm} />
+            <p class="text-[11px] text-text-muted mt-1">Opens at or under this</p>
+          </div>
+          <div>
+            <label class={labelClass} for="presence_clear_mm">Release distance (mm)</label>
+            <input id="presence_clear_mm" type="number" min="0" max="8000" step="50"
+                   class={inputClass} bind:value={$config.presence_clear_mm} />
+            <p class="text-[11px] text-text-muted mt-1">Must exceed the gate</p>
+          </div>
+        </div>
+
+        {#if $config.presence_clear_mm !== undefined && $config.presence_max_mm !== undefined
+             && Number($config.presence_clear_mm) <= Number($config.presence_max_mm)}
+          <p class="text-[11px] text-error">
+            Release must be greater than the gate, or someone standing on the
+            boundary flaps the mic open and shut. The save will be refused.
+          </p>
+        {/if}
+
+        <div>
+          <label class={labelClass} for="presence_confirm_reads">Confirming reads</label>
+          <input id="presence_confirm_reads" type="number" min="1" max="20" step="1"
+                 class={inputClass} bind:value={$config.presence_confirm_reads} />
+          <p class="text-[11px] text-text-muted mt-1">
+            Agreeing readings before the gate changes state. Measured 2026-10-13:
+            one read costs about 0.21s, so 2 arms the gate in 0.41s.
+          </p>
+        </div>
+
+        <p class="text-[11px] text-text-muted">
+          Measured on this build 2026-10-13: tracked to 1267mm, 0 errors in 435
+          reads, no crosstalk. Re-run
+          <code class="text-accent">scripts/probe_vl53l0x.py --xshut 17 --long-range --baseline</code>
+          after any change to the mounting.
+        </p>
+      {/if}
+
+      <details class="border-t border-border pt-2">
+        <summary class={summaryClass}>Session limits</summary>
+        <div class="grid grid-cols-2 gap-3 pt-2">
+          <div>
+            <label class={labelClass} for="halloween_max_turns">Max turns</label>
+            <input id="halloween_max_turns" type="number" min="1" max="20" step="1"
+                   class={inputClass} bind:value={$config.halloween_max_turns} />
+          </div>
+          <div>
+            <label class={labelClass} for="halloween_idle_timeout_s">Idle timeout (s)</label>
+            <input id="halloween_idle_timeout_s" type="number" min="1" max="30" step="0.5"
+                   class={inputClass} bind:value={$config.halloween_idle_timeout_s} />
+          </div>
+          <div>
+            <label class={labelClass} for="halloween_cooldown_s">Cooldown (s)</label>
+            <input id="halloween_cooldown_s" type="number" min="0" max="30" step="0.5"
+                   class={inputClass} bind:value={$config.halloween_cooldown_s} />
+          </div>
+          <div>
+            <label class={labelClass} for="halloween_max_sentences">Max sentences</label>
+            <input id="halloween_max_sentences" type="number" min="1" max="10" step="1"
+                   class={inputClass} bind:value={$config.halloween_max_sentences} />
+          </div>
+          <div class="col-span-2">
+            <label class={labelClass} for="halloween_max_tokens">Max tokens</label>
+            <input id="halloween_max_tokens" type="number" min="8" max="400" step="8"
+                   class={inputClass} bind:value={$config.halloween_max_tokens} />
+            <p class="text-[11px] text-text-muted mt-1">
+              Shorter is better at the door. At the measured 5.6-6.9 tok/s, 48
+              tokens is about 7s of decode.
+            </p>
+          </div>
+        </div>
+      </details>
+
+    </div>
+  </details>
+
   <!-- General -->
   <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">
     <summary class={summaryClass + ' px-4'}>General</summary>
@@ -246,6 +408,12 @@
 
     </div>
   </details>
+
+  <!-- Everyday settings. Hidden in Halloween mode: none of them apply at the
+       door, and a smaller surface on the night is the point. General,
+       Maintenance and Watchdog stay, because speech rate, a rebuild and the
+       health thresholds are all still useful. -->
+  {#if !halloweenOn}
 
   <!-- AI Backend -->
   <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">
@@ -489,6 +657,8 @@
 
     </div>
   </details>
+
+  {/if}
 
   <!-- Maintenance -->
   <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">

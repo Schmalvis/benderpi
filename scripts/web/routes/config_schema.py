@@ -129,6 +129,19 @@ class BenderConfigUpdate(BaseModel):
     halloween_idle_timeout_s: float | None = None
     halloween_max_tokens: int | None = None
     halloween_max_sentences: int | None = None
+
+    # --- Presence gate (VL53L0X) ---
+    # Only read by `_halloween_loop`, so these are inert outside Halloween mode.
+    presence_sensor_enabled: bool | None = None
+    presence_max_mm: int | None = None
+    presence_min_mm: int | None = None
+    presence_clear_mm: int | None = None
+    presence_confirm_reads: int | None = None
+    presence_poll_s: float | None = None
+    presence_timing_budget_us: int | None = None
+    presence_signal_rate_mcps: float | None = None
+    presence_max_resets: int | None = None
+    presence_wait_slice_s: float | None = None
     stt_onset_frames: int | None = None
     stt_vad_warmup_frames: int | None = None
     stt_speech_onset_timeout_s: float | None = None
@@ -208,6 +221,53 @@ class BenderConfigUpdate(BaseModel):
         if v is not None and not (0.0 <= v <= 1.0):
             raise ValueError("oww_threshold must be between 0 and 1")
         return v
+
+    @field_validator("presence_max_mm", "presence_min_mm", "presence_clear_mm")
+    @classmethod
+    def _presence_distance_in_sensor_range(cls, v):
+        # The VL53L0X reports 8190 mm for "nothing in range", so a threshold at
+        # or beyond that can never be crossed. Measured reach on this build is
+        # about 1200 mm, far short of the part's 2000 mm specification, but the
+        # bound stays generous: a different mounting or a different part may do
+        # better, and the probe is what decides the real value.
+        if v is not None and not (0 <= v <= 8000):
+            raise ValueError("presence distances must be 0-8000 mm")
+        return v
+
+    @field_validator("presence_signal_rate_mcps")
+    @classmethod
+    def _presence_signal_rate(cls, v):
+        # 0 means "leave the driver default alone". The driver default is 0.25
+        # MCPS; this build ships 0.1, which measured nearly double the reach.
+        # Below about 0.05 the sensor starts accepting its own enclosure echo,
+        # which latches the gate OPEN for ever.
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("presence_signal_rate_mcps must be 0-1 MCPS "
+                             "(0 = leave the driver default)")
+        return v
+
+    @field_validator("presence_confirm_reads")
+    @classmethod
+    def _presence_confirm_reads(cls, v):
+        # 1 defeats the point: a single stray reading would open the mic. The
+        # upper bound keeps the gate responsive, since each read costs about
+        # 0.2 s in the production path.
+        if v is not None and not (1 <= v <= 20):
+            raise ValueError("presence_confirm_reads must be 1-20")
+        return v
+
+    @model_validator(mode="after")
+    def _presence_clear_above_max(self):
+        # Hysteresis only works one way round. If `presence_clear_mm` sat at or
+        # below `presence_max_mm` the gate would flap open and shut on a child
+        # standing on the boundary, which is the whole reason the second key
+        # exists.
+        near, clear = self.presence_max_mm, self.presence_clear_mm
+        if near is not None and clear is not None and clear <= near:
+            raise ValueError(
+                "presence_clear_mm must be greater than presence_max_mm, "
+                "or the gate has no hysteresis and will flap")
+        return self
 
     @field_validator("led_brightness")
     @classmethod

@@ -186,3 +186,79 @@ def test_watchdog_partial_update():
 
 def test_watchdog_unknown_key_passes_through():
     assert clean_watchdog_config({"new_threshold": 5})["new_threshold"] == 5
+
+
+# ── Presence gate ─────────────────────────────────────────────────────────────
+# These keys used to pass through on `extra="allow"`, which was fine while only
+# a human edited bender_config.json. The Config page now writes them, so a bad
+# value from the UI must be refused rather than saved.
+
+
+def test_shipped_presence_values_accepted():
+    """The values measured on-device 2026-10-13 must survive a whole-blob save."""
+    out = clean_bender_config({
+        "presence_sensor_enabled": True,
+        "presence_max_mm": 1000,
+        "presence_clear_mm": 1400,
+        "presence_min_mm": 0,
+        "presence_confirm_reads": 2,
+        "presence_signal_rate_mcps": 0.1,
+        "presence_timing_budget_us": 200000,
+    })
+    assert out["presence_max_mm"] == 1000
+    assert out["presence_clear_mm"] == 1400
+    assert out["presence_signal_rate_mcps"] == 0.1
+
+
+@pytest.mark.parametrize("clear", [900, 1000])
+def test_clear_at_or_below_the_gate_rejected(clear):
+    """Hysteresis only works one way round.
+
+    If `presence_clear_mm` sat at or below `presence_max_mm` a child standing on
+    the boundary would flap the mic open and shut, which is the whole reason the
+    second key exists.
+    """
+    with pytest.raises(ValidationError):
+        clean_bender_config({"presence_max_mm": 1000, "presence_clear_mm": clear})
+
+
+def test_clear_above_the_gate_accepted():
+    out = clean_bender_config({"presence_max_mm": 1000, "presence_clear_mm": 1001})
+    assert out["presence_clear_mm"] == 1001
+
+
+def test_only_one_distance_sent_is_not_compared():
+    """A partial save must not be judged against a value it does not carry."""
+    assert clean_bender_config({"presence_clear_mm": 500})["presence_clear_mm"] == 500
+
+
+@pytest.mark.parametrize("mm", [-1, 8001, 8190])
+def test_presence_distance_beyond_the_sensor_rejected(mm):
+    """8190 mm is the driver's 'nothing in range' marker, so a threshold there
+    can never be crossed."""
+    with pytest.raises(ValidationError):
+        clean_bender_config({"presence_max_mm": mm})
+
+
+@pytest.mark.parametrize("rate", [-0.1, 1.5])
+def test_presence_signal_rate_out_of_range_rejected(rate):
+    with pytest.raises(ValidationError):
+        clean_bender_config({"presence_signal_rate_mcps": rate})
+
+
+def test_presence_signal_rate_zero_accepted():
+    """0 means 'leave the driver default alone', which must stay expressible."""
+    assert clean_bender_config({"presence_signal_rate_mcps": 0})[
+        "presence_signal_rate_mcps"] == 0
+
+
+@pytest.mark.parametrize("n", [0, -1, 21])
+def test_presence_confirm_reads_out_of_range_rejected(n):
+    with pytest.raises(ValidationError):
+        clean_bender_config({"presence_confirm_reads": n})
+
+
+def test_halloween_mode_is_a_bool():
+    assert clean_bender_config({"halloween_mode": True})["halloween_mode"] is True
+    with pytest.raises(ValidationError):
+        clean_bender_config({"halloween_mode": "yes please"})
