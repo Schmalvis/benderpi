@@ -619,11 +619,33 @@ write access to the array so `scripts/xvf3800.py` can send `REBOOT`). Apply with
 sudo udevadm trigger --attr-match=idVendor=2886 --attr-match=idProduct=001a`.
 
 ### Features
-- **Puppet mode** — type text for Bender to speak, soundboard with favourites, volume control
+- **Puppet mode** — type text for Bender to speak, soundboard with favourites, volume control.
+  A **Puppet Mode switch** sits at the top of the page. ON stops `bender-converse`
+  (`POST /api/actions/toggle-mode`), so there is no wake word, no open mic and no
+  sessions: a puppeteer speaking AS Bender cannot have Bender answering the room
+  over the top. Entering ends any live session FIRST (writing `cfg.abort_file` and
+  `cfg.end_session_file`, the same two notes the sidebar END button writes), then
+  stops the service, then clears the IPC notes — nothing is left to read them, and
+  `GET /api/actions/session-status` reads `cfg.session_file` directly, so a leftover
+  would report a live conversation on a box where nothing is listening. Leaving
+  clears the notes **before** the start, or a stale end-session note ends the first
+  real conversation on turn one. Leaving costs ~23s before the wake word is live
+  again (Whisper + Qwen reload). The switch has no flag of its own: it reads
+  `GET /api/actions/service-status`, because a second copy of that state can drift.
+  Opening the page also ends any live session on its own, before you touch anything.
+  Puppet **playback** still does NOT use this route — it hands the running process a
+  say-request over IPC (`say_request.py`) precisely to avoid that reload
 - **Dashboard** — health, performance metrics, usage stats, watchdog alerts
 - **Logs** — conversation browser, system log viewer, metrics explorer, downloads
 - **Config** — edit bender_config.json and watchdog_config.json, LED colour/brightness, speech rate
-- **Halloween mode** — a Normal/Halloween switch at the top of the Config page. It sets `halloween_mode` **and** `presence_sensor_enabled` together, because an open mic with no distance gate starts 88.6 sessions/hour from ordinary room speech and the gate fails open, so coupling them cannot cause silence. Clearing the gate checkbox decouples them and shows what that costs. In Halloween mode the AI Backend, Home Assistant, Vision and LED sections are hidden: none of them apply at the door. General, Maintenance and Watchdog stay. The gate's own controls (gate distance, release distance, confirming reads) and the session limits appear only when they are in use. **Neither flag takes effect until `bender-converse` restarts**, so the save shows the usual `restart_required` banner. The `presence_*` keys are now modelled in `config_schema.py` rather than passing through on `extra="allow"`, and `presence_clear_mm` must exceed `presence_max_mm` or the save is refused with 422 — equal values would flap the mic open and shut on a child standing at the boundary
+- **Halloween mode** — a Normal/Halloween switch at the top of the Config page. It sets `halloween_mode` **and** `presence_sensor_enabled` together, because an open mic with no distance gate starts 88.6 sessions/hour from ordinary room speech and the gate fails open, so coupling them cannot cause silence. Clearing the gate checkbox decouples them and shows what that costs. In Halloween mode the AI Backend, Home Assistant, Vision and LED sections are hidden: none of them apply at the door. General, Maintenance and Watchdog stay. The gate's own controls (gate distance, release distance, confirming reads) and the session limits appear only when they are in use. **Neither flag takes effect until `bender-converse` restarts**, so the save shows the usual `restart_required` banner. The Halloween section also carries its own
+**Save & Restart Bender** button, shown whenever `halloween_mode` or
+`presence_sensor_enabled` differ from the saved copy. Save-then-restart as two
+separate steps is how the mode got flipped in the UI and left inert on the device:
+`cfg` is read once at process start, so a saved flag with no restart changes
+nothing at all. The button does both and reports which mode is now live. It
+compares against `savedConfig`, not a local touched-flag, so a switch flipped and
+flipped back is not pending. The `presence_*` keys are now modelled in `config_schema.py` rather than passing through on `extra="allow"`, and `presence_clear_mm` must exceed `presence_max_mm` or the save is refused with 422 — equal values would flap the mic open and shut on a child standing at the boundary
 - **Actions** — restart service, refresh briefings, rebuild responses, puppet-only mode toggle
 
 ### Config PUT validation

@@ -824,6 +824,25 @@ def main():
                 rec_start = time.monotonic()
                 text = stt.listen_and_transcribe(after_playback=played_since_capture)
                 played_since_capture = False
+                # Remote end-session, checked HERE and not only inside
+                # handle_turn(). An empty capture used to `continue` straight
+                # back into listen_and_transcribe, so the note on the floor was
+                # never read while Bender sat in the idle capture loop -- the
+                # sidebar END button and entering puppet mode both appeared to
+                # do nothing until the silence timeout happened to fire, and a
+                # noisy room keeps resetting that timeout. Checking before the
+                # `not text` branch bounds the delay to the capture in flight,
+                # and means no further reply is ever spoken.
+                if os.path.exists(cfg.end_session_file):
+                    log.info("Remote end-session during capture: ending")
+                    # Both notes, not just the end-session one. session.end()
+                    # removes the session and end-session files but NOT the
+                    # abort file, and _check_abort_on_chunk polls that at 10Hz
+                    # during playback -- a leftover abort note would kill the
+                    # next session's greeting before a word of it was heard.
+                    _cleanup_abort_files()
+                    session.end("remote")
+                    break
                 if not text:
                     # Anchor the silence timeout on when this recording STARTED, not on
                     # `now`. A slow CPU-whisper transcription can stall 20-110s on

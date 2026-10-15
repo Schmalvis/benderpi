@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { getClips, speak, getCameraStatus, cameraStreamUrl, getStreamToken, analyseVision } from '../lib/api.js';
+  import { getClips, speak, getCameraStatus, cameraStreamUrl, getStreamToken, analyseVision,
+           endSession, toggleMode, getServiceStatus } from '../lib/api.js';
   import { toast } from '../lib/stores/toast.js';
   import ClipButton from '../lib/components/ClipButton.svelte';
 
@@ -8,6 +9,12 @@
   let ttsText = '';
   let speaking = false;
   let refreshKey = 0;
+
+  // Puppet mode = bender-converse stopped. There is no separate flag on the
+  // device: the service either runs or it does not, so the switch reads its
+  // state from the service rather than keeping a second copy that can drift.
+  let listening = null;        // null until refreshMode() has answered
+  let modeBusy = false;
 
   // Mic streaming state
   let micActive = false;
@@ -30,12 +37,53 @@
   $: favourites = clips.filter(c => c.favourite);
 
   onMount(async () => {
+    // Opening this page means you are about to speak AS Bender. A live
+    // conversation would keep capturing the room and answering over the top,
+    // so end it on arrival. Harmless when there is none: the route returns
+    // {status:'no_session'} and changes nothing.
+    try {
+      const r = await endSession();
+      if (r?.status === 'ok') toast.push('Ended the live conversation', 'success');
+    } catch { /* ignore — the page is still usable */ }
+    await refreshMode();
     await loadClips();
     try {
       const s = await getCameraStatus();
       cameraAvailable = s.available;
     } catch { /* ignore — camera status is non-critical */ }
   });
+
+  async function refreshMode() {
+    try {
+      const s = await getServiceStatus();
+      listening = !!s.running;
+    } catch {
+      listening = null;          // unknown: do not claim either state
+    }
+  }
+
+  async function handleModeToggle() {
+    if (modeBusy) return;
+    modeBusy = true;
+    const next = listening ? 'puppet_only' : 'converse';
+    try {
+      const r = await toggleMode(next);
+      if (next === 'puppet_only') {
+        toast.push(r?.session_ended
+          ? 'Puppet mode on — conversation ended, Bender is deaf'
+          : 'Puppet mode on — Bender is deaf', 'success');
+      } else {
+        // Whisper and Qwen reload onto the Hailo, measured ~23s before the
+        // wake word is live. Say so, or the switch looks broken.
+        toast.push('Puppet mode off — wake word live in about 23s', 'success');
+      }
+      await refreshMode();
+    } catch (e) {
+      toast.push(e.message || 'Could not change mode', 'error');
+      await refreshMode();
+    }
+    modeBusy = false;
+  }
 
   onDestroy(() => {
     stopMic();
@@ -212,6 +260,48 @@
 </script>
 
 <div class="space-y-6">
+  <!-- Puppet mode: the only thing that stops Bender answering the room -->
+  <div class="bg-bg-card border rounded-lg p-4"
+       style="border-color: {listening === false ? 'var(--accent)' : 'var(--border)'};">
+    <div class="flex items-center justify-between gap-4">
+      <div class="min-w-0">
+        <div class="font-display text-[11px] tracking-widest uppercase"
+             style="color: var(--accent); letter-spacing: 0.12em;">Puppet Mode</div>
+        <div class="text-xs mt-1" style="color: var(--text-muted);">
+          {#if listening === null}
+            Mode unknown — could not reach the service.
+          {:else if listening}
+            Bender is listening. He can wake up and answer the room while you puppet him.
+          {:else}
+            Bender is deaf. No wake word, no open mic, no conversations.
+          {/if}
+        </div>
+      </div>
+      <button
+        on:click={handleModeToggle}
+        disabled={modeBusy || listening === null}
+        class="shrink-0 rounded px-4 py-2 text-xs font-display tracking-widest uppercase
+               transition-all disabled:opacity-50"
+        style="background: {listening === false ? 'var(--accent)' : 'var(--bg-input)'};
+               color: {listening === false ? 'var(--bg)' : 'var(--text-muted)'};
+               border: 1px solid {listening === false ? 'var(--accent)' : 'var(--border)'};"
+      >
+        {#if modeBusy}
+          Working…
+        {:else if listening === false}
+          ● On
+        {:else}
+          Off
+        {/if}
+      </button>
+    </div>
+    {#if listening === false}
+      <div class="text-[11px] mt-3 pt-3" style="color: var(--text-muted); border-top: 1px solid var(--border);">
+        Turning this off reloads Whisper and Qwen. The wake word is live again after about 23s.
+      </div>
+    {/if}
+  </div>
+
   <!-- TTS input + presence controls -->
   <div class="bg-bg-card border border-border rounded-lg p-4 space-y-3">
     <div class="flex gap-3">

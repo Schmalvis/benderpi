@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-10-14
+Last updated: 2026-10-15
 
 ---
 
@@ -10,6 +10,90 @@ Last updated: 2026-10-14
   508-2227ms (worst 4551ms) of dead air after the speaker stops, in front of the
   LLM's own 1.0-3.5s. A partial hypothesis could start the turn early. Not
   started, and not before the Halloween safety work.
+
+---
+
+## 2026-10-15 — Puppet Mode is a real switch, and Halloween has a restart button
+
+**16 days to Halloween.**
+
+### Puppet mode did not exist
+
+`toggleMode` sat in `web/src/lib/api.js` with **no caller**. `POST
+/api/actions/toggle-mode` worked and nothing called it. The Puppet page was a nav
+tab that loaded clips and a camera status, and never touched the session.
+
+So a puppeteer typing lines for Bender had Bender answering the room over the
+top. Puppet playback hands the RUNNING process a say-request over IPC
+(`say_request.py`) to dodge a measured 23 s model reload, so the session stayed
+alive by design and kept hallucinating replies.
+
+Now there is a Puppet Mode switch at the top of the page:
+
+| state | effect |
+|---|---|
+| ON | ends any live session, stops `bender-converse`, clears the IPC notes |
+| OFF | clears the notes FIRST, then starts the service (~23 s to wake word) |
+
+Opening the page also ends any live session on its own.
+
+**The order is the whole fix, and the tests assert it.** Entering writes
+`cfg.abort_file` and `cfg.end_session_file` BEFORE taking the service guard: the
+abort note is what releases a guard held by an in-flight clip. Leaving clears
+them BEFORE the start, or a stale end-session note ends the first real
+conversation on turn one.
+
+The switch keeps no flag of its own. It reads `GET
+/api/actions/service-status`, because a second copy of that state can drift.
+
+### The END button was slow for the same reason
+
+Separate bug, found while tracing the above. The idle capture loop in
+`wake_converse.py` never checked `cfg.end_session_file`. It did
+`text = stt.listen_and_transcribe(...)`, then `if not text: continue` — straight
+back into the capture. `stt.py` has no awareness of either note.
+
+So the sidebar END button did nothing until the silence timeout happened to
+fire, and a noisy room resets that timeout on every capture that returns text.
+
+The loop now checks after the capture returns and before the `if not text`
+branch. It calls `_cleanup_abort_files()` first, because `session.end()` →
+`_remove_session_file()` clears `session_file` and `end_session_file` but **not**
+`abort_file`, and `_check_abort_on_chunk` polls that at ~10 Hz. A leftover kills
+the next session's greeting.
+
+**Still not done:** `stt.py` cannot abort a capture in flight. Worst case after
+END is one capture, ~6 s idle (`stt_speech_onset_timeout_s`) and up to 15 s
+(`max_record_seconds`). No further reply is ever spoken. Threading a
+`should_stop` callback into `stt._record_utterance` was set aside deliberately,
+to keep the blast radius small before Halloween, and because
+`tests/test_stt_onset.py:213` asserts a call site by exact source text.
+
+### Halloween: Save & Restart Bender
+
+A **Save & Restart Bender** button now sits in the Halloween section, shown
+whenever `halloween_mode` or `presence_sensor_enabled` differ from the saved
+copy. Save-then-restart as two separate steps is how the mode got flipped in the
+UI and left inert on the device: `cfg` is read once at process start. It compares
+against `savedConfig`, so flipped-and-flipped-back is not pending.
+
+### Verified in a browser, not just in tests
+
+A throwaway server with the four action routes faked, driven by Playwright, so
+every state was reachable off-device. Confirmed both switch states, the pending
+band appearing and clearing, and `halloween_mode` plus `presence_sensor_enabled`
+written to disk. `bender_config.json` was restored afterwards.
+
+Intercept faked routes in an `@app.middleware("http")`. Removing entries from
+`app.routes` does **not** stop the original handlers answering on FastAPI 0.139.
+
+### Tests: 1458 passed, 1 skipped (was 1437)
+
+- `tests/test_web_actions_mode.py` (15) — asserts the ORDER. A fake
+  `_toggle_mode_guarded` snapshots which notes exist at the moment systemctl runs.
+- `tests/test_wake_loop_end_session.py` (6) — walks the AST rather than matching
+  source text, for the `test_stt_onset.py:213` reason above. Mutation-tested:
+  removing the new block fails 2 of the 6.
 
 ---
 

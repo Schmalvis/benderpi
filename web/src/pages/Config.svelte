@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { config, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
+  import { config, savedConfig, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
   import { getWatchdogConfig, updateWatchdogConfig, getVisionPassive, enableVisionPassive, disableVisionPassive,
            rebuildResponses, generateStatus, getVolume, setVolume, restartService } from '../lib/api.js';
   import { toast } from '../lib/stores/toast.js';
@@ -154,6 +154,40 @@
   $: halloweenOn = $config.halloween_mode === true;
   $: gateOn = $config.presence_sensor_enabled === true;
 
+  // The two flags that need a restart to mean anything. Comparing against the
+  // SAVED copy, not a local touched-flag: a switch flipped and flipped back is
+  // not pending, and a save made on another tab is already applied.
+  $: halloweenPending =
+       $config.halloween_mode !== $savedConfig.halloween_mode ||
+       $config.presence_sensor_enabled !== $savedConfig.presence_sensor_enabled;
+
+  let applyingHalloween = false;
+
+  async function handleApplyHalloween() {
+    // Save and restart as ONE action. Two separate steps is how the mode got
+    // flipped in the UI and left inert on the device: `cfg` is read once at
+    // process start, so a saved flag with no restart changes nothing at all.
+    if (applyingHalloween) return;
+    applyingHalloween = true;
+    const wanted = $config.halloween_mode === true;
+    try {
+      await saveConfig();
+      if (watchdogDirty) {
+        await updateWatchdogConfig(watchdog);
+        watchdogDirty = false;
+      }
+      await restartService();
+      restartRequired = false;
+      saveMsg = '';
+      toast.push(wanted
+        ? 'Halloween mode is live — Bender restarted, wake word off'
+        : 'Normal mode is live — Bender restarted, wake word on', 'success');
+    } catch (e) {
+      toast.push('Could not apply: ' + (e.message || 'unknown error'), 'error');
+    }
+    applyingHalloween = false;
+  }
+
   function setHalloweenMode(on) {
     config.update(c => {
       const next = { ...c, halloween_mode: on };
@@ -259,6 +293,26 @@
           Halloween
         </button>
       </div>
+
+      {#if halloweenPending || restartRequired}
+        <div class="bg-warning/10 border border-warning rounded px-3 py-2.5 space-y-2">
+          <p class="text-sm font-medium text-warning">
+            {halloweenOn ? 'Halloween mode is not live yet.' : 'Normal mode is not live yet.'}
+          </p>
+          <p class="text-xs" style="color: var(--text-muted);">
+            bender-converse reads the config once, at startup. The switch does nothing
+            until it restarts.
+          </p>
+          <button
+            type="button"
+            class="w-full bg-warning text-bg-base font-medium px-3 py-2 rounded text-sm
+                   hover:opacity-90 disabled:opacity-50 transition-opacity"
+            disabled={applyingHalloween}
+            on:click={handleApplyHalloween}>
+            {applyingHalloween ? 'Saving and restarting…' : 'Save & Restart Bender'}
+          </button>
+        </div>
+      {/if}
 
       {#if halloweenOn}
         <div class="bg-warning/10 border border-warning text-warning rounded px-3 py-2 text-sm space-y-1">

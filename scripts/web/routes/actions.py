@@ -18,6 +18,7 @@ from logger import get_logger
 
 _IS_LINUX = os.name != "nt"
 _audit = get_logger("audit")
+log = get_logger("web.actions")
 
 
 def _client_ip(request: Request) -> str:
@@ -136,6 +137,43 @@ async def action_generate_status():
     return {"status": "ok"}
 
 
+def _end_live_session() -> bool:
+    """Ask a running session to stop, and abort anything it is playing.
+
+    Returns True if a session was live. Writes the same two notes the sidebar's
+    END button writes (``actions.end_session``), because entering puppet mode
+    must not leave a conversation half-running: the puppeteer is about to speak
+    AS Bender, and a live session would keep capturing the room and replying
+    over the top. The abort note goes first, so playback stops before the
+    service guard is contended for.
+    """
+    live = os.path.exists(cfg.session_file)
+    for path in (cfg.abort_file, cfg.end_session_file):
+        try:
+            with open(path, "w") as f:
+                f.write("")
+        except OSError as exc:
+            log.warning("could not write %s: %s", path, exc)
+    return live
+
+
+def _clear_session_ipc() -> None:
+    """Remove the IPC notes once no process is left to consume them.
+
+    ``wake_converse`` clears these at startup, so a stale set is not fatal.
+    They are cleared here anyway: ``GET /api/actions/session-status`` reads
+    ``cfg.session_file`` directly, so a session file left behind by a SIGTERMed
+    process reports a live conversation on a box where nothing is listening.
+    """
+    for path in (cfg.session_file, cfg.end_session_file, cfg.abort_file):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.warning("could not remove %s: %s", path, exc)
+
+
 def _toggle_mode_guarded(cmd: list[str]) -> None:
     with guard_lock():
         subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -143,17 +181,51 @@ def _toggle_mode_guarded(cmd: list[str]) -> None:
 
 @router.post("/api/actions/toggle-mode")
 async def action_toggle_mode(request: Request, body: dict = Body(...)):
+    """Enter or leave puppet-only mode.
+
+    Puppet-only means ``bender-converse`` is stopped: no wake word, no open
+    mic, no sessions. That is the whole point -- a puppeteer speaking as Bender
+    cannot have Bender answering the room at the same time. Entering therefore
+    ends any live session FIRST, then stops the service, then clears the IPC
+    notes that the stopped process can no longer consume.
+
+    Leaving costs about 23s before the wake word is live again, because Whisper
+    and Qwen reload onto the Hailo. That is why puppet playback itself does NOT
+    use this route -- it hands the running process a say-request over IPC
+    instead (``say_request.py``). This route is for deliberately silencing
+    Bender's own ears, not for making him speak.
+    """
     mode = body.get("mode", "").strip()
     if mode not in ("puppet_only", "converse"):
         raise HTTPException(status_code=400, detail="mode must be 'puppet_only' or 'converse'")
     _audit.info("actions.toggle-mode -> %s from %s", mode, _client_ip(request))
+    puppet = mode == "puppet_only"
+    ended = False
+    if puppet:
+        # Before the guard, not inside it: the abort note is what releases a
+        # guard held by an in-flight clip, so taking the guard first could wait
+        # out the whole clip.
+        ended = await asyncio.to_thread(_end_live_session)
     if not _IS_LINUX:
-        return {"status": "ok", "mode": mode, "message": "Simulated (not on Pi)"}
+        if puppet:
+            await asyncio.to_thread(_clear_session_ipc)
+        return {"status": "ok", "mode": mode, "session_ended": ended,
+                "message": "Simulated (not on Pi)"}
+    if not puppet:
+        # BEFORE the start, not after. wake_converse clears these itself at
+        # startup, but the note must not still be on the floor when the first
+        # session opens -- a leftover end-session note ends it on turn one.
+        await asyncio.to_thread(_clear_session_ipc)
     try:
-        cmd = ["sudo", "systemctl", "stop" if mode == "puppet_only" else "start", "bender-converse"]
+        cmd = ["sudo", "systemctl", "stop" if puppet else "start", "bender-converse"]
         await asyncio.to_thread(_toggle_mode_guarded, cmd)
-        return {"status": "ok", "mode": mode}
     except ServiceBusy:
         raise HTTPException(status_code=409, detail="Bender is busy (puppet/vision/mic in use) — try again in a moment")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    if puppet:
+        # AFTER the stop: the process is gone, so nothing is left to consume
+        # them, and session-status would otherwise report a live conversation
+        # on a box where nothing is listening.
+        await asyncio.to_thread(_clear_session_ipc)
+    return {"status": "ok", "mode": mode, "session_ended": ended}
