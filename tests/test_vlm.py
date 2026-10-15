@@ -209,14 +209,38 @@ class TestPipeline:
 # ---------------------------------------------------------------------------
 
 class TestTimeout:
-    def test_returns_empty_string_on_timeout(self):
-        """describe_scene() must return '' when inference exceeds timeout."""
+    def test_returns_none_on_timeout(self):
+        """A timeout returns None, NOT "".
+
+        `None` means no answer was produced. `""` means the model answered
+        with nothing. They used to be the same value, and two callers read it
+        as a fact about the room: the web route prompted the AI with "detected
+        nobody", and VisionHandler spoke "Either the room's empty, or you've
+        finally achieved irrelevance." Both are invented. On the device the VLM
+        cannot load at all while the conversation LLM holds the KV-Cache, so
+        the invented answer was the only reachable one.
+        """
         vlm_mod, _, _, _, mock_llm_instance = _load_vlm_module()
         import time
         mock_llm_instance.generate_all.side_effect = lambda **kw: time.sleep(5)
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         result = vlm_mod.describe_scene(frame, timeout=0.1)
-        assert result == ""
+        assert result is None
+
+    def test_returns_none_when_the_vlm_cannot_load(self):
+        """The real device case: the KV-Cache is already held."""
+        vlm_mod, _, _, _, mock_llm_instance = _load_vlm_module()
+        mock_llm_instance.generate_all.side_effect = RuntimeError(
+            "Failed to acquire KV-Cache. KV-Cache is already in use by another model.")
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        assert vlm_mod.describe_scene(frame) is None
+
+    def test_an_empty_answer_is_not_a_failure(self):
+        """A model that answers with nothing returns "", not None."""
+        vlm_mod, _, _, _, mock_llm_instance = _load_vlm_module()
+        mock_llm_instance.generate_all.return_value = "   "
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        assert vlm_mod.describe_scene(frame) == ""
 
     def test_default_timeout_from_env(self, monkeypatch):
         """BENDER_VLM_TIMEOUT env var must set the default timeout."""

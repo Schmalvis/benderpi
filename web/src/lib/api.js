@@ -120,7 +120,8 @@ export const dismissAllTimers = () => request('/api/timers/dismiss-all', { metho
 export const remoteAsk = (text) => request('/api/remote/ask-text', { method: 'POST', body: JSON.stringify({ text }) });
 
 // Vision
-export const getVisionPassive = () => request('/api/vision/passive');
-export const enableVisionPassive = (duration_minutes) => request('/api/vision/passive', { method: 'POST', body: JSON.stringify({ duration_minutes }) });
-export const disableVisionPassive = () => request('/api/vision/passive', { method: 'DELETE' });
+// Passive mode is gone. getVisionPassive/enable/disable used to call
+// /api/vision/passive, which `bfbd831` deleted on 2026-04-02 along with the
+// watcher thread behind it. The Config page kept calling it for six months and
+// polled it every 60s: 93 404s in the device journal by 2026-10-15.
 export const analyseVision = () => request('/api/vision/analyse', { method: 'POST' });

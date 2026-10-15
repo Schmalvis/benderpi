@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { config, savedConfig, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
-  import { getWatchdogConfig, updateWatchdogConfig, getVisionPassive, enableVisionPassive, disableVisionPassive,
+  import { getWatchdogConfig, updateWatchdogConfig,
            rebuildResponses, generateStatus, getVolume, setVolume, restartService } from '../lib/api.js';
   import { toast } from '../lib/stores/toast.js';
 
@@ -11,63 +11,12 @@
   let watchdog = {};
   let watchdogDirty = false;
 
-  // Vision passive mode state
-  let visionPassive = { enabled: false, expires_at: null, minutes_remaining: null };
-  let visionError = '';
-  let visionPollInterval = null;
-
-  const visionPresets = [
-    { label: '15m', minutes: 15 },
-    { label: '30m', minutes: 30 },
-    { label: '1h', minutes: 60 },
-    { label: '3h', minutes: 180 },
-    { label: '∞', minutes: null },
-  ];
-
   onMount(async () => {
     await loadConfig();
     try {
       watchdog = await getWatchdogConfig();
     } catch { /* ignore */ }
-    await loadVisionPassive();
-    visionPollInterval = setInterval(loadVisionPassive, 60000);
-    return () => clearInterval(visionPollInterval);
   });
-
-  async function loadVisionPassive() {
-    try {
-      visionPassive = await getVisionPassive();
-      visionError = '';
-    } catch (e) {
-      visionError = e.message;
-    }
-  }
-
-  async function handleVisionEnable(minutes) {
-    try {
-      await enableVisionPassive(minutes);
-      await loadVisionPassive();
-      visionError = '';
-    } catch (e) {
-      visionError = e.message;
-    }
-  }
-
-  async function handleVisionDisable() {
-    try {
-      await disableVisionPassive();
-      await loadVisionPassive();
-      visionError = '';
-    } catch (e) {
-      visionError = e.message;
-    }
-  }
-
-  function activePreset() {
-    if (!visionPassive.enabled) return null;
-    if (visionPassive.minutes_remaining === null) return null; // indefinite
-    return visionPassive.minutes_remaining;
-  }
 
   async function handleSave() {
     saving = true;
@@ -252,13 +201,6 @@
     try { await setVolume(volume); } catch { /* ignore */ }
   }
 
-  const VISION_COCO_CANDIDATES = [
-    "person", "bicycle", "bottle", "wine glass", "cup",
-    "chair", "couch", "dining table", "bed", "tv",
-    "laptop", "mouse", "remote", "keyboard", "cell phone",
-    "book", "clock", "vase", "potted plant", "teddy bear",
-    "backpack", "sports ball", "toothbrush", "dog", "cat",
-  ];
 </script>
 
 <div class="max-w-2xl space-y-4 pb-24">
@@ -466,7 +408,13 @@
   <!-- Everyday settings. Hidden in Halloween mode: none of them apply at the
        door, and a smaller surface on the night is the point. General,
        Maintenance and Watchdog stay, because speech rate, a rebuild and the
-       health thresholds are all still useful. -->
+       health thresholds are all still useful.
+       There was a Vision section here too. Every control in it was inert:
+       Passive Mode called three routes deleted on 2026-04-02, and the
+       Confidence Threshold and Detection Allowlist were YOLO settings that
+       nothing has read since 0d0d4ff replaced YOLO with the Qwen2-VL VLM.
+       Both keys passed the config schema on extra="allow", so the page wrote
+       them to bender_config.json and no code ever read them back. -->
   {#if !halloweenOn}
 
   <!-- AI Backend -->
@@ -569,99 +517,6 @@
         {#if synonymsError}
           <p class="text-error text-[11px] mt-1">{synonymsError}</p>
         {/if}
-      </div>
-
-    </div>
-  </details>
-
-  <!-- Vision -->
-  <details open class="bg-bg-card border border-border rounded-lg overflow-hidden">
-    <summary class={summaryClass + ' px-4'}>Vision</summary>
-    <div class="px-4 pb-4 pt-2 space-y-4">
-
-      <div>
-        <p class={labelClass}>Passive Mode</p>
-        <div class="flex flex-wrap gap-2 mt-1">
-          <button
-            on:click={handleVisionDisable}
-            class="px-3 py-1.5 rounded text-sm font-medium transition-colors
-                   {!visionPassive.enabled
-                     ? 'bg-accent text-bg'
-                     : 'bg-bg-input border border-border text-text-muted hover:border-accent hover:text-text-default'}"
-          >
-            OFF
-          </button>
-          {#each visionPresets as preset}
-            <button
-              on:click={() => handleVisionEnable(preset.minutes)}
-              class="px-3 py-1.5 rounded text-sm font-medium transition-colors
-                     {visionPassive.enabled && (
-                       preset.minutes === null
-                         ? visionPassive.minutes_remaining === null
-                         : visionPassive.minutes_remaining !== null
-                     )
-                       ? 'bg-accent text-bg'
-                       : 'bg-bg-input border border-border text-text-muted hover:border-accent hover:text-text-default'}"
-            >
-              {preset.label}
-            </button>
-          {/each}
-        </div>
-        {#if visionPassive.enabled}
-          <p class="text-[11px] text-text-muted mt-2">
-            {#if visionPassive.minutes_remaining !== null}
-              Time remaining: {visionPassive.minutes_remaining} minute{visionPassive.minutes_remaining === 1 ? '' : 's'}
-            {:else}
-              Active indefinitely
-            {/if}
-          </p>
-        {/if}
-        {#if visionError}
-          <p class="text-error text-[11px] mt-1">{visionError}</p>
-        {/if}
-      </div>
-
-      <div>
-        <label class={labelClass} for="vision_confidence_threshold">
-          Confidence Threshold
-        </label>
-        <input
-          id="vision_confidence_threshold"
-          type="number"
-          min="0.05" max="0.50" step="0.05"
-          class={inputClass}
-          bind:value={$config.vision_confidence_threshold}
-        />
-        <p class="text-[11px] text-text-muted mt-1">
-          Minimum detection confidence (0.05–0.50). Lower = more detections, more noise.
-        </p>
-      </div>
-
-      <div>
-        <p class={labelClass}>Detection Allowlist</p>
-        <p class="text-[11px] text-text-muted mb-2">
-          Active classes are highlighted. Empty = detect all 80 COCO classes.
-        </p>
-        <div class="flex flex-wrap gap-2">
-          {#each VISION_COCO_CANDIDATES as label}
-            {@const active = ($config.vision_allowlist ?? []).includes(label)}
-            <button
-              type="button"
-              class="px-2 py-1 rounded text-xs border transition-colors {active
-                ? 'bg-accent border-accent text-bg-base'
-                : 'bg-bg-input border-border text-text-muted'}"
-              on:click={() => {
-                const list = [...($config.vision_allowlist ?? [])];
-                const idx = list.indexOf(label);
-                if (idx >= 0) list.splice(idx, 1);
-                else list.push(label);
-                $config.vision_allowlist = list;
-              }}
-            >
-              {label}
-            </button>
-          {/each}
-        </div>
       </div>
 
     </div>

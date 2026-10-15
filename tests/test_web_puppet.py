@@ -240,3 +240,34 @@ def test_a_refused_request_falls_back_rather_than_going_silent():
     assert resp.status_code == 200
     assert resp.json()["route"] == "direct"
     direct.assert_called_once()
+
+
+# ── Camera status carries whether scene analysis is switched on ─────────────
+#
+# A live camera stream and a working scene analysis are separate things. The
+# MJPEG feed needs only Picamera2. "Ask Bender" needs the Hailo KV-Cache that
+# the resident conversation LLM holds, so on this device it always 503s.
+# Reporting `vision_enabled` lets the page hide that button instead of offering
+# a click that costs a ~23s bender-converse restart and returns an error.
+
+def test_camera_status_reports_vision_enabled(monkeypatch):
+    from config import cfg
+    monkeypatch.setattr(cfg, "vlm_enabled", True)
+    client = get_client()
+    with patch("web.routes.puppet._check_camera", return_value=True):
+        resp = client.get("/api/puppet/camera/status", headers=auth())
+    assert resp.status_code == 200
+    assert resp.json() == {"available": True, "vision_enabled": True}
+
+
+def test_camera_status_reports_vision_disabled(monkeypatch):
+    """The shipped state: bender_config.json has vlm_enabled false."""
+    from config import cfg
+    monkeypatch.setattr(cfg, "vlm_enabled", False)
+    client = get_client()
+    with patch("web.routes.puppet._check_camera", return_value=True):
+        resp = client.get("/api/puppet/camera/status", headers=auth())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is True          # the stream still works
+    assert body["vision_enabled"] is False    # the description does not

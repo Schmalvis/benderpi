@@ -43,15 +43,37 @@ def _bender_scene_response(scene_description: str) -> str:
 class VisionHandler(Handler):
     intents = ["VISION"]
 
+    def _eyes_are_off(self, intent: str) -> Response:
+        """Say the eyes do not work, rather than describe a room.
+
+        The empty-room lines below are a claim about the room. They may only
+        be spoken when the camera actually looked and the model actually
+        answered. Before 2026-10-15 a failed look reached them, because
+        `analyse_scene` returned an identical empty SceneDescription either
+        way — so on this device, where the VLM cannot load at all while the
+        conversation LLM holds the KV-Cache, "I don't see anyone. Either the
+        room's empty, or you've finally achieved irrelevance." was the
+        guaranteed answer to "what can you see".
+        """
+        description = "My eyes aren't working right now. Probably a Tuesday thing."
+        wav = tts_generate.speak(description)
+        return Response(text=description, wav_path=wav, method="handler_vision",
+                        intent=intent, is_temp=True)
+
     def handle(self, text: str, intent: str, sub_key: str | None = None) -> Response | None:
+        if not cfg.vlm_enabled:
+            log.info("VisionHandler: vlm_enabled is false — not describing the room")
+            return self._eyes_are_off(intent)
+
         try:
             scene = vision.analyse_scene()
         except Exception as exc:
             log.warning("VisionHandler: analyse_scene failed: %s", exc)
-            description = "My eyes aren't working right now. Probably a Tuesday thing."
-            wav = tts_generate.speak(description)
-            return Response(text=description, wav_path=wav, method="handler_vision",
-                            intent=intent, is_temp=True)
+            return self._eyes_are_off(intent)
+
+        if scene.failed():
+            log.warning("VisionHandler: the camera did not look: %s", scene.error)
+            return self._eyes_are_off(intent)
 
         if scene.is_empty():
             description = random.choice(_EMPTY_ROOM_RESPONSES)

@@ -13,6 +13,121 @@ Last updated: 2026-10-15
 
 ---
 
+## 2026-10-15 (2) — the dead vision links, and a room nobody looked at
+
+Started as "investigate the dead vision links". It found three layers, the
+second worse than the first.
+
+### Layer 1: three frontend calls to routes deleted six months ago
+
+`web/src/lib/api.js` held `getVisionPassive`, `enableVisionPassive` and
+`disableVisionPassive`, all pointed at `/api/vision/passive`. `bfbd831` deleted
+those three endpoints on 2026-04-02, and `c9743b2` had deleted the watcher
+thread behind them minutes earlier. Neither commit touched the frontend.
+
+`Config.svelte` polled the GET every 60 seconds. The device journal held **93**
+`404 Not Found` lines for it, and it was still firing once a minute from a
+browser on the LAN while this was being read.
+
+A full audit of `api.js` against the device's own `openapi.json`: **3 of 39
+frontend calls dead, all three these.** The other 36 are live.
+
+### Layer 2: the live route could not work, and lied when it failed
+
+`POST /api/vision/analyse` is live. The Ask Bender button calls it. It had
+never been called once in the journal. It could not work:
+
+1. `vlm.describe_scene` returned `""` for a failed look AND for an empty answer.
+2. `vision.analyse_scene` flattened both into the same empty `SceneDescription`.
+3. `scene.is_empty()` was therefore True either way.
+4. The route prompted the AI with "your camera just scanned the room and
+   detected nobody".
+5. `_speak_in_background` takes `service_lease()`, which stops and restarts
+   `bender-converse`.
+
+So one click cost about 23s of deafness to hear Bender confidently describe a
+room nothing had looked at. And that was the **only** reachable outcome: the
+on-chip KV-Cache is a singleton, the resident conversation LLM holds it, and
+the VLM load fails every time (measured 2026-07-30).
+
+`cfg.vlm_enabled` did not stop it. Only `wake_converse.py:805` read that flag.
+
+**`VisionHandler` had the same bug, and it is reachable by voice.** Ask "what
+can you see" in a household session and the answer was "I don't see anyone.
+Either the room's empty, or you've finally achieved irrelevance." Every time.
+Halloween mode already drops `VisionHandler` from the chain, so the door was
+never exposed.
+
+### Layer 3: two Config controls that nothing reads
+
+`vision_confidence_threshold` and `vision_allowlist` (25 COCO labels) had **0**
+readers outside `config.py`. Both are YOLO settings. `0d0d4ff` replaced YOLO
+object detection with the Qwen2-VL VLM, which returns one free-text sentence:
+there are no boxes, labels or confidence scores left to filter. `config_schema.py`
+does not model either key, so they passed on `extra="allow"`, got written to
+`bender_config.json`, and were never read back. `vision_model`, `vlm_timeout`
+and `vlm_lazy_poll_s` are orphans the same way.
+
+So the whole Vision section of the Config page was inert. Every control in it.
+
+### What changed
+
+| decision | action |
+|---|---|
+| Delete, do not rebuild | The entire Vision section is gone from `Config.svelte`, with the three dead `api.js` calls |
+| Gate it, and fix the lie | `/api/vision/analyse` returns 503 when `vlm_enabled` is false, 502 when there is no description, and never fabricates a scene |
+
+Rebuilding passive mode was rejected. It means releasing the conversation LLM
+to load the VLM on a timer, then reloading it. The LLM load alone is 9.7s
+measured. Bender would go deaf on a schedule, and the owner's worst acceptable
+failure is silence.
+
+**The contract change to remember:** `vlm.describe_scene` now returns `None`
+for a failed look and `str` for an answer. `SceneDescription.failed()` is
+separate from `is_empty()`, and **every caller must check `failed()` first**.
+An empty description is not evidence of an empty room.
+
+### The guard that would have caught all of it
+
+`tests/test_frontend_routes_exist.py` reads the FastAPI app's own OpenAPI
+document and checks every `/api/` call in `web/src/lib/api.js` against it.
+Nothing in the repo could see this seam before: the Python tests exercise the
+routes that exist, and `npm run build` does not know what the server serves.
+
+Mutation-tested: re-adding `getVisionPassive` to `api.js` fails the test and
+names the function and the path.
+
+Use `app.openapi()["paths"]`, never `app.routes`. On FastAPI 0.139 / Starlette
+1.3 a route removed from `app.routes` still answers.
+
+### Verified in a browser
+
+Config page: no Vision section, the other seven sections intact, and the 60s
+404 gone from the console. Puppet page, `vision_enabled` false: no Ask Bender
+button, and a note saying why. `vision_enabled` true: the button appears,
+fires, and renders the reply.
+
+### Tests: 1481 passed, 1 skipped (was 1458)
+
+Three of the new route tests passed alone and failed in the full suite. Cause:
+`tests/test_vision.py` calls `importlib.reload(vision)`, so `web.routes.vision`
+holds the OLD module and `patch.dict(sys.modules, ...)` never reaches it. The
+real Picamera2 then ran and raised "No camera number 0 found". Patch the route
+module's own names (`patch.object(vroute._vision, ...)`), the same fix
+`tests/test_vision_handler.py` documents for the handler.
+
+`test_vision_handler.py` was also rewritten. All five of its tests asserted
+only `resp is not None`, and all five passed with the handler describing a room
+it had never looked at.
+
+### Side find, not acted on
+
+701 MiB of orphaned partial downloads in the device model directory:
+`.Qwen2-VL-2B-Instruct.hef.*.tmp`, four files, dated 2026-04-02. The disk has
+81G free, so this is clutter, not a problem.
+
+---
+
 ## 2026-10-15 — Puppet Mode is a real switch, and Halloween has a restart button
 
 **16 days to Halloween.**

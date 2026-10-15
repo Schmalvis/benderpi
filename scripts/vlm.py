@@ -124,7 +124,7 @@ def describe_scene(
     frame: np.ndarray,
     prompt: str | None = None,
     timeout: float | None = None,
-) -> str:
+) -> str | None:
     """Describe a scene using Qwen2-VL-2B vision-language model.
 
     Args:
@@ -133,7 +133,20 @@ def describe_scene(
         timeout: Max seconds to wait. Falls back to BENDER_VLM_TIMEOUT env var (default 60s).
 
     Returns:
-        Description string, or "" on timeout/error.
+        The description, or **None** when the look did not happen.
+
+    `None` and `""` are different answers, and a caller must not merge them.
+    `None` means no answer was ever produced: a timeout, or a failed VLM load.
+    `""` means the model answered with nothing.
+
+    This returned `""` for both until 2026-10-15, and two callers read that as
+    a fact about the room. `POST /api/vision/analyse` prompted the AI with
+    "your camera just scanned the room and detected nobody", and
+    `VisionHandler` spoke "I don't see anyone. Either the room's empty, or
+    you've finally achieved irrelevance." Both are confident claims about a
+    room nothing ever looked at. On this device the load fails every time:
+    the on-chip KV-Cache is a singleton and the resident conversation LLM
+    holds it (measured 2026-07-30, see CLAUDE.md).
     """
     user_prompt = prompt or _DEFAULT_PROMPT
     effective_timeout = timeout if timeout is not None else _default_timeout()
@@ -144,7 +157,7 @@ def describe_scene(
     except FuturesTimeoutError:
         log.warning("describe_scene timed out after %.1fs", effective_timeout)
         future.cancel()
-        return ""
+        return None
     except Exception as exc:
         log.warning("describe_scene failed: %s", exc)
-        return ""
+        return None

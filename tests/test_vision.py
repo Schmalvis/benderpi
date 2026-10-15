@@ -243,3 +243,88 @@ def test_real_error_still_logs_exception(caplog):
     assert result.is_empty()
     error_msgs = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(error_msgs) > 0, "Unexpected errors should still be logged at ERROR"
+
+
+# ---------------------------------------------------------------------------
+# A failed look is not an empty room
+# ---------------------------------------------------------------------------
+#
+# `is_empty()` answers "is there a description". `failed()` answers "did the
+# look happen". Both arrived as an identical empty SceneDescription until
+# 2026-10-15, and two callers read the first as the second:
+#
+#   * POST /api/vision/analyse prompted the AI with "your camera just scanned
+#     the room and detected nobody", then paid a ~23s bender-converse restart
+#     to speak the reply, and
+#   * VisionHandler spoke "I don't see anyone. Either the room's empty, or
+#     you've finally achieved irrelevance."
+#
+# On the device that was the ONLY reachable answer: the VLM cannot load while
+# the resident conversation LLM holds the single on-chip KV-Cache (measured
+# 2026-07-30). So Bender described, confidently, a room nothing looked at.
+
+class TestFailedIsNotEmpty:
+    def test_a_fresh_scene_has_not_failed(self):
+        vision, _, _ = _make_vision_module()
+        assert vision.SceneDescription().failed() is False
+
+    def test_an_error_marks_it_failed(self):
+        vision, _, _ = _make_vision_module()
+        assert vision.SceneDescription(error="the camera died").failed() is True
+
+    def test_a_real_description_has_not_failed(self):
+        vision, _, _ = _make_vision_module()
+        scene = vision.SceneDescription(description="a cat")
+        assert scene.failed() is False
+        assert scene.is_empty() is False
+
+    def test_describe_scene_returning_none_is_a_failure(self):
+        """The device case. None means the model never answered."""
+        vlm_mock = _default_vlm_mock()
+        vlm_mock["describe_scene"].return_value = None
+        vision, _, _ = _make_vision_module(vlm_mock=vlm_mock)
+        result = vision.analyse_scene()
+        assert result.failed() is True
+        assert result.is_empty() is True          # both, and failed() wins
+        assert "did not answer" in result.error
+
+    def test_describe_scene_returning_empty_is_not_a_failure(self):
+        """A model that answers with nothing did still look."""
+        vlm_mock = _default_vlm_mock()
+        vlm_mock["describe_scene"].return_value = ""
+        vision, _, _ = _make_vision_module(vlm_mock=vlm_mock)
+        result = vision.analyse_scene()
+        assert result.failed() is False
+        assert result.is_empty() is True
+
+    def test_a_camera_exception_is_a_failure(self):
+        cam_mock = _default_camera_mock()
+        cam_mock["capture_frame"].side_effect = RuntimeError("Camera exploded")
+        vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+        result = vision.analyse_scene()
+        assert result.failed() is True
+        assert "Camera exploded" in result.error
+
+    def test_a_busy_camera_is_a_failure(self):
+        cam_mock = _default_camera_mock()
+        cam_mock["acquire_camera"].side_effect = RuntimeError("Device busy")
+        vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+        result = vision.analyse_scene()
+        assert result.failed() is True
+        assert "another process" in result.error
+
+    def test_a_vlm_exception_is_a_failure(self):
+        vlm_mock = _default_vlm_mock()
+        vlm_mock["describe_scene"].side_effect = RuntimeError("VLM timed out")
+        vision, _, _ = _make_vision_module(vlm_mock=vlm_mock)
+        result = vision.analyse_scene()
+        assert result.failed() is True
+        assert "VLM timed out" in result.error
+
+    def test_the_camera_is_released_on_a_none_answer(self):
+        """The `finally` must still run on the new early return."""
+        vlm_mock = _default_vlm_mock()
+        vlm_mock["describe_scene"].return_value = None
+        vision, cam_mock, _ = _make_vision_module(vlm_mock=vlm_mock)
+        vision.analyse_scene()
+        cam_mock["release_camera"].assert_called_once()

@@ -312,8 +312,16 @@ async def puppet_favourite(body: dict = Body(...)):
 
 @router.get("/api/puppet/camera/status", dependencies=[Depends(require_token)])
 async def puppet_camera_status():
+    """Can the camera open, and is scene analysis switched on?
+
+    `vision_enabled` mirrors `cfg.vlm_enabled`, so the page can hide the Ask
+    Bender button instead of offering a click that only ever returns 503.
+    A live camera stream and a working VLM are separate things: the MJPEG
+    stream needs only Picamera2, while scene analysis needs the Hailo
+    KV-Cache that the resident conversation LLM holds.
+    """
     available = await asyncio.to_thread(_check_camera)
-    return {"available": available}
+    return {"available": available, "vision_enabled": bool(cfg.vlm_enabled)}
 
 
 @router.get("/api/puppet/camera/stream")

@@ -24,6 +24,12 @@
 
   // Camera streaming state
   let cameraAvailable = false;
+  // Mirrors cfg.vlm_enabled, from GET /api/puppet/camera/status. A live
+  // stream and a working scene analysis are separate things: the MJPEG
+  // feed needs only Picamera2, while Ask Bender needs the Hailo KV-Cache
+  // that the resident conversation LLM holds. Starts false, so the button
+  // stays hidden until the server says vision is on.
+  let visionEnabled = false;
   let cameraActive = false;
   let cameraError = false;
   let cameraSrc = '';
@@ -50,6 +56,7 @@
     try {
       const s = await getCameraStatus();
       cameraAvailable = s.available;
+      visionEnabled = !!s.vision_enabled;
     } catch { /* ignore — camera status is non-critical */ }
   });
 
@@ -388,21 +395,34 @@
         on:error={handleCameraError}
         class="w-full object-contain max-h-96"
       />
-      <!-- Ask Bender -->
+      <!-- Ask Bender. Hidden unless the server reports vision on, because the
+           route 503s otherwise: the Hailo KV-Cache is a singleton and the
+           resident conversation LLM holds it. A click used to cost ~23s of
+           deafness (service_lease stops and restarts bender-converse) and then
+           made Bender react to a room nothing had looked at. -->
       <div class="px-4 pb-4 pt-3 border-t border-border space-y-3">
-        <button
-          on:click={handleAnalyse}
-          disabled={analysing}
-          class="bg-accent text-bg font-bold px-5 py-2 rounded
-                 hover:opacity-90 transition-opacity disabled:opacity-50"
-        >
-          {analysing ? 'Thinking…' : 'Ask Bender'}
-        </button>
-        {#if analyseResult}
-          <p class="text-sm text-text-default">{analyseResult}</p>
-        {/if}
-        {#if analyseError}
-          <p class="text-sm text-error">{analyseError}</p>
+        {#if visionEnabled}
+          <button
+            on:click={handleAnalyse}
+            disabled={analysing}
+            class="bg-accent text-bg font-bold px-5 py-2 rounded
+                   hover:opacity-90 transition-opacity disabled:opacity-50"
+          >
+            {analysing ? 'Thinking…' : 'Ask Bender'}
+          </button>
+          {#if analyseResult}
+            <p class="text-sm text-text-default">{analyseResult}</p>
+          {/if}
+          {#if analyseError}
+            <p class="text-sm text-error">{analyseError}</p>
+          {/if}
+        {:else}
+          <p class="text-[11px] text-text-muted">
+            Bender can show you the room, but he cannot describe it. Scene
+            analysis is off (<span class="font-mono">vlm_enabled</span>): the
+            vision model and the conversation model cannot both hold the Hailo
+            KV-Cache, and the conversation model wins.
+          </p>
         {/if}
       </div>
     </div>
