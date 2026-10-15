@@ -13,6 +13,123 @@ Last updated: 2026-10-15
 
 ---
 
+## 2026-10-15 (3) — INCIDENT: Bender would not stop, and END was working fine
+
+**16 days to Halloween.** The owner turned Halloween mode on, Bender started
+chatting, and four presses of the sidebar END did not stop him.
+
+### Every press worked. That was the problem.
+
+```
+19:29:18  Heard (open mic): "So, you're searching for the other one?..."
+19:29:50  owner presses END
+19:29:52  Remote end-session: abrupt exit          <- session 1 ENDED
+19:30:00  Heard (open mic): 'M-K-'                 <- session 2 starts, 8s later
+19:30:29  owner presses END  -> Playback aborted   <- session 2 ENDED
+19:30:35  Heard (open mic): 'Everyone has their key.'
+19:30:37  owner presses END  -> Remote end-session <- session 3 ENDED
+19:30:44  Heard (open mic): 'Can you search up like?'
+```
+
+Halloween mode has no wake word. Ending a session just lets the next sound in
+the room start another one. The owner's own voice, while he was reporting the
+problem, kept re-triggering it.
+
+**END means "end this one". It is not a stop. Nothing in `_halloween_loop`
+can make it one.**
+
+Stopped with `sudo systemctl stop bender-converse`. The stale
+`.session_active.json` was cleared by hand, or `session-status` reports a live
+conversation on a box where nothing runs.
+
+### My earlier fix went to the wrong loop
+
+The end-session check added that morning sits at `wake_converse.py:836`, in the
+**household** session loop. `_halloween_loop` is a separate code path and was
+untouched. Three captures had no check: the trigger capture, and both in
+`_halloween_turn_loop`. All three now read `cfg.end_session_file` and call
+`_cleanup_abort_files()` before ending.
+
+That makes END prompt. **It still does not silence him**, and the tests say so
+in as many words.
+
+### What was built: a STOP button in the sidebar
+
+| state | button | colour |
+|---|---|---|
+| running | ■ STOP BENDER | error red |
+| stopped | ▶ START BENDER | success green |
+| poll failed | BENDER ? (disabled) | muted |
+
+It reuses `POST /api/actions/toggle-mode`, the route behind Puppet Mode, so
+entering ends any live session first, stops the service, then clears the IPC
+notes. It lives in the sidebar on every page, desktop and mobile, because
+"shut up" is not something you go looking through pages for.
+
+The `null` state matters: a STOP button that reads START while Bender is
+talking is worse than no button at all.
+
+**A latched pause was considered and rejected.** The owner's worst acceptable
+failure is SILENCE. A quiet flag nobody remembers to clear is more dangerous
+than a Bender who answers the door too eagerly.
+`test_the_open_mic_restarts_after_an_end_and_that_is_by_design` fails if anyone
+adds a `paused`/`quiet`/`halted` name to `_halloween_loop`, so the next person
+has to decide what clears it before a child arrives.
+
+### Device left safe
+
+`halloween_mode` and `presence_sensor_enabled` both set back to **false**
+(two lines changed, JSON verified). `bender-converse` is `enabled`, so a reboot
+would otherwise have brought the open mic straight back.
+
+### Also this session: Docker and Open WebUI
+
+Unrelated to the incident, done just before it.
+
+- **Docker Engine 29.9.1** installed from the official trixie repo. `pi` added
+  to the `docker` group. One new nftables table, one unused `docker0` bridge,
+  nothing else disturbed.
+- **`hailo-ollama` was already installed** (from `hailo-gen-ai-model-zoo 5.3.0`)
+  and had never been run. It now has a systemd unit, enabled, on `0.0.0.0:8000`.
+  It ships manifests for six models: `deepseek_r1:1.5b`, `llama3.2:1b`,
+  `qwen2:1.5b`, `qwen2.5:1.5b`, `qwen2.5-coder:1.5b`, `qwen3:1.7b`.
+  `qwen2.5:1.5b` is pulled (2.46 GB, in `~/.local/share/hailo-ollama/models/`).
+- **Open WebUI** in a container, `--network=host`, port **8888**,
+  `restart=unless-stopped` (not the book's `always`, so a manual stop survives
+  a reboot).
+
+**Open WebUI costs 1034 MB of the 4 GB.** Measured: `bender-converse` is only
+152 MB, because Whisper and Qwen live on the Hailo chip, not in RAM. Open WebUI
+is 6.8× Bender. Swap went 57 MB → 279 MB when it started.
+**`docker stop open-webui2` before Halloween night.**
+
+**Untested:** whether a chat request works while `bender-converse` holds the
+KV-Cache. The incident interrupted that test. Expect it to fail, because the
+KV-Cache is a singleton (measured 2026-07-30).
+
+**Exposure, not yet addressed:** Open WebUI binds `0.0.0.0:8888` with no PIN,
+on the LAN and the tailnet, and the first visitor becomes admin.
+
+### Puppet mode DOES work in Halloween mode
+
+Asked and answered from the code. `_halloween_loop` has an explicit
+`if say_request.pending(): _serve_say_requests()` with a comment saying the
+owner may still want to puppet on the night. `scripts/web/routes/puppet.py` has
+zero references to `halloween`. `halloween_enabled()` gates the AI prompt, the
+model, intent classification, the handler chain, the session greeting and which
+loop runs — none of them the puppet path.
+
+**Caveat:** the check sits BETWEEN sessions, so a puppet line waits for a child
+mid-conversation to finish, up to `halloween_max_turns` (6). When idle the wait
+is short, because `wait_for_presence` is bounded at 5s and loops back.
+
+### Tests: 1489 passed, 1 skipped
+
+`tests/test_halloween_end_session.py`, 8 tests, AST-based. Mutation-tested:
+reverting the fix fails 5 of the 8.
+
+---
+
 ## 2026-10-15 (2) — the dead vision links, and a room nobody looked at
 
 Started as "investigate the dead vision links". It found three layers, the

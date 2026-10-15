@@ -2,12 +2,67 @@
   import { health } from '../stores/health.js';
   import { theme } from '../stores/theme.js';
   import { session } from '../stores/session.js';
-  import { endSession } from '../api.js';
+  import { endSession, getServiceStatus, toggleMode } from '../api.js';
+  import { onMount, onDestroy } from 'svelte';
+  import { toast } from '../stores/toast.js';
   import VolumeSlider from './VolumeSlider.svelte';
 
   export let currentPage = 'dashboard';
 
   let menuOpen = false;
+
+  // STOP exists because END cannot silence Bender in Halloween mode.
+  // Halloween drops the wake word, so ending a session just lets the next
+  // sound start another one. Measured live 2026-10-15: four END presses, four
+  // sessions ended, four new ones started 6-8s later from the owner's own
+  // voice while he was reporting the problem. END means "end this one".
+  // STOP stops bender-converse, and that is the only thing that makes him
+  // quiet. It is in the sidebar, not on the Puppet page, because "shut up" is
+  // not something you go looking through pages for.
+  //
+  // null = unknown. Never claim either state from a failed poll: a STOP
+  // button that says START while Bender is talking is worse than no button.
+  let running = null;
+  let busy = false;
+  let poll = null;
+
+  async function refreshRunning() {
+    try {
+      const s = await getServiceStatus();
+      running = !!s.running;
+    } catch {
+      running = null;
+    }
+  }
+
+  onMount(() => {
+    refreshRunning();
+    poll = setInterval(refreshRunning, 10000);
+  });
+  onDestroy(() => { if (poll) clearInterval(poll); });
+
+  async function handleStopStart() {
+    if (busy || running === null) return;
+    busy = true;
+    const wasRunning = running;
+    try {
+      // Reuses POST /api/actions/toggle-mode. Entering puppet_only ends any
+      // live session FIRST, then stops the service, then clears the IPC
+      // notes. Leaving clears them before the start.
+      await toggleMode(wasRunning ? 'puppet_only' : 'converse');
+      await refreshRunning();
+      toast.push(
+        wasRunning
+          ? 'Bender stopped. No mic, no wake word, no sessions.'
+          : 'Bender starting. Wake word live in about 23s.',
+        'success'
+      );
+    } catch (e) {
+      toast.push(`Could not ${wasRunning ? 'stop' : 'start'} Bender: ${e.message}`, 'error');
+      await refreshRunning();
+    }
+    busy = false;
+  }
 
   const pages = [
     { id: 'dashboard', label: 'Dashboard', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>` },
@@ -66,7 +121,30 @@
   <div class="mt-auto pt-4" style="border-top: 1px solid var(--border);">
     <div class="font-display text-[9px] tracking-widest mb-3" style="color: var(--text-muted); letter-spacing: 0.15em;">QUICK CONTROLS</div>
     <VolumeSlider />
-    <div class="flex gap-1.5 mt-3">
+    <button
+      on:click={handleStopStart}
+      disabled={busy || running === null}
+      title={running === null
+        ? 'Cannot reach bender-converse'
+        : running
+          ? 'Stop bender-converse. The only thing that silences an open mic.'
+          : 'Start bender-converse. About 23s until the wake word is live.'}
+      class="w-full rounded px-2 py-2 text-[10px] tracking-widest transition-all mt-3 disabled:opacity-40"
+      style="background: var(--bg-input); font-family: var(--font-display); letter-spacing: 0.12em;
+             border: 1px solid {running === null ? 'var(--border)' : running ? 'var(--error)' : 'var(--success)'};
+             color: {running === null ? 'var(--text-muted)' : running ? 'var(--error)' : 'var(--success)'};"
+    >
+      {#if busy}
+        WORKING…
+      {:else if running === null}
+        BENDER ?
+      {:else if running}
+        ■ STOP BENDER
+      {:else}
+        ▶ START BENDER
+      {/if}
+    </button>
+    <div class="flex gap-1.5 mt-1.5">
       <button
         on:click={handleEndSession}
         class="flex-1 rounded px-2 py-1.5 text-[10px] tracking-wide transition-all hover:border-accent"
@@ -138,7 +216,25 @@
     style="background: var(--bg-sidebar); border-top: 1px solid var(--border);">
     <div class="font-display text-[9px] tracking-widest mb-3" style="color: var(--text-muted); letter-spacing: 0.15em;">QUICK CONTROLS</div>
     <VolumeSlider />
-    <div class="flex gap-2 mt-3">
+    <button
+      on:click={handleStopStart}
+      disabled={busy || running === null}
+      class="w-full rounded py-2.5 text-xs font-display tracking-widest transition-all mt-3 disabled:opacity-40"
+      style="background: var(--bg-input);
+             border: 1px solid {running === null ? 'var(--border)' : running ? 'var(--error)' : 'var(--success)'};
+             color: {running === null ? 'var(--text-muted)' : running ? 'var(--error)' : 'var(--success)'};"
+    >
+      {#if busy}
+        WORKING…
+      {:else if running === null}
+        BENDER ?
+      {:else if running}
+        ■ STOP BENDER
+      {:else}
+        ▶ START BENDER
+      {/if}
+    </button>
+    <div class="flex gap-2 mt-2">
       <button on:click={handleEndSession}
         class="flex-1 rounded py-2 text-xs font-display tracking-widest transition-all"
         style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text-muted);">

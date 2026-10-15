@@ -98,6 +98,16 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
         rec_start = time.monotonic()
         _note_progress()
         text = stt.listen_and_transcribe(after_playback=True)
+        # session.handle_turn checks the note at its top and after playback.
+        # Neither covers a capture already in flight, and a capture runs up to
+        # stt_speech_onset_timeout_s (6s idle) or max_record_seconds (15s with
+        # someone still talking). Without this, END waited out the capture and
+        # then answered one more turn. Same check as the household loop.
+        if os.path.exists(cfg.end_session_file):
+            log_.info("Remote end-session during capture: ending")
+            _cleanup_abort_files()
+            session.end("remote")
+            return
         if not text:
             if rec_start - last_reply > idle:
                 session.end("timeout")
@@ -105,6 +115,11 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
             rec_start = time.monotonic()
             _note_progress()
             text = stt.listen_and_transcribe(after_playback=False)
+            if os.path.exists(cfg.end_session_file):
+                log_.info("Remote end-session during the retry capture: ending")
+                _cleanup_abort_files()
+                session.end("remote")
+                return
             if not text:
                 session.end("timeout")
                 return
@@ -163,6 +178,22 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
                 continue
             leds.set_listening(True)
             text = stt.listen_and_transcribe(after_playback=False)
+            # A remote END that lands DURING this capture must not then open a
+            # session from it. stt.py knows nothing about either note, so this
+            # is the only place the arriving END can be seen.
+            #
+            # Note what this does NOT do: it does not silence Bender. Halloween
+            # mode has no wake word, so the next sound in the room starts
+            # another session within seconds. Measured live 2026-10-15 — four
+            # END presses, four sessions ended, four new ones started 6-8s
+            # later from the owner's own voice as he discussed the problem.
+            # END means "end this one". The sidebar STOP button stops the
+            # service, and that is the only thing that makes him quiet.
+            if os.path.exists(cfg.end_session_file):
+                log_.info("Remote end-session during the open-mic capture: "
+                          "dropping it, NOT starting a session")
+                _cleanup_abort_files()
+                continue
             if not text:
                 continue
             log_.info("Heard (open mic): %r", text)
