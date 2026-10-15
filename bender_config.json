@@ -239,6 +239,8 @@
   "presence_max_mm": 1000,
   "presence_clear_mm": 1400,
   "presence_min_mm": 0,
+  "presence_confirm_reads": 2,
+  "presence_poll_s": 0.1,
   "presence_signal_rate_mcps": 0.1,
   "presence_timing_budget_us": 200000
 }

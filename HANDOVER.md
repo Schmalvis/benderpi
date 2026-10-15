@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-09-30
+Last updated: 2026-10-14
 
 ---
 
@@ -10,6 +10,351 @@ Last updated: 2026-09-30
   508-2227ms (worst 4551ms) of dead air after the speaker stops, in front of the
   LLM's own 1.0-3.5s. A partial hypothesis could start the turn early. Not
   started, and not before the Halloween safety work.
+
+---
+
+## 2026-10-13/14 — the presence gate is measured, fixed and verified, but still OFF
+
+**17 days to Halloween.** The VL53L0X distance gate now works. It is not enabled.
+Enabling it is a config change, not a code change. Read "Enabling it" below before
+you touch the switch.
+
+### The finding that cost an afternoon: XSHUT must be PULSED, not driven high
+
+`digitalio` leaves a GPIO line in its last state when the process exits.
+`pinctrl get 17` read `op dh pd` with the pin still **hi** and nothing running.
+So a sensor left wedged by one process was found already-high by the next process,
+driven high again, and never reset. The VL53L0X carries no other reset.
+
+The failure looked exactly like dead hardware:
+
+1. three stale reads of 8190 mm
+2. `OSError [Errno 121]`, a bus NACK, three to five times
+3. 35 consecutive `RuntimeError: Timeout waiting for VL53L0X!`, no recovery
+
+It was deterministic. It reproduced at the identical read in three consecutive
+runs, at two different timing budgets. One low pulse restored the sensor completely.
+
+`_open_locked()` and `_reset_via_xshut()` now share `_pulse_xshut()`. The two paths
+cannot drift apart. `probe_vl53l0x.py --xshut 17` pulses too, and says so in its banner.
+
+**Diagnostic worth remembering:** when the sensor looks dead, run
+`ssh pi@BenderPi.local pinctrl get 17` with nothing running. A `hi` there means the
+line is stuck, not the sensor.
+
+### The crash that the test fixture hid
+
+`presence.py` did `import metrics`. That binds the **module**. `count()` lives on the
+`MetricsWriter` class, and the singleton is `metrics = MetricsWriter()` at
+`scripts/metrics.py:91`. Every other module does `from metrics import metrics`.
+
+So all 15 `metrics.count(...)` calls in the gate raised `AttributeError`.
+**Fail-open does not cover this.** Fail-open catches exceptions from the sensor,
+inside `distance_mm()`. This one propagated out of `available()` and would have
+taken `_halloween_loop` down on the very first open.
+
+The `gate` test fixture monkeypatched `presence.metrics`, so no test could see it.
+`TestMetricsSingletonIsImported` (5 tests) deliberately does **not** use that fixture.
+One of them walks the AST of `presence.py` and checks every `metrics.*` call names a
+real method. Verified: three of the new assertions fail against the old import.
+
+Fixed in `7898839`. **The device ran the broken version from 653c5ec until
+41bdd4f deployed on 2026-10-14.** Nothing crashed, because the gate was off.
+
+### Reach comes from the signal rate, not the timing budget
+
+The usual advice is that a longer timing budget reaches further. On this build that
+is false. Measured on-device, sensor mounted behind the left eye, walking in from
+3 m and back out. Zero errors in every run.
+
+| setting | reliable to | best read | per pass |
+|---|---|---|---|
+| 0.25 MCPS (driver default), 200 ms | 641 mm | 872 mm | 0.40 s |
+| 0.0938 MCPS, 500 ms | — | 1233 mm | 0.70 s |
+| **0.0938 MCPS, 200 ms (shipped)** | 407-1267 mm, 18 consecutive reads | **1267 mm** | **0.40 s** |
+
+500 ms bought nothing but delay. `presence_signal_rate_mcps` is the reach lever.
+The driver quantises 0.1 to 0.09375.
+
+**The noise ceiling is about 1200 mm**, from three independent numbers: an empty-field
+stray at 1220 mm, a walk maximum of 1233 mm at 500 ms, and 1267 mm at 200 ms.
+
+**Do not read the gate's read rate off the probe.** The probe's loop adds its own
+0.20 s `--interval` sleep. In the production path the gate measured **0.207 s per
+loop pass** at `presence_poll_s` 0.10, so the read itself costs about 0.11 s.
+
+### Shipped calibration
+
+```json
+"presence_sensor_enabled": false,
+"presence_xshut_gpio": 17,
+"presence_max_mm": 1000,
+"presence_clear_mm": 1400,
+"presence_min_mm": 0,
+"presence_signal_rate_mcps": 0.1,
+"presence_timing_budget_us": 200000
+```
+
+`presence_max_mm` is 1000, not the 2000 the doorstep requirement asked for. 2000 is
+not reachable on this build. The owner's own requirement made it moot: children come
+to **arm's reach, 400-600 mm**, to take candy from the chest cavity. 1000 leaves
+400 mm of margin and sits below the 1200 mm noise ceiling.
+
+`presence_min_mm` stays **0**. The crosstalk baseline passed twice: 0 of 91 in range
+at 0.25 MCPS, 0 of 135 at 0.0938 MCPS. The second run mattered. A lower signal rate
+accepts weaker echoes, so it can start accepting a mount reflection that 0.25 MCPS
+rejected. **Re-run the baseline after any change to the mounting or to the signal rate.**
+
+```bash
+venv/bin/python scripts/probe_vl53l0x.py --xshut 17 --long-range --baseline
+```
+
+**`presence_min_mm` is a FLOOR. It discards readings at or UNDER the value.** The
+probe's own MARGINAL advice was wrong until 2026-10-13: it told the owner to set this
+key to the maximum stray reading whatever the distance. For a stray at 1220 mm that
+floor would have discarded every real reading under 1220 mm, and the gate would never
+have opened. `_CROSSTALK_MAX_MM = 300` now splits near strays (the enclosure, raise
+the floor) from far ones (the noise ceiling, do NOT raise the floor).
+
+### The gate is verified end to end
+
+Verified 2026-10-13 by enabling the gate in process and calling `present()` in a loop
+at the shipped thresholds. Not simulated. The real sensor.
+
+| run | result |
+|---|---|
+| empty field, 60 s | 769 reads, 0 errors, 0 arrivals, gate shut |
+| **walk in and out** | **435 reads, 0 errors, 3 arrivals (767, 888, 848 mm), 3 departures, closest 322 mm, no flapping** |
+
+Hysteresis works. The gate stayed **OPEN** at 1047, 1170 and 1241 mm, all past the
+1000 mm entry gate. It closed two reads after the walker went out of range.
+
+**The gate closes on an out-of-range reading, not on crossing `presence_clear_mm`.**
+1400 mm is beyond what this sensor reliably sees. Do not describe 1400 as the normal
+exit path. The band still does its job, as the hysteresis readings above show.
+
+On-device log line, confirming the calibration is live:
+
+```
+Presence sensor ready at 0x29 (budget 199865.0 us, io timeout 0.80 s,
+signal rate 0.09375 MCPS, gate <= 1000 mm)
+```
+
+### Halloween mode in the Web UI
+
+The Config page now has a Normal/Halloween switch at the top (`41bdd4f`).
+
+- The switch sets `halloween_mode` **and** `presence_sensor_enabled` together.
+- **Both flags are needed.** They are independent in the code.
+  `halloween_mode` alone gives an ungated open mic: 88.6 sessions/hour, deaf 79% of
+  the time. `presence_sensor_enabled` alone is completely inert.
+  `wait_for_presence()` is called in exactly one place, `wake_converse.py:160`,
+  inside `_halloween_loop`.
+- Clearing the gate checkbox decouples them. A red panel then quotes what that costs.
+  The owner can still do it. The owner cannot do it unaware.
+- In Halloween mode the **AI Backend, Home Assistant, Vision and LED** sections hide.
+  **General, Maintenance and Watchdog stay** — speech rate and the health thresholds
+  still matter on the night.
+- `presence_*` keys are now modelled in `config_schema.py`, not passed through on
+  `extra="allow"`. `presence_clear_mm` must exceed `presence_max_mm` or the save is
+  refused with 422. Equal values would flap the mic open and shut.
+
+**Not yet seen in a browser.** The bundle builds clean and contains the new strings.
+No visual check was done. Look at it after the deploy.
+
+### Three more defects, found 2026-10-14 by actually opening the page
+
+The Halloween UI had never been looked at in a browser. It was served off-device
+with the test suite's hardware stubs (`scripts/serve_web_local.py`) and driven with
+Playwright. That took twenty minutes and found three real faults.
+
+**1. Confirming reads rendered as an empty box.** `presence_confirm_reads` was not
+in `bender_config.json`, and `GET /api/config` returns the raw file, not the merged
+effective config. Fixed by pinning `presence_confirm_reads: 2` and
+`presence_poll_s: 0.1` in `bender_config.json`.
+
+**2. A null in `bender_config.json` crashed the gate.** This is the dangerous one.
+
+- `getattr(cfg, key, default)` returns None when the attribute **exists** and holds
+  None. The default only covers a **missing** attribute.
+- `config.py`'s `_override_type_ok` accepts None for every key **by design**.
+- So `int(None)` raised `TypeError` straight out of `present()`.
+- **Fail-open does not cover that.** It catches sensor exceptions inside
+  `distance_mm()`. This propagates past it and takes `_halloween_loop` down. The
+  same shape as the `import metrics` crash, and found the same way: by running it.
+- The route in: a Svelte `type="number"` input binds an emptied box to `null`, and
+  the editor PUTs the whole blob. So clearing a box and saving was enough.
+
+Every `cfg` read in `presence.py` now goes through `presence._cfg()`. It treats None
+as unset and keeps a real `0` or `False`. 11 call sites. 9 new tests, all of which
+fail against the old code.
+
+**3. A null gate distance defeated the schema's hysteresis check.** `config_schema.py`
+refuses a save where `presence_clear_mm <= presence_max_mm`. It cannot judge a value
+it was never sent. Clear the gate-distance box, and `presence_max_mm` falls back to
+the 2000 mm code default while the shipped `presence_clear_mm` of 1400 sits **under**
+it. A child at 1800 mm is then inside the gate **and** past the release band at the
+same time, so the mic flaps open and shut on every read.
+
+`present()` now collapses an inverted band to `near_mm`, warns once, and counts
+`presence_bad_band`. 4 new tests.
+
+### And a 500 that had been there all along
+
+Every 422 from a custom validator was really a **500**, on every config key, not just
+the presence ones.
+
+A pydantic validator that raises `ValueError` leaves the exception **object** in each
+error's `ctx`. `e.errors(include_url=False)` keeps it. Starlette then cannot encode
+the `HTTPException` detail:
+
+```
+TypeError: Object of type ValueError is not JSON serializable
+```
+
+So the Config editor showed "500 Internal Server Error" and named no field, for
+`oww_threshold`, `ha_url`, `oww_model_path`, the path-injection keys and the presence
+bounds alike. The save was still refused, so nothing was ever corrupted. Only the
+diagnosis was lost.
+
+**Why it survived:** `test_config_schema.py` exercises the **model**, never the HTTP
+layer. And pydantic's own **type** errors carry no `ctx`, so a bad type returned a
+correct 422. Only a bad **value** broke.
+
+`_field_errors()` in `scripts/web/routes/config.py` now passes `include_context=False`.
+It also drops `input`, because a whole-model validator's `input` is the **entire**
+submitted body — a save carrying `ha_token` got it echoed straight back in the error
+body. `tests/test_web_config.py` covers both, through the route. 10 of the new tests
+fail against the old code.
+
+**The lesson worth keeping:** schema tests are not route tests. A validator can be
+perfect and still return the wrong status.
+
+### What the browser check actually showed
+
+All three states render correctly. Screenshots were taken of each.
+
+| state | result |
+|---|---|
+| Normal | Halloween card at the top, every section visible |
+| Halloween | AI Backend, Home Assistant, Vision and LED hidden; General, Maintenance and Watchdog kept |
+| gate cleared | red panel quoting 88.6 sessions/hour, 79%, 22-45s |
+| release under gate | inline red warning, and the save refused with the server's own message |
+
+Serve it off-device again with:
+
+```bash
+BENDER_WEB_PIN=<pin> venv/bin/python scripts/serve_web_local.py
+```
+
+That script stubs `board`, `busio`, `neopixel_spi` and the rest the way
+`tests/conftest.py` does. The dev clone has no adafruit-blinka.
+
+### Enabling it — the order matters
+
+1. Confirm the device is on `41bdd4f` or later. **Not 653c5ec.** That commit has the
+   metrics crash, so `presence_sensor_enabled: true` would take the service down.
+2. Open the Config page. Switch to Halloween. Save.
+3. Restart `bender-converse`.
+4. Watch for `Presence sensor ready` and for `presence_read_error` in the metrics.
+5. **A family test evening before any child speaks to Bender.**
+
+**Halloween mode REFUSES when `ai_local is None`.** It logs `HALLOWEEN MODE REFUSED`,
+counts `halloween_refused`, and falls back to the wake-word loop. It will not speak a
+raw error line to a child.
+
+Mind the restart budget. `StartLimitIntervalSec=300` / `StartLimitBurst=5`. Space
+restarts out, or `sudo systemctl reset-failed bender-converse` between them.
+
+### Still open
+
+- The original 3-minute D-state hang in `read_range()` is **still unexplained**. It is
+  contained, not fixed: `io_timeout_s` turns it into a counted `presence_read_error`
+  that escalates to the XSHUT power-cycle. Watch that metric once the gate is live.
+- Confirm the lug hole pitch and diameter, then set `posts = true` in
+  `hardware/vl53l0x_eye_mount.scad`.
+- Record doorstep ambience: `capture_background.py --label doorstep --hours 2`.
+- The Halloween UI has not been looked at on the DEVICE, only off-device at
+  `scripts/serve_web_local.py`. The rendering is the same build; the data is not.
+
+### The dev-clone server caused two false alarms, both mine
+
+Handing the owner a URL for `serve_web_local.py` cost an hour. Read this before
+doing it again.
+
+**It had two bugs that made it unreachable.** It bound `127.0.0.1` only, so the
+URL worked only in a browser on the same box. And it came up on port **8080**,
+not 8099: `config.py` loads `.env` at import, the dev clone's `.env` carries
+`BENDER_WEB_PORT=8080`, and the port was read AFTER importing the app, so
+`os.environ.setdefault` had already filled it in. The 8099 default never
+applied. Both fixed. The port and host are now read before the import, and
+`BENDER_WEB_HOST=0.0.0.0` opts into the LAN with loopback still the default.
+
+**Then it produced watchdog alerts for a healthy device.** Three of them,
+including an error-severity "mic likely needs a physical reseat". The giveaway
+was the path in the third: `/home/pi/projects/benderpi/logs`, the dev clone, not
+`/home/pi/bender/logs`. Cause: the test suite wrote to the repo's own
+`logs/metrics.jsonl`. It imports the real `metrics` singleton, the mic-stall
+tests emit real `wake_loop_stall_reinit` and `wake_loop_stall_exit` counts, and
+`mic_stall_reinit_threshold` is 3. Two suite runs were enough.
+
+| | dev clone | device |
+|---|---|---|
+| `wake_loop_stall_reinit`, 24h | 24 | **0** |
+| `wake_loop_stall_exit`, 24h | 24 | **0** |
+| `session_start`, all time | **0** | normal |
+| `NRestarts` | n/a | **0** |
+
+The dev clone's 48,548-line metrics file spanned 2026-05-09 to 2026-10-14 and
+held **zero** real sessions. All of it was test exhaust. It is backed up in the
+session scratchpad and moved out of `logs/`.
+
+Fix: `metrics.py` and `logger.py` both honour **`BENDER_LOG_DIR`**, and
+`conftest.py` sets it to a temp directory before anything imports them. Proven
+by byte-comparing `logs/metrics.jsonl` across a full suite run: unchanged.
+`tests/test_metrics.py::TestTheSuiteDoesNotWriteToTheRepoLogs` holds it, 4 tests,
+2 of which fail with the override removed.
+
+**And puppet mode appeared broken.** The owner clicked soundboard clips for
+several minutes and heard nothing. They were on the dev-clone server. It has no
+speaker, `pyaudio` is a stub, the 88 clips in `speech/wav/` are gitignored and
+absent, and `service_guard` shells out to `systemctl stop bender-converse` for a
+unit that is not installed. The device UI logs confirmed it: `bender-web` on the
+device had served nothing but my own curl checks, while the dev server held an
+established connection from the owner's browser. The device itself was fully
+stocked, 466 response clips and 88 originals.
+
+Fix: `serve_web_local.py` now returns **503 with a sentence** for `/api/puppet`,
+`/api/vision`, `/api/camera`, `/api/actions`, `/api/config/volume` and
+`/api/mic`. Refusing beats pretending. The startup banner says the same thing.
+
+**The rule:** the dev-clone server is for LOOKING AT PAGES. Anything that makes
+a sound, moves hardware or restarts a service belongs on the device UI, port
+8080.
+
+The third alert was true but useless, so it is gone too. `check_session_liveness`
+now says nothing where `service_liveness_unit` is not installed on the box, which
+is the guard `_probe_unit_state` has carried all along. Only an EXPLICIT "not
+installed" silences it: `_unit_is_installed()` returns True/False/None, and None
+("systemctl missing or the call failed") still alerts. Verified on the device:
+`LoadState=loaded`, so its alerting is untouched. The three pre-existing tests in
+`test_watchdog_session_liveness.py` now inject `installed_probe` — without that
+they passed on the device and failed on a dev clone, which is worse than either.
+
+### Two more defects the browser found, neither fixed
+
+- **`/api/vision/passive` does not exist.** `web/src/lib/api.js:123-125` calls
+  GET, POST and DELETE on it. Only `/api/vision/analyse` is implemented. The
+  device returns 404 too. So the Config page shows a red **"Not Found"** under
+  Vision -> Passive Mode on every load, six buttons (OFF, 15m, 30m, 1h, 3h, ∞)
+  do nothing, and `Config.svelte:33` re-polls every 60s so the error cannot
+  clear. Halloween mode hides the Vision section, so it disappears there by
+  luck. Needs a decision: implement the routes, or remove the dead control.
+- **The three UI fonts never load.** `web/src/app.css:1` imports Orbitron,
+  Rajdhani and JetBrains Mono from Google Fonts. The CSP at `app.py:47` is
+  `style-src 'self' 'unsafe-inline'`, which blocks it. Cosmetic, and present on
+  the device. Self-hosting the fonts suits the offline-first rule. Relaxing the
+  CSP to call Google from a doorstep device does not.
 
 ---
 

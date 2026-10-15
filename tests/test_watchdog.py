@@ -269,3 +269,85 @@ def test_old_corrupt_events_do_not_alert(tmp_path):
     alerts = run_checks(metrics_path=_write_metrics(tmp_path, events),
                         config={"lookback_hours": 168, "mic_stall_lookback_hours": 24})
     assert not [x for x in alerts if x.check == "mic_stream_corrupt"]
+
+
+class TestSessionLivenessIsQuietWhereTheServiceIsNotInstalled:
+    """A dev clone has no sessions by definition.
+
+    On 2026-10-14 the dev clone raised "No session_start events found in
+    /home/pi/projects/benderpi/logs" next to two mic-stall alerts the test suite
+    had manufactured, while the real device was healthy: 0 stalls, 0 restarts,
+    Result=success. Three alerts, all false. Same reasoning as
+    `_probe_unit_state`'s LoadState guard.
+    """
+
+    def test_not_installed_says_nothing(self, tmp_path):
+        from watchdog import check_session_liveness
+        alerts = check_session_liveness(
+            {}, logs_dir=str(tmp_path), installed_probe=lambda unit: False)
+        assert alerts == []
+
+    def test_installed_and_no_sessions_still_alerts(self, tmp_path):
+        from watchdog import check_session_liveness
+        alerts = check_session_liveness(
+            {}, logs_dir=str(tmp_path), installed_probe=lambda unit: True)
+        assert len(alerts) == 1
+        assert alerts[0].check == "session_liveness"
+
+    def test_cannot_tell_still_alerts(self, tmp_path):
+        """None must not buy an exemption.
+
+        `_probe_unit_state` returns None both for "not installed here" and for
+        "systemctl missing or the call failed". Treating None as not-installed
+        would quietly exempt a real device whose systemctl broke.
+        """
+        from watchdog import check_session_liveness
+        alerts = check_session_liveness(
+            {}, logs_dir=str(tmp_path), installed_probe=lambda unit: None)
+        assert len(alerts) == 1
+
+    def test_the_probe_reads_loadstate(self, monkeypatch):
+        import shutil
+        import subprocess
+        import watchdog
+
+        calls = []
+
+        class _Result:
+            stdout = "LoadState=loaded\n"
+
+        def _fake_run(cmd, **kw):
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr(shutil, "which", lambda n: "/bin/systemctl")
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        assert watchdog._unit_is_installed("bender-converse") is True
+        assert calls and "LoadState" in " ".join(calls[0])
+
+    def test_the_probe_reports_a_missing_unit(self, monkeypatch):
+        import watchdog
+
+        class _Result:
+            stdout = "LoadState=not-found\n"
+
+        import shutil
+        import subprocess
+        monkeypatch.setattr(shutil, "which", lambda n: "/bin/systemctl")
+        monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _Result())
+        assert watchdog._unit_is_installed("bender-converse") is False
+
+    def test_no_systemctl_cannot_tell(self, monkeypatch):
+        import watchdog
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda n: None)
+        assert watchdog._unit_is_installed("bender-converse") is None
+
+    def test_the_configured_unit_name_is_used(self, tmp_path):
+        from watchdog import check_session_liveness
+        seen = []
+        check_session_liveness(
+            {"service_liveness_unit": "something-else"},
+            logs_dir=str(tmp_path),
+            installed_probe=lambda unit: seen.append(unit) or False)
+        assert seen == ["something-else"]

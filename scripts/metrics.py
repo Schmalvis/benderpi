@@ -18,7 +18,19 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_PATH = os.path.join(_BASE_DIR, "logs", "metrics.jsonl")
+
+# BENDER_LOG_DIR redirects both this file and logger.py's bender.log. It exists
+# for the test suite: the suite imports the real modules and the real singleton,
+# so every `metrics.count(...)` a test triggered used to append to the DEVELOPER'S
+# OWN logs/metrics.jsonl. That is not merely untidy. The mic-stall tests write
+# `wake_loop_stall_reinit` and `wake_loop_stall_exit`, watchdog.py reads the same
+# file, and `mic_stall_reinit_threshold` is 3 -- so two suite runs raised a
+# "USB mic may be flapping/wedging" alert and an error-severity "mic likely needs
+# a physical reseat" against a device that was perfectly healthy (2026-10-14:
+# 24 of each in 24h on the dev clone, 0 on the device). A false alert on the
+# channel that reports real faults is worse than no alert.
+_LOG_DIR = os.environ.get("BENDER_LOG_DIR") or os.path.join(_BASE_DIR, "logs")
+_DEFAULT_PATH = os.path.join(_LOG_DIR, "metrics.jsonl")
 
 
 class MetricsWriter:

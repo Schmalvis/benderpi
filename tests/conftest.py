@@ -1,12 +1,31 @@
 """Shared test fixtures for BenderPi tests."""
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 
 import pytest
 import types
 
 # Ensure scripts/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+
+# Send the suite's logs and metrics somewhere disposable, BEFORE anything
+# imports metrics or logger -- both read BENDER_LOG_DIR at module scope, and
+# `metrics` is a module-level singleton, so this is the only window.
+#
+# Without it the suite appended to the repo's own logs/metrics.jsonl. The
+# mic-stall tests emit real `wake_loop_stall_reinit` and `wake_loop_stall_exit`
+# counts, watchdog.py reads that file, and `mic_stall_reinit_threshold` is 3 --
+# so running the suite twice was enough to raise "USB mic may be
+# flapping/wedging" plus an error-severity "mic likely needs a physical reseat".
+# Measured 2026-10-14: 24 of each in 24h on the dev clone, 0 on the device.
+# `setdefault`, so a developer can still point it at a real directory on purpose.
+_LOG_TMP = os.path.join(tempfile.gettempdir(), f"benderpi-test-logs-{os.getpid()}")
+os.makedirs(_LOG_TMP, exist_ok=True)
+os.environ.setdefault("BENDER_LOG_DIR", _LOG_TMP)
+atexit.register(lambda: shutil.rmtree(_LOG_TMP, ignore_errors=True))
 
 # python-dotenv is present on BenderPi but absent on some dev/CI machines.
 # wake_converse imports it at module top, so stub it if missing so the whole

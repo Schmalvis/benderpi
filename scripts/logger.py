@@ -12,7 +12,9 @@ import os
 from logging.handlers import RotatingFileHandler
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_LOG_DIR = os.path.join(_BASE_DIR, "logs")
+# BENDER_LOG_DIR: see the note in metrics.py. The two must honour the same
+# variable, or redirecting one still leaves the test suite writing the other.
+_LOG_DIR = os.environ.get("BENDER_LOG_DIR") or os.path.join(_BASE_DIR, "logs")
 _LOG_FILE = os.path.join(_LOG_DIR, "bender.log")
 _FORMAT = "%(asctime)s %(levelname)-5s [%(name)s] %(message)s"
 

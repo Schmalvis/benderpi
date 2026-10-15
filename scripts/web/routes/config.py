@@ -49,6 +49,32 @@ def _save_json_file(path: str, data: dict) -> None:
         f.write("\n")
 
 
+def _field_errors(exc: ValidationError) -> list:
+    """Per-field detail for a 422, safe to JSON-encode.
+
+    `include_context=False` is not cosmetic. A validator that raises
+    `ValueError` leaves the exception OBJECT in each error's `ctx`, and Starlette
+    JSON-encodes the detail: `TypeError: Object of type ValueError is not JSON
+    serializable`. The 422 became a **500** with no field detail at all, so every
+    custom validator in `config_schema.py` -- `oww_threshold`, `ha_url`,
+    `oww_model_path`, the presence bounds -- reported the wrong status and told
+    the Config editor nothing. Pydantic's own type errors were unaffected, which
+    is why this survived: a bad TYPE returned a correct 422, and only a bad VALUE
+    broke. Found 2026-10-14 by sending `presence_clear_mm` below
+    `presence_max_mm` against a real server.
+
+    `input` is dropped for the same reason secrets are stripped on the way IN.
+    A whole-model validator's `input` is the ENTIRE submitted body, so a save
+    that happened to carry `ha_token` or `anthropic_api_key` got them echoed
+    back in the error body, and from there into a browser console or a log. The
+    Config editor reads only `loc` and `msg` (`web/src/lib/api.js`), so nothing
+    is lost. A field validator's `loc` names the field; a model validator's
+    `loc` is legitimately empty, and api.js falls back to the message alone.
+    """
+    return [{k: v for k, v in err.items() if k != "input"}
+            for err in exc.errors(include_url=False, include_context=False)]
+
+
 @router.get("/api/config")
 async def config_get():
     return _load_json_file(_CONFIG_PATH)
@@ -59,7 +85,7 @@ async def config_put(request: Request, body: dict = Body(...)):
     try:
         clean = clean_bender_config(body)
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=e.errors(include_url=False))
+        raise HTTPException(status_code=422, detail=_field_errors(e))
     _audit.info("config.write bender_config keys=%s from %s",
                 sorted(clean.keys()), _client_ip(request))
     current = _load_json_file(_CONFIG_PATH)
@@ -90,7 +116,7 @@ async def config_watchdog_put(request: Request, body: dict = Body(...)):
     try:
         clean = clean_watchdog_config(body)
     except ValidationError as e:
-        raise HTTPException(status_code=422, detail=e.errors(include_url=False))
+        raise HTTPException(status_code=422, detail=_field_errors(e))
     _audit.info("config.write watchdog_config keys=%s from %s",
                 sorted(clean.keys()), _client_ip(request))
     current = _load_json_file(_WATCHDOG_CONFIG_PATH)

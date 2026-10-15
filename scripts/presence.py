@@ -100,10 +100,30 @@ _confirm_run = 0         # consecutive reads agreeing with the pending change
 _warned_unavailable = False
 _resets = 0              # XSHUT power-cycles used this process
 _xshut = None            # digitalio.DigitalInOut, lazily created
+_warned_bad_band = False  # hysteresis band inverted; warn once, not per read
+
+
+def _cfg(key: str, default):
+    """`cfg` value for `key`, with None treated as "not set".
+
+    `getattr(cfg, key, default)` returns None when the attribute EXISTS and
+    holds None, because the default only applies to a MISSING attribute. And
+    `config.py`'s `_override_type_ok` accepts None for every key by design, so
+    a `"presence_confirm_reads": null` in bender_config.json reaches this
+    module intact. The Config page writes exactly that if someone clears the
+    field: a Svelte `type="number"` input binds an empty box to null.
+
+    `int(None)` then raises TypeError out of `present()`. **Fail-open does not
+    cover that.** Fail-open catches exceptions from the sensor, inside
+    `distance_mm()`. A TypeError here propagates past it and takes
+    `_halloween_loop` down -- the same shape as the `import metrics` crash.
+    """
+    value = getattr(cfg, key, None)
+    return default if value is None else value
 
 
 def _enabled() -> bool:
-    return bool(getattr(cfg, "presence_sensor_enabled", False))
+    return bool(_cfg("presence_sensor_enabled", False))
 
 
 def _xshut_line():
@@ -112,7 +132,7 @@ def _xshut_line():
     Active low: drive it low to shut the sensor down, release it high to boot.
     """
     global _xshut
-    pin_no = int(getattr(cfg, "presence_xshut_gpio", 0))
+    pin_no = int(_cfg("presence_xshut_gpio", 0))
     if not pin_no:
         return None
     if _xshut is not None:
@@ -199,7 +219,7 @@ def _reset_via_xshut() -> bool:
     line = _xshut_line()
     if line is None:
         return False
-    limit = int(getattr(cfg, "presence_max_resets", 3))
+    limit = int(_cfg("presence_max_resets", 3))
     if _resets >= limit:
         log.error("Presence sensor has used all %d XSHUT resets. "
                   "Leaving the gate open for the rest of this process.", limit)
@@ -236,7 +256,7 @@ def _reset_via_xshut() -> bool:
 def _open_locked():
     """Instantiate the sensor. Caller must hold _lock. Returns None on failure."""
     global _dead
-    address = int(getattr(cfg, "presence_i2c_address", 0x29))
+    address = int(_cfg("presence_i2c_address", 0x29))
 
     # XSHUT first, before any I2C traffic. It is active low, and the breakout
     # carries no pull-up on it, so a GPIO left as an input rests on its own
@@ -276,7 +296,7 @@ def _open_locked():
 
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
-        budget = int(getattr(cfg, "presence_timing_budget_us", 200000))
+        budget = int(_cfg("presence_timing_budget_us", 200000))
         # io_timeout_s must be passed to the constructor, not set after it:
         # the constructor's own calibration uses two of the five unbounded
         # poll loops. See _io_timeout_s().
@@ -304,7 +324,7 @@ def _open_locked():
         # ST's long-range profile (AN4545) also changes the VCSEL pulse period
         # to 18/14 from 14/10. The Adafruit driver does not expose that, so
         # this is as far as the public API reaches.
-        rate = float(getattr(cfg, "presence_signal_rate_mcps", 0) or 0)
+        rate = float(_cfg("presence_signal_rate_mcps", 0) or 0)
         if rate > 0:
             sensor.signal_rate_limit = rate
         if budget:
@@ -328,7 +348,7 @@ def _open_locked():
              hex(address), getattr(sensor, "measurement_timing_budget", "?"),
              _io_timeout_s(budget),
              getattr(sensor, "signal_rate_limit", "?"),
-             int(getattr(cfg, "presence_max_mm", 2000)))
+             int(_cfg("presence_max_mm", 2000)))
     metrics.count("presence_sensor_ready", address=hex(address))
     return sensor
 
@@ -391,7 +411,7 @@ def distance_mm() -> int | None:
     # short, stable reading with nobody there, and that would latch the gate
     # OPEN forever while looking exactly like a working sensor. Set from
     # `probe_vl53l0x.py --baseline`.
-    floor = int(getattr(cfg, "presence_min_mm", 0))
+    floor = int(_cfg("presence_min_mm", 0))
     if floor and mm <= floor:
         metrics.count("presence_below_floor", mm=mm, floor=floor)
         _last_mm = None
@@ -408,10 +428,32 @@ def present() -> bool:
     `presence_clear_mm` (or out of range), so a person at the boundary does not
     flap the gate open and shut.
     """
-    global _present, _confirm_run
-    near_mm  = int(getattr(cfg, "presence_max_mm", 2000))
-    clear_mm = int(getattr(cfg, "presence_clear_mm", near_mm + 400))
-    needed   = max(1, int(getattr(cfg, "presence_confirm_reads", 2)))
+    global _present, _confirm_run, _warned_bad_band
+    near_mm  = int(_cfg("presence_max_mm", 2000))
+    clear_mm = int(_cfg("presence_clear_mm", near_mm + 400))
+    needed   = max(1, int(_cfg("presence_confirm_reads", 2)))
+
+    if clear_mm <= near_mm:
+        # Hysteresis only works one way round, and the release distance must sit
+        # ABOVE the gate distance. `config_schema.py` refuses a save that breaks
+        # that, but it cannot judge a value it was never sent: clearing the gate
+        # distance box on the Config page sends null, `presence_max_mm` falls
+        # back to the 2000 mm code default here, and the shipped
+        # `presence_clear_mm` of 1400 then sits UNDER it. A child at 1800 mm
+        # would be inside the gate and past the release band at the same time,
+        # so the mic would flap open and shut on every read.
+        #
+        # Collapsing the band is the safe degenerate case: the gate opens at or
+        # under `near_mm` and closes above it, and `presence_confirm_reads`
+        # still absorbs a reading sitting exactly on the line.
+        if not _warned_bad_band:
+            _warned_bad_band = True
+            log.warning("presence_clear_mm (%d) is not above presence_max_mm "
+                        "(%d); collapsing the hysteresis band to %d mm",
+                        clear_mm, near_mm, near_mm)
+            metrics.count("presence_bad_band", near_mm=near_mm,
+                          clear_mm=clear_mm)
+        clear_mm = near_mm
 
     mm = distance_mm()
     if _present:
@@ -443,7 +485,7 @@ def wait_for_presence(timeout_s: float) -> bool:
     """
     if not available():
         return True                      # fail open -- see DESIGN RULES 1
-    poll = max(0.02, float(getattr(cfg, "presence_poll_s", 0.1)))
+    poll = max(0.02, float(_cfg("presence_poll_s", 0.1)))
     deadline = time.monotonic() + max(0.0, timeout_s)
     while True:
         if present():
@@ -479,7 +521,8 @@ atexit.register(close)
 def _reset_for_tests() -> None:
     """Clear module state. Tests only."""
     global _sensor, _dead, _errors, _last_mm, _present, _confirm_run
-    global _warned_unavailable, _resets, _xshut
+    global _warned_unavailable, _resets, _xshut, _warned_bad_band
+    _warned_bad_band = False
     _resets = 0
     _xshut = None
     _sensor = None

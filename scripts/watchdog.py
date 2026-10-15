@@ -115,8 +115,27 @@ def _find_latest_session_start(logs_dir: str):
     return latest
 
 
-def check_session_liveness(cfg: dict, logs_dir: str | None = None) -> list:
-    """Return alerts if no session_start event in the last max_hours_without_session hours."""
+def check_session_liveness(cfg: dict, logs_dir: str | None = None,
+                           installed_probe=None) -> list:
+    """Return alerts if no session_start event in the last max_hours_without_session hours.
+
+    Says nothing on a box where the conversation service is not installed. A dev
+    clone has no sessions by definition, so the alert was pure noise there: on
+    2026-10-14 this fired "No session_start events found in
+    /home/pi/projects/benderpi/logs" on the dev clone, alongside two mic-stall
+    alerts the test suite had manufactured, while the real device was healthy.
+    Same reasoning as `_probe_unit_state`'s LoadState guard, which already
+    states it: a watchdog that cries wolf where it cannot see is worse than one
+    that stays quiet.
+
+    Only an EXPLICIT "not installed" silences it. "Cannot tell" still alerts, so
+    a device whose systemctl broke is not quietly exempted.
+
+    `installed_probe` is injectable so tests never shell out.
+    """
+    unit = cfg.get("service_liveness_unit", "bender-converse")
+    if (installed_probe or _unit_is_installed)(unit) is False:
+        return []
     max_h = float(cfg.get("max_hours_without_session", 6))
     logs_dir = logs_dir or os.path.join(_BASE_DIR, "logs")
     latest = _find_latest_session_start(logs_dir)
@@ -137,6 +156,32 @@ def check_session_liveness(cfg: dict, logs_dir: str | None = None) -> list:
                   "threshold_hours": max_h},
         )]
     return []
+
+
+def _unit_is_installed(unit: str) -> bool | None:
+    """True / False / None (cannot tell) for "is `unit` installed on this box".
+
+    Deliberately NOT _probe_unit_state's None, which conflates "not installed
+    here" with "systemctl is missing or the call failed". Suppressing an alert
+    on the second would silence a real device whose systemctl broke.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("systemctl"):
+        return None
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", unit, "-p", "LoadState"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in (out.stdout or "").splitlines():
+            if line.startswith("LoadState="):
+                return line.split("=", 1)[1].strip() == "loaded"
+    except Exception as exc:                      # pragma: no cover - defensive
+        log.debug("systemctl LoadState probe failed for %s: %s", unit, exc)
+        return None
+    return None
 
 
 def _probe_unit_state(unit: str) -> str | None:

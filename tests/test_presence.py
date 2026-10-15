@@ -779,3 +779,130 @@ class TestMetricsSingletonIsImported:
         missing = sorted(n for n in used
                          if not callable(getattr(presence.metrics, n, None)))
         assert not missing, f"presence.py calls metrics.{missing} which do not exist"
+
+
+# ---------------------------------------------------------------------------
+# A null in bender_config.json must not crash the gate
+#
+# `getattr(cfg, key, default)` returns None when the attribute EXISTS and holds
+# None -- the default only covers a MISSING attribute. `config.py`'s
+# `_override_type_ok` accepts None for every key by design, so a null in
+# bender_config.json arrives here intact, and `int(None)` raises TypeError.
+#
+# Fail-open does not cover that. It catches exceptions from the sensor, inside
+# `distance_mm()`. A TypeError from a config read propagates past it and takes
+# `_halloween_loop` down -- the same shape as the `import metrics` crash.
+#
+# The Config page can write exactly that null: a Svelte `type="number"` input
+# binds an emptied box to null, and the editor PUTs the whole blob.
+# ---------------------------------------------------------------------------
+
+class TestANullConfigValueFallsBackToTheDefault:
+
+    @pytest.mark.parametrize("key", [
+        "presence_max_mm",
+        "presence_clear_mm",
+        "presence_confirm_reads",
+        "presence_poll_s",
+        "presence_min_mm",
+        "presence_max_resets",
+        "presence_timing_budget_us",
+        "presence_i2c_address",
+        "presence_xshut_gpio",
+        "presence_signal_rate_mcps",
+    ])
+    def test_a_null_does_not_raise_out_of_the_gate(self, monkeypatch, gate, key):
+        gate.install([800, 800, 800, 800])
+        monkeypatch.setattr(presence.cfg, key, None, raising=False)
+        # The assertion is that this returns at all. A TypeError here is the bug.
+        presence.wait_for_presence(0.0)
+
+    def test_a_null_confirm_reads_still_arms_the_gate(self, monkeypatch, gate):
+        # Falls back to 2, so two agreeing reads open it.
+        monkeypatch.setattr(presence.cfg, "presence_confirm_reads", None,
+                            raising=False)
+        gate.install([800, 800])
+        assert presence.present() is False      # one read is not enough
+        assert presence.present() is True       # the second confirms
+
+    def test_a_null_gate_distance_uses_the_code_default(self, monkeypatch, gate):
+        # 2000 mm is the code default; 1500 mm is inside it, 2500 mm is not.
+        monkeypatch.setattr(presence.cfg, "presence_max_mm", None, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_clear_mm", None, raising=False)
+        gate.install([1500, 1500])
+        presence.present()
+        assert presence.present() is True
+
+    def test_a_null_sensor_enabled_reads_as_off(self, monkeypatch):
+        presence._reset_for_tests()
+        monkeypatch.setattr(presence.cfg, "presence_sensor_enabled", None,
+                            raising=False)
+        assert presence.available() is False
+        assert presence.wait_for_presence(0.0) is True      # fails open
+        presence._reset_for_tests()
+
+    def test_the_helper_keeps_a_real_zero(self):
+        # 0 is a legitimate value for presence_min_mm. `or default` would eat it.
+        class _Cfg:
+            presence_min_mm = 0
+        import unittest.mock
+        with unittest.mock.patch.object(presence, "cfg", _Cfg()):
+            assert presence._cfg("presence_min_mm", 999) == 0
+
+    def test_the_helper_keeps_a_real_false(self):
+        class _Cfg:
+            presence_sensor_enabled = False
+        import unittest.mock
+        with unittest.mock.patch.object(presence, "cfg", _Cfg()):
+            assert presence._cfg("presence_sensor_enabled", True) is False
+
+
+class TestAnInvertedHysteresisBandCannotFlapTheMic:
+    """`presence_clear_mm` must sit above `presence_max_mm`.
+
+    `config_schema.py` refuses a save that breaks it. That check cannot judge a
+    value it was never sent, and clearing the gate-distance box sends null: the
+    gate then falls back to the 2000 mm code default while the shipped
+    `presence_clear_mm` of 1400 sits under it.
+    """
+
+    def test_a_clear_under_the_gate_does_not_flap(self, monkeypatch, gate):
+        monkeypatch.setattr(presence.cfg, "presence_max_mm", 2000, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_clear_mm", 1400, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_confirm_reads", 1,
+                            raising=False)
+        # 1800 mm is inside the 2000 mm gate and past the 1400 mm release band.
+        gate.install([1800] * 6)
+        states = [presence.present() for _ in range(6)]
+        assert states == [True] * 6, f"the gate flapped: {states}"
+
+    def test_the_inverted_band_is_counted_and_warned_once(self, monkeypatch, gate):
+        monkeypatch.setattr(presence.cfg, "presence_max_mm", 2000, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_clear_mm", 1400, raising=False)
+        gate.install([1800] * 5)
+        for _ in range(5):
+            presence.present()
+        bad = [t for n, t in gate.counts if n == "presence_bad_band"]
+        assert len(bad) == 1, f"warned {len(bad)} times, want once"
+        assert bad[0] == {"near_mm": 2000, "clear_mm": 1400}
+
+    def test_a_null_gate_distance_is_the_route_that_gets_there(self, monkeypatch, gate):
+        # The real-world shape: the box was cleared, so null was saved.
+        monkeypatch.setattr(presence.cfg, "presence_max_mm", None, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_clear_mm", 1400, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_confirm_reads", 1,
+                            raising=False)
+        gate.install([1800] * 4)
+        assert [presence.present() for _ in range(4)] == [True] * 4
+
+    def test_a_correct_band_is_untouched(self, monkeypatch, gate):
+        monkeypatch.setattr(presence.cfg, "presence_max_mm", 1000, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_clear_mm", 1400, raising=False)
+        monkeypatch.setattr(presence.cfg, "presence_confirm_reads", 1,
+                            raising=False)
+        # Shipped values: open at 900, stay open at 1200, close past 1400.
+        gate.install([900, 1200, 1500])
+        assert presence.present() is True
+        assert presence.present() is True     # inside the band, still open
+        assert presence.present() is False    # past the release distance
+        assert not any(n == "presence_bad_band" for n, _ in gate.counts)
