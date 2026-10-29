@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-join WiFi if NetworkManager gave up (one-shot, run by bender-wifi-keepalive.timer)
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+# Root, because nmcli needs it to activate a system connection without polkit.
+ExecStart=/bin/bash /home/pi/bender/scripts/wifi_keepalive.sh
+# A failing association takes ~25s per attempt; nmcli -w caps the wait at 60s.
+TimeoutStartSec=90

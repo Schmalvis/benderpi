@@ -1,0 +1,11 @@
+[Unit]
+Description=Check WiFi every 2 minutes and re-join it if NetworkManager gave up
+
+[Timer]
+# 3 min lets NetworkManager's own boot attempts (~75s when they fail) finish first.
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=bender-wifi-keepalive.service
+
+[Install]
+WantedBy=timers.target

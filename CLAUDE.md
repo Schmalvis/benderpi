@@ -395,7 +395,8 @@ Important: `PYTHONUNBUFFERED=1` is set in the service so Python output appears i
 
 Other services: `bender-web` (admin UI), `bender-watchdog.timer` (health checks + HA
 alert push, every 15 min), `bender-git-pull.timer` (auto-deploy poll, every 5 min —
-see Auto-Deploy below). Unit files live in `systemd/`.
+see Auto-Deploy below), `bender-wifi-keepalive.timer` (re-joins WiFi every 2 min if
+NetworkManager gave up, see below). Unit files live in `systemd/`.
 
 ---
 
@@ -610,6 +611,16 @@ lines, tracebacks and HailoRT errors were gone by the next morning. The device n
 has `/etc/systemd/journald.conf.d/50-persistent.conf` (`Storage=persistent`,
 `SystemMaxUse=200M`). The drop-in **must sort after `40-`** or the vendor file wins.
 Not part of auto-deploy; re-apply on a fresh Pi.
+
+**WiFi on the Pi:** on 6 of 12 mornings in October 2026 the 07:00 boot never joined
+WiFi. NetworkManager timed out the association three times, failed the connection
+with reason `no-secrets`, and a no-secrets failure **blocks autoconnect for the rest
+of the day**. Signal was fine. Bender still talks offline, but the web UI (and its
+STOP button) is unreachable. `bender-wifi-keepalive.timer` runs
+`scripts/wifi_keepalive.sh` every 2 min, which runs `nmcli device connect wlan0` only
+when `wlan0` is `disconnected` or `failed`. Not part of auto-deploy. Install:
+`sudo cp systemd/bender-wifi-keepalive.* /etc/systemd/system/ && sudo systemctl
+daemon-reload && sudo systemctl enable --now bender-wifi-keepalive.timer`.
 
 **udev rules on the Pi** (also not auto-deployed; the repo copies are in `udev/`):
 `99-respeaker-xvf3800-no-autosuspend.rules` (applied 2026-07-16) and

@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-10-15
+Last updated: 2026-10-29
 
 ---
 
@@ -10,6 +10,244 @@ Last updated: 2026-10-15
   508-2227ms (worst 4551ms) of dead air after the speaker stops, in front of the
   LLM's own 1.0-3.5s. A partial hypothesis could start the turn early. Not
   started, and not before the Halloween safety work.
+
+---
+
+## 2026-10-29 — go-live check: the device was offline half the time
+
+**Two days to Halloween.** A final check of the device and the code. The code
+is ready: 1489 passed, 1 skipped; the device runs `f72ea6b` = `origin/main`,
+0 restarts, every service active. The device's network was not ready.
+
+### WiFi did not join at boot on 6 of 12 mornings
+
+18, 19, 22, 24, 25 and 27 October. Each time NetworkManager logged
+`association took too long` three times, then
+`config -> failed (reason 'no-secrets')`. A no-secrets failure **blocks
+autoconnect** until the connection is edited, so the device stayed offline
+until the 22:00 shutdown. Signal is not the cause: 82%, -34 dBm, three mesh
+APs on channel 7.
+
+Offline, Bender still talks (Halloween mode is local-only). But the web UI is
+unreachable, so there is **no STOP button and no puppet mode**. This is also
+the source of the 300 `Network is unreachable` watchdog errors in a week, the
+failed briefings, and the 2026-10-21 provisioning plan's "BenderPi is offline".
+
+**Fix: `bender-wifi-keepalive.timer`.** Every 2 minutes (first run 3 min after
+boot, so NetworkManager's own attempts finish first), `scripts/wifi_keepalive.sh`
+reads `wlan0`'s state. On `disconnected` (30) or `failed` (120) it runs
+`nmcli -w 60 device connect wlan0`, a manual activation that ignores the
+no-secrets block. Activating, unavailable and connected are left alone. It runs
+as root, restarts nothing, and names no SSID. **Not auto-deployed** (unit
+files never are); installed by hand on 2026-10-29. Remove with
+`sudo systemctl disable --now bender-wifi-keepalive.timer`.
+
+Watch it with `journalctl -u bender-wifi-keepalive.service`. Silence means
+WiFi was up. A `re-joining` line means it saved a morning.
+
+### The wake model is v0.1, not v0.3
+
+The 2026-09-30 entry below says v0.3_r35 is deployed. It ran from 11:38 to
+**20:55 on 2026-09-30**, then every boot since has loaded
+`hey_bender_v0.1.onnx`. No rollback is recorded. The likely cause is a git
+pull that overwrote the device's `bender_config.json`, before `git_pull.sh`
+learned to keep the device's copy. Halloween mode uses no wake word, so
+**leave it until November**, then
+`bash scripts/deploy_hey_bender.sh hey_bender_v0.3_r35.onnx --threshold 0.1`.
+
+### Still to do before the 31st
+
+1. **A rehearsal.** The only Halloween run (2026-10-15) was the END incident,
+   and no session of any kind has run since. Switch to Halloween, then
+   Save & Restart. Walk up to the sensor and away again. Hold a conversation,
+   send a puppet line, then press STOP and START.
+2. **`docker stop open-webui2`.** It was up again today at ~1 GB of the 4 GB.
+   `unless-stopped` keeps it down across reboots.
+3. On the morning of the 31st, open the web UI after the 07:00 boot.
+
+### Checked and fine
+
+The XVF3800 came up corrupt at every boot this week, and the REBOOT recovered
+it every time. All 21 Halloween clips are present. The presence settings match
+the shipped calibration. The device's uncommitted `bender_config.json` diff is
+number formatting only (`25` → `25.0`) from a web UI save.
+
+---
+
+## 2026-10-16 — the Hailo model zoo has nothing new for Bender, and why
+
+**Asked: have newer, faster or more appropriate models shipped that Bender could
+use? Answer: no. Change nothing before Halloween.**
+
+### The catalogue did not move
+
+The GenAI zoo's latest release is **v5.4.0, 16 Sep 2026**. The device runs
+**5.3.0** (`hailort`, `hailo-tappas-core`, `hailo-gen-ai-model-zoo`, firmware
+5.3.0, HAILO10H). Diffed `docs/MODELS.rst` between the two tags rather than
+trusting the release page, which renders no notes:
+
+    only in v5.4.0:  Qwen3-VL-2B-vision-hailo8.hef
+    only in v5.3.0:  (nothing)
+
+One addition, and it is a **Hailo-8** build of a vision encoder. This board is a
+Hailo-10H. **v5.4.0 adds literally zero models for BenderPi.** Everything else
+in the diff is the download URL moving from `/v5.3.0/` to `/v5.4.0/`.
+
+The classic (non-GenAI) zoo's v5.4.0 added no models at all, only DFC tooling.
+Its recent additions are YOLO26, YOLOv11-obb, PaddleOCR-v5 and StereoNet. None
+of them do anything Bender needs.
+
+The whole GenAI catalogue is 12 models plus 4 vision encoders. Eleven of the
+twelve run on 5.3.0. **Qwen3-VL-2B-Instruct is the only one that needs
+`> 5.3.0`**, so it is the only reason an upgrade would exist — and it is slower
+than the Qwen2-VL already on disk (4.74 vs 7.04 TPS, TTFT 1.47 vs 1.02 s).
+
+### Vendor figures, and the two that look like upgrades
+
+| Model | TPS | TTFT s | Load s | Verdict for Bender |
+|---|---|---|---|---|
+| **Qwen2.5-1.5B** (shipped) | 7.35 | 0.37 | 5.17 | the incumbent |
+| Llama3.2-1B | **9.89** | 0.35 | 3.47 | only genuinely faster LLM — tested below |
+| Qwen2-1.5B | 8.06 | 0.32 | 3.66 | older generation, ~10% faster |
+| Qwen2.5-Coder-1.5B | 8.13 | 0.32 | 4.75 | coding model, wrong job |
+| Qwen2-1.5B-Function-Calling | 6.69 | 0.40 | 7.59 | slower, 2.99 GB; HA already works on regex |
+| DeepSeek-R1-Distill-Qwen-1.5B | 7.96 | 0.73 | 4.99 | a reasoner at a doorstep, no |
+| **Qwen3-1.7B** | **4.78** | 0.62 | 6.75 | newest Qwen, **35% SLOWER**. No |
+| Whisper-Small (shipped) | 10.61 | — | 3.39 | the incumbent |
+| Whisper-Base / Tiny | 25.3 / 48.1 | — | 1.34 / 0.64 | pointless, see below |
+
+**Swapping Whisper saves nothing.** Measured on the device: `stt_transcribe`
+runs **446-1585 ms**, while `stt_record` runs **2.6-15.1 s**. The capture
+dominates by an order of magnitude. Whisper-Base would save a few hundred
+milliseconds of a 4-16 s path, and cost accuracy on children in costume in the
+dark. `Whisper-Base.hef` is already on disk if anyone wants to try it.
+
+**There is no TTS model in the zoo.** Piper stays on the CPU.
+
+### Llama3.2-1B measured on this device, then rejected
+
+Pulled it through hailo-ollama (blob 1.40 GB, vs 2.46 GB for Qwen2.5) and ran
+both models against the **real** `HALLOWEEN_SYSTEM_PROMPT` with
+`bender-converse` stopped. Five child-at-the-door prompts each.
+
+| Model | measured tok/s | range |
+|---|---|---|
+| qwen2.5:1.5b | **6.09** | 4.74-6.95 |
+| llama3.2:1b | **8.63** | 6.90-9.31 |
+
+So the vendor ranking holds: Llama3.2-1B is about **42% faster** here. The
+vendor absolute numbers run ~5-10% optimistic.
+
+**It is still the wrong model, and the transcript says why.** Llama3.2-1B broke
+the Halloween rules in ways Qwen2.5 did not:
+
+- **`*grumble gruff*`, `*scoff*`, `*hmph*`, `*scowl*`, `*hands over a handful of
+  candy*`** — asterisk stage directions on most replies. Piper reads those out
+  character by character.
+- **"You wanna go inside?"** — directly breaks *never tell them to go anywhere
+  away from the door*.
+- **"I'll even let you have it if you promise not to tell any of your friends
+  about me."** — asking a child to keep a secret. This is the worst sentence any
+  model produced today.
+
+Qwen2.5-1.5B broke rules too (it insulted a costume, said "it's not like we're
+gonna eat you", and emitted a `(sneezes)` stage direction), but it produced
+nothing in the child-safety class above.
+
+**Caveat, stated plainly:** this was the raw model through hailo-ollama at its
+own default sampling. It bypassed every guard the live path has —
+`ai_hailo_max_tokens` 80, `ai_max_sentences` 3, `_FORMAT_BREAK_RE`, the
+control-token derail check, the first-sentence quality gate and cloud
+escalation. It is a like-for-like comparison of two models, **not** a prediction
+of what Bender says at the door.
+
+### Swapping the LLM is not a config change
+
+Both HEF paths are hardcoded module constants, not config keys:
+
+- `scripts/stt.py:44` — `WHISPER_HEF = ".../Whisper-Small.hef"`
+- `scripts/ai_local.py:82` — `_HAILO_HEF = ".../Qwen2.5-1.5B-Instruct.hef"`
+
+Worse, the decode loop is Qwen-specific. `_IM_END = "<|im_end|>"`
+(`ai_local.py:93`) is the clean-finish marker, and `ai_local.py:658` treats any
+**other** `<|...` token as a derail: drop the sentence, clear the context,
+escalate to cloud on sentence 1. Llama3.2 ends its turns with `<|eot_id|>`. So
+pointing `_HAILO_HEF` at a Llama HEF would make **every reply look derailed**
+and escalate to the Claude API. Any model swap needs `_IM_END`, the markers and
+the tests moved with it. Add a `hailo_llm_hef` config key first if this is ever
+revisited.
+
+### NEW: why Open WebUI cannot chat while Bender runs, and the group id
+
+Open item from 2026-10-15, now answered, and the first error was not the
+expected one.
+
+1. **Without a matching VDevice group, hailo-ollama cannot get the chip at all:**
+   `HAILO_OUT_OF_PHYSICAL_DEVICES(74)` — *"not enough free devices. requested: 1,
+   found: 0"*. It never reaches the model.
+2. `hailo-ollama` reads **`HAILO_OLLAMA_VDEVICE_GROUP_ID`** (found in the
+   binary's strings, beside *"Using VDevice group_id: {}"*). `bender-converse`
+   uses group `SHARED` (`hailo_hub.py:102-131`). Set the two to match and
+   **cross-process sharing works on the Hailo-10H with no `hailort_service`
+   installed** — there is no such binary or unit on this box.
+3. The failure then moves to the real wall:
+   **`HAILO_INVALID_OPERATION(6)` — "Failed to acquire KV-Cache. KV-Cache is
+   already in use by another model."** The same singleton that keeps the VLM off.
+
+So nothing makes Open WebUI work while Bender runs. **Stop `bender-converse`
+first** — the sidebar's **STOP BENDER** button does exactly that, then
+**START BENDER** brings him back in ~23 s. That is the model-trial workflow.
+
+Written as `/etc/systemd/system/hailo-ollama.service.d/10-shared-group.conf` on
+the device, with the finding in its comments. It does not grant coexistence. It
+makes the error tell the truth instead of blaming the device count.
+**Not auto-deployed; re-apply on a fresh Pi.**
+
+### NEW: hailo-ollama 500s on any system message containing a NEWLINE
+
+Cost an hour, so it is written down. `POST /api/chat` answers **500 /
+`HAILO_INTERNAL_FAILURE(8)` "Failed to generate"** in about 10 ms, without
+touching the chip, when the system message is multi-line. Bisected on-device:
+
+- filler system prompts of 50, 100, 200, 400, 600, 800, 1000, 1200 and **1600**
+  characters: **all OK**. So it is not length.
+- the real Halloween prompt at 300, 600 and 1200 characters: **all FAIL**.
+- the same prompt with double quotes removed: **FAIL**.
+- the same prompt with **newlines collapsed to spaces**: **OK**.
+
+Second quirk, found on the way: **a system message on a model that is not yet
+loaded always 500s**, with no load attempt. Send one user-only request first.
+
+Both matter for Open WebUI, which sends multi-line system prompts by default.
+
+### Device state after this session
+
+- `bender-converse` stopped and started 6 times for the benchmarks. Ends
+  `active`/`running`, `NRestarts=0`, `Result=success`.
+- The STOP button's own data source verified through the real web API on the
+  device: `GET /api/actions/service-status` returns
+  `{"running":true,"uptime":"Fri 2026-10-16 15:06:05 BST"}`. The served bundle
+  is `index-N4uht8aP.js` and contains `STOP BENDER`, `START BENDER` and
+  `BENDER ?`. `POST /api/actions/toggle-mode` is in the device's OpenAPI.
+- `f72ea6b` deployed at the 07:00 boot. No `.git_pull_bad_sha`.
+- `llama3.2:1b` left on the device (1.40 GB) for future trials. Delete with
+  `curl -X DELETE .../api/delete` if the disk is ever wanted back. 72 G free.
+- Open WebUI's admin account **has been claimed** — `enable_signup: false`,
+  `auth: true`, no `onboarding` flag. That 2026-10-15 exposure is closed.
+- Still true: `docker stop open-webui2` before Halloween night. Separately, the
+  **CPU** `ollama` on 11434 was holding `qwen2.5:1.5b` at **1.1 GB** today, and
+  swap had reached 720 MB of 2047 MB.
+- `hailo-ollama` binds `0.0.0.0:8000` with no auth, so any LAN or tailnet host
+  can try to take the chip. It cannot succeed while Bender holds the KV-Cache.
+  Binding it to `127.0.0.1` in `/etc/xdg/hailo-ollama/hailo-ollama.json` costs
+  nothing — Open WebUI uses `--network=host`. Not done; not asked for.
+
+### Verdict
+
+Nothing in the zoo is worth deploying, and **5.4.0 is worth skipping**: it adds
+one Hailo-8 file, and upgrading HailoRT 15 days before Halloween risks a working
+stack for nothing. Revisit after 31 October, starting with a `hailo_llm_hef`
+config key so a trial does not need a code edit.
 
 ---
 
