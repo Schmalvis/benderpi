@@ -39,6 +39,11 @@ _CLIP_LABELS_PATH = os.path.join(_BASE_DIR, "speech", "clip_labels.json")
 _camera_available_cache: tuple | None = None
 _CAMERA_CACHE_TTL = 10.0
 
+#: Generation of the newest Hear Room stream. A new stream bumps it and any
+#: older one ends at its next chunk, so a forgotten tab can never lock out the
+#: operator's next press. One event loop, so a plain int is enough.
+_mic_generation = 0
+
 router = APIRouter()
 
 
@@ -369,56 +374,78 @@ async def puppet_mic_ws(websocket: WebSocket):
     Auth is a short-lived stream token in the ``token`` query param, validated
     once at connection open (never per-frame).
 
-    ``arecord -D default`` opens the same capture device the live wake loop is
-    reading, so this holds the process-wide service guard for the whole stream
-    (stopping bender-converse) — otherwise two readers contend for the single
-    device. The stream is bounded by a wall-clock cap and a per-send timeout so
-    a backgrounded tab that stops reading gets cut off instead of pinning
-    ``arecord`` (and the mic) indefinitely."""
+    **It does not stop bender-converse.** ``default`` capture is ``mic_shared``,
+    an ALSA dsnoop on the XVF3800, so this reader and the wake loop share it.
+    Verified on-device 2026-10-29: a 3 s ``arecord -D default`` with the service
+    running read live audio (RMS 534, 0.1% zeros) and the service logged no
+    stall. The stream used to hold the service guard for its whole life, and on
+    2026-10-29 that went wrong: the page stopped playing after a second or two
+    without closing the socket, so the server streamed the full 120 s cap with
+    Bender stopped, and every puppet speak, Puppet Mode press and Hear Room
+    retry in those two minutes was refused (409/403). Listening must not make
+    Bender deaf, and it must not lock out typed replies.
+
+    One stream at a time, and the NEWEST wins: opening a stream ends any older
+    one. The stream is bounded by a wall-clock cap and a per-send timeout so a
+    backgrounded tab that stops reading gets cut off instead of pinning
+    ``arecord``."""
+    global _mic_generation
     if not await require_stream_token_ws(websocket):
         return
-
-    # Acquire the guard before accepting — if a puppet clip is playing, fail the
-    # handshake fast rather than fighting over the device. Hold the same context
-    # manager object so we can release it (restart bender-converse) on close.
-    _lease_cm = service_lease()
-    try:
-        await asyncio.to_thread(_lease_cm.__enter__)
-    except ServiceBusy:
-        await websocket.close(code=4009)
-        return
+    _mic_generation += 1
+    my_gen = _mic_generation
 
     CHUNK = 4096
-    max_s = float(getattr(cfg, "web_mic_max_s", 120.0))
+    max_s = float(getattr(cfg, "web_mic_max_s", 1800.0))
     proc = None
+    reason = "unknown"
     try:
-        # accept() lives inside this try/finally too — if it raises (e.g. the
-        # client disconnected between the token check and here), the lease
-        # must still be released in the finally below rather than stranded.
         await websocket.accept()
         _audit.info("puppet.mic_stream opened from %s", _client_ip(websocket))
         deadline = time.monotonic() + max_s if max_s > 0 else None
         proc = await asyncio.create_subprocess_exec(
-            "arecord", "-D", "default", "-f", "S16_LE", "-r", "16000", "-c", "1", "-",
+            "arecord", "-q", "-D", "default", "-f", "S16_LE", "-r", "16000", "-c", "1", "-",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        carry = b""
         while True:
             if deadline is not None and time.monotonic() >= deadline:
+                reason = "time cap"
+                break
+            if my_gen != _mic_generation:
+                reason = "replaced by a newer stream"
                 break
             chunk = await asyncio.wait_for(proc.stdout.read(CHUNK), timeout=5.0)
             if not chunk:
+                reason = "arecord ended"
                 break
+            # The page reads each message as Int16Array, which throws on an
+            # odd byte count, so never split a sample across two messages.
+            chunk = carry + chunk
+            if len(chunk) % 2:
+                chunk, carry = chunk[:-1], chunk[-1:]
+            else:
+                carry = b""
             # Cut a stalled reader off instead of blocking here forever.
             await asyncio.wait_for(websocket.send_bytes(chunk), timeout=5.0)
-    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
-        pass
+    except WebSocketDisconnect:
+        reason = "browser closed"
+    except asyncio.TimeoutError:
+        reason = "timeout"
+    except Exception as exc:
+        reason = f"error: {exc!r}"
     finally:
+        rc = proc.returncode if proc else None
         if proc and proc.returncode is None:
             proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 proc.kill()
-        # Release the guard (restarts bender-converse) off the event loop.
-        await asyncio.to_thread(_lease_cm.__exit__, None, None, None)
+        log.info("mic stream closed: %s (arecord rc=%s)", reason, rc)
+        if reason != "browser closed":
+            try:
+                await websocket.close()
+            except Exception:
+                pass

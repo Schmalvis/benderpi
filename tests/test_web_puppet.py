@@ -271,3 +271,98 @@ def test_camera_status_reports_vision_disabled(monkeypatch):
     body = resp.json()
     assert body["available"] is True          # the stream still works
     assert body["vision_enabled"] is False    # the description does not
+
+
+# ---------------------------------------------------------------------------
+# Hear Room (/ws/puppet/mic)
+#
+# 2026-10-29: the stream held the service guard for its whole life. The page
+# fell quiet after a second or two without closing the socket, so the server
+# streamed the full 120 s cap with bender-converse STOPPED, and every puppet
+# speak, Puppet Mode press and Hear Room retry in those two minutes was
+# refused. The mic is an ALSA dsnoop, so the stream now shares it instead.
+# ---------------------------------------------------------------------------
+
+class _FakeStdout:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read(self, n):
+        import asyncio
+        await asyncio.sleep(0)
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class _FakeProc:
+    def __init__(self, chunks):
+        self.stdout = _FakeStdout(chunks)
+        self.returncode = None
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
+
+
+def _mic_url():
+    from web.auth import issue_stream_token
+    return f"/ws/puppet/mic?token={issue_stream_token()}"
+
+
+def _fake_arecord(chunks):
+    async def _exec(*args, **kwargs):
+        _fake_arecord.args = args
+        return _FakeProc(chunks)
+    return _exec
+
+
+def test_hear_room_does_not_stop_bender():
+    client = get_client()
+    import web.routes.puppet as puppet
+    with patch.object(puppet, "service_lease", side_effect=AssertionError("must not take the guard")), \
+         patch("subprocess.run", side_effect=AssertionError("must not call systemctl")), \
+         patch("asyncio.create_subprocess_exec", _fake_arecord([b"\x01\x00" * 8])):
+        with client.websocket_connect(_mic_url()) as ws:
+            assert ws.receive_bytes() == b"\x01\x00" * 8
+    assert "default" in _fake_arecord.args
+
+
+def test_hear_room_never_splits_a_sample():
+    client = get_client()
+    with patch("asyncio.create_subprocess_exec", _fake_arecord([b"\x01\x02\x03", b"\x04\x05"])):
+        with client.websocket_connect(_mic_url()) as ws:
+            first = ws.receive_bytes()
+            second = ws.receive_bytes()
+    assert first == b"\x01\x02"
+    assert second == b"\x03\x04"
+    assert len(first) % 2 == 0 and len(second) % 2 == 0
+
+
+def test_a_newer_hear_room_stream_replaces_the_old_one():
+    import web.routes.puppet as puppet
+    client = get_client()
+    endless = [b"\x00\x00"] * 10_000
+    with patch("asyncio.create_subprocess_exec", _fake_arecord(endless)):
+        with client.websocket_connect(_mic_url()) as old:
+            old.receive_bytes()
+            puppet._mic_generation += 1          # what a second press does
+            from starlette.websockets import WebSocketDisconnect
+            import pytest
+            with pytest.raises(WebSocketDisconnect):
+                for _ in range(10_000):
+                    old.receive_bytes()
+
+
+def test_volume_uses_the_card_name_not_a_number():
+    client = get_client()
+    mock_result = type("R", (), {"returncode": 0, "stdout": "  Mono: Playback 120 [94%] [0.00dB] [on]"})()
+    with patch("subprocess.run", return_value=mock_result) as run:
+        assert client.get("/api/config/volume", headers=auth()).status_code == 200
+        assert client.post("/api/config/volume", json={"level": 60}, headers=auth()).status_code == 200
+    for call in run.call_args_list:
+        cmd = call.args[0]
+        assert cmd[:3] == ["amixer", "-c", "seeed2micvoicec"], cmd

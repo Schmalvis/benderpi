@@ -13,6 +13,42 @@ Last updated: 2026-10-29
 
 ---
 
+## 2026-10-29 (evening) — Hear Room made Bender deaf and blocked typed replies
+
+**Reported:** in puppet mode, Hear Room "lasted a second or two before failing",
+then typed text "hit an error". Chrome on a laptop in the same room.
+
+**Found in the journal (19:25-19:27):** Hear Room stopped `bender-converse` at
+19:25:11 and opened the stream at 19:25:14. The server then streamed for the full
+120 s cap (`bender-converse` restarted at 19:27:15 = open + 120 s), so `arecord`
+worked; the page stopped playing but never closed its socket. While that stream
+held the service guard: three Hear Room retries got 403, two Puppet Mode presses
+got 409, and two typed speaks got 409 ("Bender is already speaking"). Bender was
+deaf for 2 min 11 s. Separately, `GET /api/config/volume` has returned 500 on every
+call: the route said ALSA card 2, which is now the XVF3800; the WM8960 is card 3.
+
+**Fixed:**
+- Hear Room no longer takes the service guard or stops Bender. The mic is a dsnoop
+  (`mic_shared`), verified shareable on-device. Newest stream replaces any older
+  one; cap raised to 1800 s; close reason logged (`mic stream closed: ...`).
+- The page creates and resumes the AudioContext before opening the socket, closes
+  the socket on any error or close, and stops with a toast if no audio arrives for
+  4 s. It drops a stray odd byte rather than throwing in `Int16Array`, and the
+  server never splits a sample across messages.
+- Volume uses the card name `seeed2micvoicec`.
+- Tests: 4 new in `tests/test_web_puppet.py`, all failing on the old code.
+  Full suite on the dev clone: 1559 passed, 1 skipped.
+
+**Not found:** why the page stopped playing after 1-2 s. The server cannot see it.
+Two candidates: a suspended AudioContext (now resumed and watched), or acoustic
+feedback, because the laptop was in the same room as the mic (the page now says to
+use headphones). Re-test and read `mic stream closed:` in `journalctl -u bender-web`.
+
+**Dev clone note:** the dev venv lacked `fastapi`, so `tests/test_web_*` could not
+run here. Installed the pinned `fastapi`, `uvicorn`, `python-multipart` and `httpx`.
+
+---
+
 ## 2026-10-29 — go-live check: the device was offline half the time
 
 **Two days to Halloween.** A final check of the device and the code. The code

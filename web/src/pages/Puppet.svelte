@@ -21,6 +21,8 @@
   let micWs = null;
   let audioCtx = null;
   let nextPlayTime = 0;
+  let lastChunkAt = 0;
+  let micWatch = null;
 
   // Camera streaming state
   let cameraAvailable = false;
@@ -157,8 +159,13 @@
 
   function scheduleChunk(arrayBuffer) {
     if (!audioCtx) return;
+    lastChunkAt = Date.now();
     const SAMPLE_RATE = 16000;
-    const view = new Int16Array(arrayBuffer);
+    // Int16Array throws on an odd byte count. The server keeps samples whole,
+    // but a throw here would kill playback silently, so drop a stray byte.
+    const usable = arrayBuffer.byteLength - (arrayBuffer.byteLength % 2);
+    if (usable === 0) return;
+    const view = new Int16Array(arrayBuffer, 0, usable / 2);
     const audioBuffer = audioCtx.createBuffer(1, view.length, SAMPLE_RATE);
     const channel = audioBuffer.getChannelData(0);
     for (let i = 0; i < view.length; i++) {
@@ -180,16 +187,34 @@
       toast.push('Mic stream error', 'error');
       return;
     }
+    // Create and resume the audio context BEFORE opening the socket, while
+    // the click still counts as a user gesture. A suspended context plays
+    // nothing while the socket keeps receiving.
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+    audioCtx.resume().catch(() => {});
+    nextPlayTime = 0;
+    lastChunkAt = Date.now();
+
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws/puppet/mic?token=${encodeURIComponent(streamToken)}`);
     ws.binaryType = 'arraybuffer';
 
-    audioCtx = new AudioContext({ sampleRate: 16000 });
-    nextPlayTime = 0;
-
     ws.onopen = () => {
       micActive = true;
       toast.push('Hearing room…', 'success');
+      // If audio stops arriving, or the browser stops playing it, say so and
+      // close the socket. The page used to fall quiet while the socket stayed
+      // open, so the server kept streaming to nobody.
+      micWatch = setInterval(() => {
+        if (!micWs) return;
+        if (audioCtx && audioCtx.state !== 'running') {
+          audioCtx.resume().catch(() => {});
+        }
+        if (Date.now() - lastChunkAt > 4000) {
+          toast.push('Hear Room stopped: no audio from Bender', 'error');
+          stopMic();
+        }
+      }, 1000);
     };
 
     ws.onmessage = (e) => {
@@ -198,19 +223,25 @@
 
     ws.onerror = () => {
       toast.push('Mic stream error', 'error');
-      cleanupMic();
+      stopMic();
     };
 
-    ws.onclose = () => { cleanupMic(); };
+    ws.onclose = () => {
+      if (micWs === ws) toast.push('Hear Room stopped', 'error');
+      if (micWs === ws) stopMic();
+    };
 
     micWs = ws;
   }
 
   function stopMic() {
     if (micWs) {
-      micWs.onclose = null;
-      micWs.close();
+      const ws = micWs;
       micWs = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      try { ws.close(); } catch {}
     }
     cleanupMic();
   }
@@ -218,6 +249,10 @@
   function cleanupMic() {
     micActive = false;
     nextPlayTime = 0;
+    if (micWatch) {
+      clearInterval(micWatch);
+      micWatch = null;
+    }
     if (audioCtx) {
       audioCtx.close().catch(() => {});
       audioCtx = null;
@@ -361,7 +396,7 @@
       </button>
 
       {#if micActive}
-        <span class="text-xs text-text-muted">Streaming mic</span>
+        <span class="text-xs text-text-muted">Streaming mic. Use headphones if you are in the same room as Bender.</span>
       {/if}
       {#if cameraActive}
         <span class="text-xs text-text-muted">Streaming camera</span>

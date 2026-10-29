@@ -353,7 +353,7 @@ class Config:
     # cleanly closes) cannot pin the camera / arecord — and thus the single-rate
     # mic — forever. 0 disables the cap.
     web_stream_max_s: float = 300.0   # MJPEG camera stream hard cap (5 min)
-    web_mic_max_s: float = 120.0      # ambient mic websocket hard cap (2 min)
+    web_mic_max_s: float = 1800.0     # ambient mic websocket hard cap (30 min). It no longer stops bender-converse
 
     def __init__(self, config_path: str = None, env_path: str = None):
         # 1. Load JSON config overrides

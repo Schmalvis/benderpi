@@ -128,11 +128,18 @@ async def config_watchdog_put(request: Request, body: dict = Body(...)):
     return {"status": "ok", "config": current, "restart_required": False}
 
 
+#: The WM8960 by ALSA card NAME. It was card 2 until the XVF3800 array took
+#: that number, after which every volume read and write failed with 500
+#: ("Unable to find simple control 'Speaker'"): found 2026-10-29, card 3. A
+#: card number is assigned at boot; the name is not.
+_SPEAKER_CARD = "seeed2micvoicec"
+
+
 @router.get("/api/config/volume")
 async def volume_get():
     result = await asyncio.to_thread(
         subprocess.run,
-        ["amixer", "-c", "2", "sget", "Speaker"],
+        ["amixer", "-c", _SPEAKER_CARD, "sget", "Speaker"],
         capture_output=True, text=True, timeout=5,
     )
     if result.returncode != 0:
@@ -151,7 +158,7 @@ async def volume_set(body: dict = Body(...)):
     level = max(0, min(100, int(level)))
     result = await asyncio.to_thread(
         subprocess.run,
-        ["amixer", "-c", "2", "sset", "Speaker", f"{level}%"],
+        ["amixer", "-c", _SPEAKER_CARD, "sset", "Speaker", f"{level}%"],
         capture_output=True, text=True, timeout=5,
     )
     if result.returncode != 0:

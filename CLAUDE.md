@@ -712,15 +712,27 @@ shows a dismissable banner with a "Restart Now" button when `restart_required` c
 
 ### WM8960 access serialization
 
-Puppet playback, vision auto-narrate, and the ambient mic websocket each independently
-stop/restart `bender-converse` to grab the single-rate WM8960 (see Critical audio
-constraint above) — running two concurrently used to race (a second stop/restart could
-stomp a still-playing first clip). `scripts/web/service_guard.py` centralises the
-stop → work → restart sequence behind one process-wide lock; a contending request gets
-`409 ServiceBusy` instead of racing. The camera MJPEG stream and mic websocket are also
-capped (previously unbounded) so a backgrounded browser tab that stops reading without
-closing the connection can't pin the capture device forever. Mutating web routes get
-audit logging.
+Puppet playback (only when `bender-converse` is DOWN; when it runs, playback goes over
+IPC) and vision auto-narrate stop/restart `bender-converse` to grab the single-rate WM8960
+(see Critical audio constraint above) — running two concurrently used to race (a second
+stop/restart could stomp a still-playing first clip). `scripts/web/service_guard.py`
+centralises the stop → work → restart sequence behind one process-wide lock; a contending
+request gets `409 ServiceBusy` instead of racing. Mutating web routes get audit logging.
+
+**Hear Room (`/ws/puppet/mic`) does NOT take the guard** (since 2026-10-29). Capture
+`default` is `mic_shared`, an ALSA dsnoop on the XVF3800 (defined in `~/.asoundrc` on the
+device), so the stream's `arecord` and the wake loop share the mic. Verified on-device: a
+3 s capture with the service running read live audio (RMS 534, 0.1% zeros), no stall. The
+old design held the guard for the whole stream: on 2026-10-29 the page fell quiet without
+closing its socket, the server streamed the full 120 s cap with Bender STOPPED, and every
+puppet speak (409), Puppet Mode press (409) and Hear Room retry (403) in those two minutes
+was refused. Now the newest stream replaces any older one, the cap is `web_mic_max_s`
+(1800 s), samples are never split across messages, the page closes the socket when audio
+stops arriving, and each close logs `mic stream closed: <reason>` in `bender-web`.
+
+**Volume** uses ALSA card NAME `seeed2micvoicec`, not a number. The routes said card 2,
+but the XVF3800 array took card 2 and the WM8960 is card 3, so every volume read and write
+returned 500 until 2026-10-29.
 
 ### Key files
 - `web/src/App.svelte` — root component with auth gate, sidebar, page router
