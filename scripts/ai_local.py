@@ -123,9 +123,14 @@ _STAGE_DIRECTION_RES = (
     re.compile(r"^\s*\([^)]{1,80}\)"),     # (evil laugh) Welcome!
     re.compile(r"\((?:laugh|chuckl|giggl|sigh|grin|smirk|pause|snort|bender|robot"
                r"|beat|shrug|wink|sarcas|mutter|whisper|scoff|groan|burp|clank"
-               r"|evil|cackl|rub|nod|wave|lean|look|glanc|point|eye|roll|bow"
-               r"|beep|whirr|cough|hmph|gasp|yawn|hand"
-               r"|in a |with a )[^)]{0,80}\)", re.IGNORECASE),
+               r"|evil|cackl|in a |with a )[^)]{0,80}\)", re.IGNORECASE),
+    # Whole verb forms, not prefixes: a bare `hand` or `eye` deleted
+    # "(handsome ones, like me)" and "(eyes up here, meatbag)".
+    re.compile(r"\((?:rubs|rubbing|nods|nodding|waves|waving|leans|leaning"
+               r"|looks|looking|glances|glancing|points|pointing|rolls|rolling"
+               r"|bows|bowing|beeps|beeping|whirrs|whirring|coughs|coughing"
+               r"|gasps|gasping|yawns|yawning|hmph|hands over|holds out)"
+               r"\b[^)]{0,80}\)", re.IGNORECASE),
     re.compile(r"\[[^\]]{0,40}\]"),          # [laughs], [sighs]
     re.compile(r"\*[^*\n]{1,160}\*"),        # *laughs* — the prompt bans all emotes
 )

@@ -129,11 +129,16 @@ class TestClassifierRoutes:
         ("bye", "goodbye_kid"),
         ("Bye!", "goodbye_kid"),
         ("okay bye", "goodbye_kid"),
+        ("thank you, bye", "goodbye_kid"),
+        ("Thank you. Bye.", "goodbye_kid"),
         ("bye bye Bender", "goodbye_kid"),
         ("goodbye", "goodbye_kid"),
         ("see you", "goodbye_kid"),
         ("we're going now", "goodbye_kid"),
+        ("we are going now", "goodbye_kid"),
+        ("we're going home now", "goodbye_kid"),
         ("i'm going", "goodbye_kid"),
+        ("I’m going", "goodbye_kid"),
         ("are you scary", "scary_reassure"),
         ("i'm scared", "scary_reassure"),
     ])
@@ -150,6 +155,15 @@ class TestClassifierRoutes:
         "I'm going trick or treating",
         "we're going to the next house after this one",
         "i'm going to be a vampire",
+        # Found 2026-10-29 by the regression review, when `bye` matched
+        # anywhere. A goodbye now ENDS the session, so each of these would
+        # have hung up on a child who was still there.
+        "say bye bye to Bender",
+        "don't say bye yet",
+        "are you going to say bye",
+        "can you say goodbye",
+        "what's goodbye in spanish",
+        "I gotta go to the toilet",
     ])
     def test_a_costume_or_plan_is_not_a_goodbye(self, halloween, said):
         _, sub = intent_mod.classify(said)
@@ -215,3 +229,27 @@ class TestBankContent:
         src = inspect.getsource(pre.build_index)
         for key in ('"halloween"', '"halloween_greeting"', '"halloween_fallback"'):
             assert key in src, key
+
+
+class TestTheGoodbyeReachesTheLoop:
+    """Found 2026-10-29 by the regression review. The first goodbye fix read
+    `sub_key` from the turn, but PromotedHandler never set it, so the check
+    was always False on the device. Its tests passed because they built the
+    turn result by hand. This one goes through the real responder."""
+
+    def test_a_real_goodbye_response_names_its_clip(self, halloween, tmp_path):
+        r = responder_mod.Responder()
+        sub = "speech/responses/halloween/goodbye_kid.wav"
+        (tmp_path / sub).parent.mkdir(parents=True)
+        (tmp_path / sub).write_bytes(b"")
+        for h in r._dispatch["PROMOTED"]:
+            h._base_dir = str(tmp_path)
+        resp = r.get_response("bye")
+        assert resp.sub_key == sub, resp
+
+    def test_the_session_passes_it_on(self):
+        import inspect
+        import session as session_mod
+        src = inspect.getsource(session_mod.ConversationSession.handle_turn)
+        assert "sub_key=sub_key" in src, \
+            "handle_turn's normal TurnResult must carry the clip's sub_key"

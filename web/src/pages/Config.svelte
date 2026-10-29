@@ -49,7 +49,7 @@
       toast.push('Service restarting…', 'success');
       restartRequired = false;
     } catch (e) {
-      toast.push('Restart failed', 'error');
+      toast.push('Restart failed: ' + (e.message || 'unknown error'), 'error');
     }
     restarting = false;
   }

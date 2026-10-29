@@ -38,6 +38,8 @@ class TestCleanSentence:
         # were stripped, so these reached Piper and were read out.
         ("(evil laugh) Welcome, kid!", "Welcome, kid!"),
         ("(rubs hands together) Candy time.", "Candy time."),
+        ("Candy time (hands over the bowl).", "Candy time ."),
+        ("Welcome (looks around nervously).", "Welcome ."),
         ("Welcome! *rubs his shiny metal hands together and cackles at the little kid*",
          "Welcome!"),
         ("Narrator: Bender looks down at the child.", "Bender looks down at the child."),
@@ -53,6 +55,11 @@ class TestCleanSentence:
         "I said \"no\" and I meant it.",          # inner quotes stay
         "Call it what you want (I don't care).",   # ordinary parenthetical stays
         "Two plus two (that's four) equals four.",
+        # Found 2026-10-29: the widened openers had no word boundary.
+        "Turn on the lights (handsome ones, like me).",
+        "Look at me (eyes up here, meatbag).",
+        "Nice suit (bowtie, I mean).",
+        "Ask me anything (pointless question, but go on).",
     ])
     def test_ordinary_speech_is_untouched(self, raw):
         assert _clean_sentence(raw) == raw

@@ -21,5 +21,7 @@ class PromotedHandler(Handler):
         if not os.path.isfile(wav_path):
             log.warning("PromotedHandler: missing WAV %s", wav_path)
             return None
+        # sub_key names the clip. The Halloween loop ends the session on the
+        # goodbye clip by reading it; without it that check never fired.
         return Response(text=os.path.basename(wav_path), wav_path=wav_path,
-                       method="promoted_tts", intent=intent)
+                       method="promoted_tts", intent=intent, sub_key=sub_key)

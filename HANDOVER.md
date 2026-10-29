@@ -92,6 +92,42 @@ controls), each claim verified in the code before acting. Fixed, test first:
 
 Tests: 1536 passed, 1 skipped (was 1489).
 
+### Second round: a regression review of the fixes above
+
+A fresh reviewer read only the diff. **It found that fix 3 did nothing on the
+device.** `PromotedHandler` built its `Response` without `sub_key`, so
+`TurnResult.sub_key` was always None and the goodbye check never fired. The
+tests passed because they built the turn result by hand. Lesson, again: a
+test must enter through the real producer. `TestTheGoodbyeReachesTheLoop`
+now runs the real responder, and was mutation-checked (fails with the handler
+fix reverted).
+
+Also fixed in this round:
+- **The goodbye pattern was unanchored** (`\bbye\b` anywhere), so with the
+  goodbye now ending the session, "say bye bye to Bender", "don't say bye
+  yet" and "I gotta go to the toilet" would have hung up on the child. Every
+  form is now anchored. Curly apostrophes and "we are going now" now match.
+- **A "bye" with no session open is ignored** (`halloween_goodbye_ignored`).
+  A sibling's "bye" 2s after the goodbye opened a new session: greeting,
+  then the goodbye again.
+- **The new stage-direction openers were prefixes**, so `hand` deleted
+  "(handsome ones, like me)" and `eye` deleted "(eyes up here, meatbag)".
+  They are whole verb forms now.
+- **The not-started message** blamed the start limit only. It now covers a
+  crash on start. The Config page's Restart Now banner shows the server's
+  message instead of a bare "Restart failed" (web/dist rebuilt; the bundle
+  differs by 34 bytes plus minifier renames).
+
+Reviewed and left as is:
+- The Ollama path now runs the format check before cleaning, so
+  "a**" or "*waves* *grins*" on a first sentence escalates. The Hailo path
+  has always done this; it is parity.
+- `bender-wifi-keepalive.service` runs a pi-writable, auto-deployed script as
+  root. `pi` already has `NOPASSWD: ALL` on the device, so it grants nothing
+  new.
+
+Tests: 1555 passed, 1 skipped.
+
 **Found, not fixed (operating advice instead):**
 - Opening the Puppet tab ends the live session (`Puppet.svelte` onMount).
   Open it before children arrive and stay on it.

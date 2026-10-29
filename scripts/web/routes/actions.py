@@ -83,10 +83,10 @@ async def service_status():
 # Shown on the phone when systemd will not start Bender. The usual cause is
 # StartLimitBurst: 5 starts per 300s, which a few STOP/START presses or one
 # Save & Restart after them can use up.
-_NOT_STARTED = ("Bender did not start: systemd refused, probably the start "
-                "limit (5 starts in 5 minutes). Wait 5 minutes and press START, "
-                "or on the Pi: sudo systemctl reset-failed bender-converse && "
-                "sudo systemctl start bender-converse")
+_NOT_STARTED = ("Bender did not start. Usually this is the start limit (5 "
+                "starts in 5 minutes): wait 5 minutes, then press START. If it "
+                "fails again, he is crashing on start: undo the last config "
+                "change, or on the Pi run: journalctl -u bender-converse -n 50")
 
 
 def _restart_converse_guarded() -> bool:

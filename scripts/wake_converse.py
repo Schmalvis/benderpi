@@ -40,6 +40,7 @@ import stt
 import hailo_hub
 import briefings
 import leds
+import intent
 import presence
 import vision
 from ai_response import AIResponder
@@ -93,6 +94,14 @@ _HALLOWEEN_GOODBYE_SLUG = "goodbye_kid"
 def _is_halloween_goodbye(result) -> bool:
     sub_key = getattr(result, "sub_key", None) or ""
     return os.path.basename(sub_key) == f"{_HALLOWEEN_GOODBYE_SLUG}.wav"
+
+
+def _is_goodbye_text(text: str) -> bool:
+    """True when the open mic heard a goodbye. With no session open that is a
+    child LEAVING: a sibling's "bye" 2s after the goodbye ended the session
+    used to open a new one, greeting and then saying goodbye again."""
+    _, sub_key = intent.classify(text)
+    return os.path.basename(sub_key or "") == f"{_HALLOWEEN_GOODBYE_SLUG}.wav"
 
 
 def _halloween_turn_loop(session, first_text: str, log_) -> None:
@@ -223,6 +232,11 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
                 _cleanup_abort_files()
                 continue
             if not text:
+                continue
+            if _is_goodbye_text(text):
+                log_.info("Heard (open mic) a goodbye with no session open, "
+                          "not starting one: %r", text)
+                metrics.count("halloween_goodbye_ignored")
                 continue
             log_.info("Heard (open mic): %r", text)
             session = ConversationSession(

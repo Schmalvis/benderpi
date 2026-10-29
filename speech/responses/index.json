@@ -179,7 +179,7 @@
       "label": "Why don't skeletons fight each other? They don't have the guts. I'd have come up with better, but I'm a robot, not a comedian."
     },
     {
-      "pattern": "\\b(good ?)?bye\\b|^(see ya|see you|night|good night)\\b|\\bthat'?s all\\b|\\bgotta go\\b|\\b(i'?m|we'?re) (going|off)( now| home)?$",
+      "pattern": "^((ok(ay)?|right|thanks?( you)?)[,.!]? )?(good ?)?bye( bye)?( bender)?$|^(see ya|see you|night|good night)\\b|^that['\\u2019]?s all\\b|^(i['\\u2019]?m|i am|we['\\u2019]?re|we are) (going|off)( home)?( now)?$",
       "file": "speech/responses/halloween/goodbye_kid.wav",
       "label": "See you later. Don't eat it all at once. Actually, do."
     },

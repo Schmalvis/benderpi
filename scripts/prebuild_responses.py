@@ -191,12 +191,16 @@ HALLOWEEN_RESPONSES = [
         # coffin stuffers" -- a coffin joke, to children, at night.
         "slug": "goodbye_kid",
         # The goodbye ENDS the session (wake_converse._HALLOWEEN_GOODBYE_SLUG),
-        # so this must not match a child who is still talking. A bare
-        # `i'?m going` did: "I'm going as a witch" got "See you later"
-        # (2026-10-29). "going" now counts only at the end of the utterance.
-        "pattern": r"\b(good ?)?bye\b|^(see ya|see you|night|good night)\b|"
-                   r"\bthat'?s all\b|\bgotta go\b|"
-                   r"\b(i'?m|we'?re) (going|off)( now| home)?$",
+        # so this must not match a child who is still talking. Every form is
+        # anchored: a bare `i'?m going` answered "I'm going as a witch", and an
+        # unanchored `bye` would have hung up on "say bye bye to Bender" or
+        # "don't say bye yet" (both found 2026-10-29). Apostrophes may be
+        # curly, and "I am" / "we are" come out of Whisper uncontracted.
+        "pattern": r"^((ok(ay)?|right|thanks?( you)?)[,.!]? )?(good ?)?bye( bye)?"
+                   r"( bender)?$|^(see ya|see you|night|good night)\b|"
+                   r"^that['\u2019]?s all\b|"
+                   r"^(i['\u2019]?m|i am|we['\u2019]?re|we are) (going|off)"
+                   r"( home)?( now)?$",
         "text": "See you later. Don't eat it all at once. Actually, do.",
     },
     {

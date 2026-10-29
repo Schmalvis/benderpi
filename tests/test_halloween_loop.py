@@ -555,6 +555,11 @@ class TestAGoodbyeEndsTheSession:
     second family speaking in that window joined the first child's session,
     and its on-chip context."""
 
+    # The sub_key below is exactly what the REAL responder returns for "bye":
+    # tests/test_halloween_routing.py::TestTheGoodbyeReachesTheLoop proves it.
+    # (The real handler cannot be imported here: this fixture stubs
+    # handler_base.) Both halves are needed: the first version of this fix
+    # had only this one, and PromotedHandler never set sub_key.
     def test_the_goodbye_clip_ends_the_session(self, wc):
         session = _Session(results=[types.SimpleNamespace(
             should_end=False, end_reason=None,
@@ -580,7 +585,13 @@ class TestAGoodbyeEndsTheSession:
         slugs = {e["slug"] for e in prebuild_responses.HALLOWEEN_RESPONSES}
         assert wc._HALLOWEEN_GOODBYE_SLUG in slugs
 
-    def test_the_session_reports_which_clip_played(self):
-        """TurnResult must carry the sub_key, or the loop cannot tell."""
-        import session as session_mod
-        assert "sub_key" in session_mod.TurnResult.__dataclass_fields__
+    def test_a_goodbye_does_not_open_a_new_session(self, wc, monkeypatch):
+        """A sibling's "bye" 2s after the goodbye opened a session: greeting,
+        then the goodbye again. A child who opens with "bye" is leaving."""
+        monkeypatch.setattr(wc, "intent", types.SimpleNamespace(
+            classify=lambda t: ("PROMOTED", "speech/responses/halloween/goodbye_kid.wav")
+            if "bye" in t else ("UNKNOWN", None)), raising=False)
+        session = _Session()
+        _drive(wc, ["bye", "trick or treat"], session)
+        assert session.turns == ["trick or treat"]
+        assert ("halloween_goodbye_ignored", {}) in wc._metric_counts
