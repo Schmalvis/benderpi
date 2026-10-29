@@ -347,3 +347,16 @@ class TestFailover:
         with pytest.raises(QualityCheckFailed):
             list(r.generate_stream("hi"))
         assert called == [], "quality failures escalate to cloud, not Ollama"
+
+
+class TestNullCapsReadAsUnset:
+    """A cleared Max tokens / Max sentences box saves null (2026-10-29)."""
+
+    @pytest.mark.parametrize("halloween", [True, False])
+    def test_null_caps_fall_back_to_the_defaults(self, monkeypatch, halloween):
+        monkeypatch.setattr(ai_local, "halloween_enabled", lambda: halloween)
+        for key in ("halloween_max_tokens", "ai_hailo_max_tokens",
+                    "halloween_max_sentences", "ai_max_sentences"):
+            monkeypatch.setattr(cfg, key, None, raising=False)
+        assert ai_local.active_max_tokens() == (48 if halloween else 80)
+        assert ai_local.active_max_sentences() == (2 if halloween else 3)

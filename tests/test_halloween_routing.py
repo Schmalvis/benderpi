@@ -127,6 +127,13 @@ class TestClassifierRoutes:
         ("can I have some candy", "candy_request"),
         ("thank you", "thank_you_kid"),
         ("bye", "goodbye_kid"),
+        ("Bye!", "goodbye_kid"),
+        ("okay bye", "goodbye_kid"),
+        ("bye bye Bender", "goodbye_kid"),
+        ("goodbye", "goodbye_kid"),
+        ("see you", "goodbye_kid"),
+        ("we're going now", "goodbye_kid"),
+        ("i'm going", "goodbye_kid"),
         ("are you scary", "scary_reassure"),
         ("i'm scared", "scary_reassure"),
     ])
@@ -134,6 +141,19 @@ class TestClassifierRoutes:
         name, sub = intent_mod.classify(said)
         assert name == "PROMOTED", f"{said!r} -> {name}"
         assert sub.endswith(f"{slug}.wav"), f"{said!r} -> {sub}"
+
+    @pytest.mark.parametrize("said", [
+        # Found 2026-10-29: the pattern had a bare `\\bi'?m going\\b`, so a
+        # child describing a costume got "See you later" -- and, now that
+        # the goodbye ends the session, would have been hung up on.
+        "i'm going as a witch",
+        "I'm going trick or treating",
+        "we're going to the next house after this one",
+        "i'm going to be a vampire",
+    ])
+    def test_a_costume_or_plan_is_not_a_goodbye(self, halloween, said):
+        _, sub = intent_mod.classify(said)
+        assert not (sub or "").endswith("goodbye_kid.wav"), f"{said!r} -> {sub}"
 
     def test_the_joke_request_never_reaches_the_household_clips(self, halloween):
         """One of the 8 household joke clips says "compare your lives to mine

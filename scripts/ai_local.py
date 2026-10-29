@@ -23,18 +23,25 @@ def active_system_prompt() -> str:
     return HALLOWEEN_SYSTEM_PROMPT if halloween_enabled() else BENDER_SYSTEM_PROMPT
 
 
+def _cfg(key: str, default):
+    """`cfg` value for `key`, with None treated as "not set" -- the Config
+    page binds a cleared number box to null. Same rule as `presence._cfg()`."""
+    value = getattr(cfg, key, None)
+    return default if value is None else value
+
+
 def active_max_tokens() -> int:
     """Halloween mode caps decode harder: measured 5.6-6.9 tok/s, so 48 tokens
     is ~7s of decode where 80 is ~12s, and a child is standing in the cold."""
     if halloween_enabled():
-        return int(getattr(cfg, "halloween_max_tokens", 48))
-    return int(getattr(cfg, "ai_hailo_max_tokens", 80))
+        return int(_cfg("halloween_max_tokens", 48))
+    return int(_cfg("ai_hailo_max_tokens", 80))
 
 
 def active_max_sentences() -> int:
     if halloween_enabled():
-        return int(getattr(cfg, "halloween_max_sentences", 2))
-    return int(getattr(cfg, "ai_max_sentences", 3))
+        return int(_cfg("halloween_max_sentences", 2))
+    return int(_cfg("ai_max_sentences", 3))
 from config import cfg, halloween_enabled
 from logger import get_logger
 from metrics import metrics
@@ -104,14 +111,26 @@ _PARTIAL_SPECIAL_RE = re.compile(r'<\|[^>]*$')
 #   "(Bender's casual, slightly rude way…" — meta-commentary in parentheses
 #   "\"I'm not going to be the same.\""   — the whole reply wrapped in quotes
 #                                          (the model writing a transcript)
+#
+# Widened 2026-10-29 after the pre-Halloween review got "(evil laugh) Welcome!"
+# and a 60-character *rubs his shiny metal hands together...* emote through:
+#   - ANY parenthetical that opens the sentence is a stage direction. One in
+#     the middle ("Call it what you want (I don't care).") is still speech,
+#     so mid-sentence ones need a listed opener.
+#   - emotes up to 160 characters, not 40.
+#   - "Narrator:" and "Announcer:" labels.
 _STAGE_DIRECTION_RES = (
+    re.compile(r"^\s*\([^)]{1,80}\)"),     # (evil laugh) Welcome!
     re.compile(r"\((?:laugh|chuckl|giggl|sigh|grin|smirk|pause|snort|bender|robot"
                r"|beat|shrug|wink|sarcas|mutter|whisper|scoff|groan|burp|clank"
+               r"|evil|cackl|rub|nod|wave|lean|look|glanc|point|eye|roll|bow"
+               r"|beep|whirr|cough|hmph|gasp|yawn|hand"
                r"|in a |with a )[^)]{0,80}\)", re.IGNORECASE),
     re.compile(r"\[[^\]]{0,40}\]"),          # [laughs], [sighs]
-    re.compile(r"\*[^*\n]{1,40}\*"),         # *laughs* — the prompt bans all emotes
+    re.compile(r"\*[^*\n]{1,160}\*"),        # *laughs* — the prompt bans all emotes
 )
-_SPEAKER_LABEL_RE = re.compile(r"^(?:bender|assistant|robot)\s*:\s*", re.IGNORECASE)
+_SPEAKER_LABEL_RE = re.compile(r"^(?:bender|assistant|robot|narrator|announcer)\s*:\s*",
+                               re.IGNORECASE)
 _WRAPPING_QUOTES = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
 _DOUBLE_QUOTES = '"“”'
 
@@ -736,16 +755,27 @@ class _HailoLLMResponder:
                 # Anything left when the model stopped without a final boundary.
                 if failed is None and not capped:
                     sentence, buffer = _flush_sentence(buffer, force=True)
-                    if sentence and not ended_clean and emitted > 0 \
-                            and not _ENDS_SENTENCE_RE.search(sentence.strip()):
+                    if sentence and not ended_clean \
+                            and not _ENDS_SENTENCE_RE.search(sentence.strip()) \
+                            and (emitted > 0 or halloween_enabled()
+                                 or (derailed is not None
+                                     # "<|im_" is the end marker cut by the
+                                     # cap, not the model starting a new turn
+                                     and not _IM_END.startswith(derailed.strip()))):
                         # The token cap (or a derail) cut the model off
-                        # mid-sentence. Something has already been said, so
-                        # drop the fragment rather than speak "[{'ty".
+                        # mid-sentence. Drop the fragment rather than speak
+                        # "[{'ty". When it was the ONLY sentence, the household
+                        # rule is "something beats silence" and it is kept.
+                        # Not after a derail, which escalates below, and not
+                        # at the door, where a curated fallback clip beats
+                        # "...hardly fit all of them in and the" (2026-10-29).
                         metrics.count("ai_hailo_truncated_tail",
                                       reason="derailed" if derailed else "token_cap",
                                       dropped=sentence[:120])
                         log.info("Dropped unfinished tail after %d sentence(s): %r",
                                  emitted, sentence[:120])
+                        if emitted == 0 and derailed is None:
+                            failed = ("truncated", sentence)
                         sentence = ""
                     if sentence:
                         low = sentence.lower()
@@ -1018,6 +1048,8 @@ class _OllamaResponder:
         buffer = ""
         collected: list[str] = []
         quality_checked = False
+        max_sentences = active_max_sentences()
+        stop = False
 
         try:
             with requests.post(
@@ -1044,11 +1076,37 @@ class _OllamaResponder:
                         continue
                     buffer += chunk.get("message", {}).get("content", "")
                     done = chunk.get("done", False)
+                    # Ollama's own word for "stopped at num_predict".
+                    cut = done and chunk.get("done_reason") == "length"
 
                     # Flush as many complete sentences as possible
                     while True:
                         sentence, buffer = _flush_sentence(buffer, force=done)
                         if not sentence:
+                            break
+                        # The Hailo stream's guards, which this failover path
+                        # lacked until 2026-10-29: a format break or template
+                        # text on ANY sentence, and a tail cut by the token
+                        # limit (kept only as the household's sole sentence).
+                        dropped = None
+                        low = sentence.lower()
+                        if any(m in low for m in _CONTROL_TOKEN_MARKERS):
+                            dropped = "control_tokens"
+                        elif _FORMAT_BREAK_RE.search(sentence):
+                            dropped = "format_break"
+                        elif cut and not buffer \
+                                and not _ENDS_SENTENCE_RE.search(sentence.strip()) \
+                                and (collected or halloween_enabled()):
+                            dropped = "truncated"
+                        if dropped:
+                            metrics.count("ai_ollama_dropped", reason=dropped,
+                                          after_sentences=len(collected))
+                            log.warning("Ollama sentence dropped (%s) after %d "
+                                        "spoken: %r", dropped, len(collected),
+                                        sentence[:120])
+                            if not collected:
+                                raise QualityCheckFailed(dropped, sentence)
+                            stop = True
                             break
                         sentence = _clean_sentence(sentence)
                         if not sentence:
@@ -1077,6 +1135,13 @@ class _OllamaResponder:
                                 raise QualityCheckFailed(reason, sentence)
                         collected.append(sentence)
                         yield sentence
+                        if max_sentences > 0 and len(collected) >= max_sentences:
+                            stop = True
+                            break
+                    if stop:
+                        # Leaving the `with` closes the HTTP stream, which
+                        # stops Ollama decoding. History is still committed.
+                        break
 
         except QualityCheckFailed:
             # Roll back user turn — caller will retry with cloud

@@ -55,6 +55,56 @@ learned to keep the device's copy. Halloween mode uses no wake word, so
 **leave it until November**, then
 `bash scripts/deploy_hey_bender.sh hey_bender_v0.3_r35.onnx --threshold 0.1`.
 
+### Deep check: two reviewers on the Halloween path, six fixes
+
+Two independent read-only reviews (conversation path; presence gate and web
+controls), each claim verified in the code before acting. Fixed, test first:
+
+1. **A cleared Config number box crash-looped Bender.** The Svelte box binds
+   empty to `null`, every layer accepts None, and `float(None)` ran OUTSIDE
+   `_halloween_loop`'s try. One cleared Cooldown or Max turns plus Save &
+   Restart = 5 crashes, `start-limit-hit`, Bender down, phone says "live".
+   A null `presence_wait_slice_s` was worse: caught every pass, so the mic
+   never opened (the test for it hung before the fix). `wake_converse._cfg()`
+   and `ai_local._cfg()` now treat None as unset, as `presence._cfg()` does.
+2. **START and Save & Restart reported success when systemd refused.** Both
+   routes ignored the exit code. Now: start goes through
+   `service_guard._start_converse()` (reset-failed + retry), restart falls
+   back to it, and a failure is a 503 the phone shows as an error toast. A
+   failed STOP is a 503 too, so the button cannot go green while he talks.
+3. **"Bye" did not end the session.** The goodbye is a PROMOTED clip, so the
+   mic stayed open ~12s and the next family joined the first child's session
+   and on-chip context. `TurnResult` now carries `sub_key`, and
+   `_halloween_turn_loop` ends on `goodbye_kid`. The pattern also lost a bare
+   `\bi'?m going\b`, which answered "I'm going as a witch" with "See you
+   later". `index.json` regenerated; one line changed.
+4. **A cut-off first sentence was spoken** ("...fit all of them in and the").
+   In Halloween mode it now fails the turn and plays a fallback clip. Text cut
+   by a derail token before its first full stop is never spoken in any mode.
+   The household "something beats silence" rule for the token cap is kept.
+5. **Stage directions read aloud:** "(evil laugh)" and a 60-character
+   `*rubs his hands...*` emote. Any parenthetical that OPENS a sentence is now
+   stripped (mid-sentence ones still need a listed opener, so "(I don't
+   care)" survives), emotes up to 160 characters, plus `Narrator:` labels.
+6. **The Ollama failover lacked three Hailo guards**: format/control-token
+   checks after sentence 1, the sentence cap, and the cut-tail drop
+   (`done_reason == "length"`). Added; metric `ai_ollama_dropped`.
+
+Tests: 1536 passed, 1 skipped (was 1489).
+
+**Found, not fixed (operating advice instead):**
+- Opening the Puppet tab ends the live session (`Puppet.svelte` onMount).
+  Open it before children arrive and stay on it.
+- A puppet line waits for the session to end but expires after 45s
+  (`say_request.DEFAULT_MAX_AGE_S`); a 6-turn session runs 60-90s.
+- A persistent Hailo fault makes every capture fail while the loop keeps
+  feeding the watchdog: deaf all night, no alert. `halloween_error` has no
+  watchdog check.
+- The content gate is a blocklist; "I'll steal your candy" passes it.
+- Household thinking clips play in Halloween mode (one says "Unlike you lot,
+  I actually use my brain").
+- The 12h web token: log in during the afternoon.
+
 ### Still to do before the 31st
 
 1. **A rehearsal.** The only Halloween run (2026-10-15) was the END incident,

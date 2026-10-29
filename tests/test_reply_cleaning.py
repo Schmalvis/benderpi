@@ -34,6 +34,13 @@ class TestCleanSentence:
         ("[laughs] Not a chance.", "Not a chance."),
         ("Bender: Shut up, meatbag.", "Shut up, meatbag."),
         ("(in a bored voice) Sure.", "Sure."),
+        # Found 2026-10-29 by the pre-Halloween review: only listed openers
+        # were stripped, so these reached Piper and were read out.
+        ("(evil laugh) Welcome, kid!", "Welcome, kid!"),
+        ("(rubs hands together) Candy time.", "Candy time."),
+        ("Welcome! *rubs his shiny metal hands together and cackles at the little kid*",
+         "Welcome!"),
+        ("Narrator: Bender looks down at the child.", "Bender looks down at the child."),
     ])
     def test_strips_transcript_artefacts(self, raw, expected):
         assert _clean_sentence(raw) == expected

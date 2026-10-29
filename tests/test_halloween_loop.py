@@ -506,3 +506,81 @@ class TestPresenceGate:
         word, so a distance sensor there would just stop Bender answering from
         across the room."""
         assert "presence" not in wc.wait_for_wakeword.__code__.co_names
+
+
+class TestAClearedConfigBoxDoesNotCrashTheNight:
+    """Found 2026-10-29. A Svelte `type="number"` box binds an EMPTY field to
+    null, the schema and `_override_type_ok` both accept None, and
+    `getattr(cfg, key, default)` returns that None because the attribute
+    exists. `float(None)` then ran OUTSIDE the loop's try, so clearing
+    Cooldown or Max turns and pressing Save & Restart crash-looped the
+    service into systemd's start limit while the page said "Halloween mode
+    is live". presence.py's `_cfg()` already covered its own keys.
+    """
+
+    @pytest.mark.parametrize("key", [
+        "halloween_cooldown_s", "halloween_max_turns",
+        "halloween_idle_timeout_s", "presence_wait_slice_s",
+    ])
+    def test_a_null_setting_falls_back_to_its_default(self, wc, key, monkeypatch):
+        setattr(wc.cfg, key, None)
+        errors = []
+
+        def count(name, **kw):
+            # The loop catches the TypeError and retries forever, so without
+            # this the broken case hangs instead of failing.
+            if name == "halloween_error":
+                errors.append(kw)
+                raise KeyboardInterrupt
+        monkeypatch.setattr(wc, "metrics", types.SimpleNamespace(
+            count=count, _write=lambda *a, **k: None))
+        session = _Session()
+        _drive(wc, ["trick or treat"], session)
+        assert errors == [], f"{key}=None must read as unset, not raise"
+        assert session.turns == ["trick or treat"]
+
+    def test_a_null_max_turns_still_caps_the_session(self, wc):
+        wc.cfg.halloween_max_turns = None
+        session = _Session()
+        wc.stt = types.SimpleNamespace(
+            listen_and_transcribe=lambda **k: "and another thing")
+        wc._halloween_turn_loop(session, "first", wc.log)
+        assert len(session.turns) == 6          # the code default
+        assert session.ended == ["max_turns"]
+
+
+class TestAGoodbyeEndsTheSession:
+    """Found 2026-10-29. The bank's goodbye clip is intent PROMOTED, not
+    DISMISSAL, so after "See you later" the session listened on for ~12s. A
+    second family speaking in that window joined the first child's session,
+    and its on-chip context."""
+
+    def test_the_goodbye_clip_ends_the_session(self, wc):
+        session = _Session(results=[types.SimpleNamespace(
+            should_end=False, end_reason=None,
+            sub_key="speech/responses/halloween/goodbye_kid.wav")])
+        heard = []
+        wc.stt = types.SimpleNamespace(
+            listen_and_transcribe=lambda **k: heard.append(1) or "hello")
+        wc._halloween_turn_loop(session, "bye", wc.log)
+        assert session.ended == ["goodbye"]
+        assert heard == [], "nothing may be captured after the goodbye"
+
+    def test_another_clip_does_not_end_the_session(self, wc):
+        session = _Session(results=[types.SimpleNamespace(
+            should_end=False, end_reason=None,
+            sub_key="speech/responses/halloween/nice_costume.wav")])
+        wc.stt = types.SimpleNamespace(listen_and_transcribe=lambda **k: "")
+        wc._halloween_turn_loop(session, "nice costume", wc.log)
+        assert session.ended == ["timeout"]
+
+    def test_the_slug_names_a_real_bank_entry(self, wc):
+        """A rename in prebuild_responses.py must not silently disable this."""
+        import prebuild_responses
+        slugs = {e["slug"] for e in prebuild_responses.HALLOWEEN_RESPONSES}
+        assert wc._HALLOWEEN_GOODBYE_SLUG in slugs
+
+    def test_the_session_reports_which_clip_played(self):
+        """TurnResult must carry the sub_key, or the loop cannot tell."""
+        import session as session_mod
+        assert "sub_key" in session_mod.TurnResult.__dataclass_fields__

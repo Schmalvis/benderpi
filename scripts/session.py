@@ -87,6 +87,7 @@ class TurnResult:
     method: str
     should_end: bool = False
     end_reason: str | None = None
+    sub_key: str | None = None   # which clip played, e.g. the Halloween goodbye
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +340,8 @@ class ConversationSession:
             "intent": intent, "method": resp_method,
         })
 
-        return TurnResult(text=text, intent=intent, method=resp_method)
+        return TurnResult(text=text, intent=intent, method=resp_method,
+                          sub_key=sub_key)
 
     def end(self, reason: str = "timeout") -> None:
         """Close audio, log session_end, clear AI history, clean up IPC files."""

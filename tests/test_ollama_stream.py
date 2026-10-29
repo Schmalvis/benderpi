@@ -141,3 +141,93 @@ def test_local_ai_responder_stream_hailo_yields_sentences_as_produced():
         sentences = list(r.generate_stream("Tell me something"))
 
     assert sentences == produced, "each sentence must be forwarded separately"
+
+
+# ---------------------------------------------------------------------------
+# Parity with the Hailo path (found 2026-10-29 by the pre-Halloween review).
+# The Ollama failover runs when Hailo raises before its first sentence, and it
+# skipped three guards the Hailo stream has: format/control-token checks after
+# sentence 1, the sentence cap, and dropping a tail cut by the token limit.
+# ---------------------------------------------------------------------------
+
+def _stream(ollama, tokens, done_reason="stop"):
+    lines = _make_ndjson_lines(tokens)
+    last = json.loads(lines[-1])
+    last["done_reason"] = done_reason
+    lines[-1] = json.dumps(last).encode()
+    mock_resp = MagicMock()
+    mock_resp.iter_lines.return_value = lines
+    mock_resp.__enter__ = lambda s: mock_resp
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.raise_for_status = MagicMock()
+    with patch('requests.post', return_value=mock_resp):
+        return list(ollama.generate_stream("Hi"))
+
+
+@pytest.fixture
+def mode(monkeypatch):
+    import ai_local
+    from config import cfg
+    monkeypatch.setattr(cfg, "halloween_max_sentences", 2, raising=False)
+    monkeypatch.setattr(cfg, "ai_max_sentences", 3, raising=False)
+
+    def set_mode(halloween):
+        monkeypatch.setattr(ai_local, "halloween_enabled", lambda: halloween)
+    set_mode(False)
+    return set_mode
+
+
+@pytest.mark.parametrize("bad,reason", [
+    (" ### RANSOM NOTE.", "format_break"),
+    (" [{'type': 'text', 'text': 'Swim.'}]", "format_break"),
+    (" <tool_call> stuff.", "control_tokens"),
+])
+def test_a_later_sentence_that_breaks_format_is_not_spoken(ollama, mode, bad, reason):
+    assert _stream(ollama, ["Bite me.", bad, " More."]) == ["Bite me."]
+
+
+@pytest.mark.parametrize("bad,reason", [
+    ("### RANSOM NOTE.", "format_break"),
+    ("<|im_start|>user hello.", "control_tokens"),
+])
+def test_a_first_sentence_that_breaks_format_escalates(ollama, mode, bad, reason):
+    from ai_local import QualityCheckFailed
+    with pytest.raises(QualityCheckFailed) as exc:
+        _stream(ollama, [bad, " Fine."])
+    assert exc.value.reason == reason
+
+
+def test_the_sentence_cap_applies(ollama, mode):
+    out = _stream(ollama, ["One.", " Two.", " Three.", " Four.", " Five."])
+    assert out == ["One.", "Two.", "Three."]
+    assert ollama.history[-1]["content"] == "One. Two. Three."
+
+
+def test_the_halloween_sentence_cap_applies(ollama, mode):
+    mode(True)
+    assert _stream(ollama, ["Nice costume.", " Take candy.", " Go on."]) == \
+        ["Nice costume.", "Take candy."]
+
+
+def test_a_tail_cut_by_the_token_limit_is_dropped(ollama, mode):
+    assert _stream(ollama, ["Bite me.", " And then I"], done_reason="length") == \
+        ["Bite me."]
+
+
+def test_a_cut_off_only_sentence_is_kept_in_the_household(ollama, mode):
+    assert _stream(ollama, ["Bite my shiny metal"], done_reason="length") == \
+        ["Bite my shiny metal"]
+
+
+def test_a_cut_off_only_sentence_fails_at_the_door(ollama, mode):
+    from ai_local import QualityCheckFailed
+    mode(True)
+    with pytest.raises(QualityCheckFailed) as exc:
+        _stream(ollama, ["Nice costume kid, I could hardly"], done_reason="length")
+    assert exc.value.reason == "truncated"
+
+
+def test_a_clean_finish_without_punctuation_is_spoken(ollama, mode):
+    mode(True)
+    assert _stream(ollama, ["Nice costume, kid"], done_reason="stop") == \
+        ["Nice costume, kid"]

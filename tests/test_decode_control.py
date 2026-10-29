@@ -166,6 +166,45 @@ class TestCapHitTail:
         assert list(r.generate_stream("hi")) == ["Bite me.", "Whatever"]
 
 
+class TestACutOffFirstSentenceAtTheDoor:
+    """Found 2026-10-29 by the pre-Halloween review. The household rule above
+    ("something beats silence") spoke a cut-off ONLY sentence. At the door
+    there is something better than silence: a curated fallback clip. So in
+    Halloween mode a first sentence cut by the 48-token cap fails the turn
+    instead. And in any mode, text cut off by a derail before its first full
+    stop is dropped: "Nice costume kid and" was spoken, then counted as a
+    sentence, so the derail never escalated."""
+
+    @pytest.fixture
+    def halloween(self, monkeypatch):
+        monkeypatch.setattr(ai_local, "halloween_enabled", lambda: True)
+        monkeypatch.setattr(cfg, "halloween_max_tokens", 48, raising=False)
+        monkeypatch.setattr(cfg, "halloween_max_sentences", 2, raising=False)
+
+    def test_a_cut_off_only_sentence_fails_the_turn(self, responder, halloween):
+        r, llm = responder(["Nice costume, kid, I could hardly fit all of them in and the"])
+        with pytest.raises(QualityCheckFailed) as exc:
+            list(r.generate_stream("look at my costume"))
+        assert exc.value.reason == "truncated"
+        assert llm.cleared == 1, "a failed turn must not stay in the context"
+
+    def test_a_finished_only_sentence_is_still_spoken(self, responder, halloween):
+        r, llm = responder(["Nice costume, kid."])
+        assert list(r.generate_stream("hi")) == ["Nice costume, kid."]
+
+    def test_a_clean_finish_without_punctuation_is_still_spoken(self, responder, halloween):
+        r, llm = responder(["Nice costume, kid", "<|im_end|>"])
+        assert list(r.generate_stream("hi")) == ["Nice costume, kid"]
+
+    @pytest.mark.parametrize("mode", ["halloween", "household"])
+    def test_text_cut_off_by_a_derail_is_not_spoken(self, responder, monkeypatch, mode):
+        monkeypatch.setattr(ai_local, "halloween_enabled", lambda: mode == "halloween")
+        r, llm = responder(["Nice costume kid and", "<|im_start|>", "user"])
+        with pytest.raises(QualityCheckFailed) as exc:
+            list(r.generate_stream("hi"))
+        assert exc.value.reason == "control_tokens"
+
+
 class TestFormatBreak:
     """Evening of use 2026-09-08: a JSON payload sentence was spoken before the
     template token that followed it was caught; a markdown ransom note was

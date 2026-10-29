@@ -214,3 +214,91 @@ class TestTheNotesThemselves:
         actions._clear_session_ipc()          # again, on an empty dir
         for p in paths.values():
             assert not p.exists()
+
+
+class TestARefusedStartIsReported:
+    """Found 2026-10-29. Both routes ignored systemctl's exit code, so after
+    StartLimitBurst (5 starts per 300s) the phone showed a green "Bender
+    starting" toast, or "Halloween mode is live", while Bender stayed down
+    and only SSH could recover him. service_guard._start_converse() already
+    checked the code and retried after reset-failed; these routes did not
+    use it.
+
+    Does NOT use the `ipc` fixture: that one replaces the very function under
+    test. subprocess.run is faked in both modules, so nothing reaches the real
+    systemctl.
+    """
+
+    @pytest.fixture
+    def systemctl(self, tmp_path, monkeypatch):
+        """`refuse` lists the verbs systemctl fails, the way start-limit-hit
+        does; `fail_first` fails only the first call of a verb."""
+        import types
+        from config import cfg
+        import web.routes.actions as actions
+        import web.service_guard as guard
+
+        for attr, name in (("session_file", ".session_active.json"),
+                           ("end_session_file", ".end_session"),
+                           ("abort_file", ".abort_playback")):
+            monkeypatch.setattr(cfg, attr, str(tmp_path / name))
+
+        calls, refuse, fail_first = [], set(), set()
+
+        def run(cmd, **kw):
+            calls.append(list(cmd))
+            verb = next((v for v in ("reset-failed", "restart", "start", "stop")
+                         if v in cmd), None)
+            failed = verb in refuse or verb in fail_first
+            fail_first.discard(verb)
+            return types.SimpleNamespace(
+                returncode=1 if failed else 0, stdout="",
+                stderr="Job failed: start-limit-hit" if failed else "")
+
+        monkeypatch.setattr(actions.subprocess, "run", run)
+        monkeypatch.setattr(guard.subprocess, "run", run)
+        monkeypatch.setattr(actions, "_IS_LINUX", True)
+        monkeypatch.setattr(guard, "_IS_LINUX", True)
+        return types.SimpleNamespace(calls=calls, refuse=refuse,
+                                     fail_first=fail_first)
+
+    RESET = ["sudo", "-n", "systemctl", "reset-failed", "bender-converse"]
+
+    def _post(self, path, body=None):
+        return get_client().post(path, json=body or {}, headers=headers())
+
+    def test_start_bender_reports_a_refused_start(self, systemctl):
+        systemctl.refuse.add("start")
+        resp = self._post("/api/actions/toggle-mode", {"mode": "converse"})
+        assert resp.status_code == 503, resp.text
+        assert "did not start" in resp.json()["detail"]
+        assert self.RESET in systemctl.calls, \
+            "a refused start must try reset-failed before giving up"
+
+    def test_start_bender_recovers_through_reset_failed(self, systemctl):
+        systemctl.fail_first.add("start")
+        resp = self._post("/api/actions/toggle-mode", {"mode": "converse"})
+        assert resp.status_code == 200, resp.text
+        assert self.RESET in systemctl.calls
+
+    def test_stop_bender_reports_a_failed_stop(self, systemctl):
+        """STOP is the only thing that silences Halloween mode. A stop that
+        failed must not turn the button green."""
+        systemctl.refuse.add("stop")
+        resp = self._post("/api/actions/toggle-mode", {"mode": "puppet_only"})
+        assert resp.status_code == 503, resp.text
+
+    def test_save_and_restart_reports_a_refused_restart(self, systemctl):
+        systemctl.refuse.update({"restart", "start"})
+        resp = self._post("/api/actions/restart")
+        assert resp.status_code == 503, resp.text
+        assert "did not start" in resp.json()["detail"]
+
+    def test_save_and_restart_recovers_from_the_start_limit(self, systemctl):
+        # At the start limit the first plain start is refused too; only
+        # reset-failed clears it.
+        systemctl.refuse.add("restart")
+        systemctl.fail_first.add("start")
+        resp = self._post("/api/actions/restart")
+        assert resp.status_code == 200, resp.text
+        assert self.RESET in systemctl.calls

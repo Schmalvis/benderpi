@@ -70,6 +70,31 @@ def _remove_session_file():
             pass
 
 
+def _cfg(key: str, default):
+    """`cfg` value for `key`, with None treated as "not set".
+
+    Same rule as `presence._cfg()`. The Config page binds a cleared number box
+    to null, nothing between it and here rejects None, and `getattr(cfg, key,
+    default)` returns that None because the attribute exists. `float(None)` in
+    `_halloween_loop` ran outside its try, so one cleared box crash-looped the
+    service into systemd's start limit (found 2026-10-29).
+    """
+    value = getattr(cfg, key, None)
+    return default if value is None else value
+
+
+# The bank's goodbye line ("See you later. Don't eat it all at once."). It is a
+# PROMOTED clip, not a DISMISSAL, so nothing ended the session after it: the
+# mic stayed open ~12s, and a second family speaking then joined the first
+# child's session and its on-chip context (found 2026-10-29).
+_HALLOWEEN_GOODBYE_SLUG = "goodbye_kid"
+
+
+def _is_halloween_goodbye(result) -> bool:
+    sub_key = getattr(result, "sub_key", None) or ""
+    return os.path.basename(sub_key) == f"{_HALLOWEEN_GOODBYE_SLUG}.wav"
+
+
 def _halloween_turn_loop(session, first_text: str, log_) -> None:
     """Carry on a doorstep conversation after the opening line.
 
@@ -77,14 +102,17 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
     child who has stopped talking has walked away, and a session left open
     holds the mic and the LEDs.
     """
-    max_turns = max(1, int(getattr(cfg, "halloween_max_turns", 6)))
-    idle = float(getattr(cfg, "halloween_idle_timeout_s", 6.0))
+    max_turns = max(1, int(_cfg("halloween_max_turns", 6)))
+    idle = float(_cfg("halloween_idle_timeout_s", 6.0))
     text = first_text
     for turn in range(max_turns):
         _note_progress()
         result = session.handle_turn(text)
         if result.should_end:
             session.end(result.end_reason or "end")
+            return
+        if _is_halloween_goodbye(result):
+            session.end("goodbye")
             return
         if turn == max_turns - 1:
             break
@@ -147,10 +175,10 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
     because the open mic answers whatever speech is nearby -- see the comment on
     the gate below for the measured rate. The gate fails open by design.
     """
-    cooldown = float(getattr(cfg, "halloween_cooldown_s", 2.0))
+    cooldown = float(_cfg("halloween_cooldown_s", 2.0))
     log_.warning("HALLOWEEN MODE: no wake word, open mic. Kid-safe prompt, "
                  "local-only, %d-turn sessions, %.1fs cooldown.",
-                 int(getattr(cfg, "halloween_max_turns", 6)), cooldown)
+                 int(_cfg("halloween_max_turns", 6)), cooldown)
     while True:
         session = None
         try:
@@ -173,7 +201,7 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
             # loop exactly as it was. Looping back feeds the systemd watchdog
             # and lets a puppet say-request through between passes.
             if not presence.wait_for_presence(
-                    float(getattr(cfg, "presence_wait_slice_s", 5.0))):
+                    float(_cfg("presence_wait_slice_s", 5.0))):
                 leds.set_listening(False)
                 continue
             leds.set_listening(True)

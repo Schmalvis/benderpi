@@ -190,8 +190,13 @@ HALLOWEEN_RESPONSES = [
         # Goodbyes. A third of the household dismissal clips say "so long,
         # coffin stuffers" -- a coffin joke, to children, at night.
         "slug": "goodbye_kid",
-        "pattern": r"^(bye|goodbye|see ya|see you|night|good night)\b|"
-                   r"\bthat'?s all\b|\bi'?m going\b",
+        # The goodbye ENDS the session (wake_converse._HALLOWEEN_GOODBYE_SLUG),
+        # so this must not match a child who is still talking. A bare
+        # `i'?m going` did: "I'm going as a witch" got "See you later"
+        # (2026-10-29). "going" now counts only at the end of the utterance.
+        "pattern": r"\b(good ?)?bye\b|^(see ya|see you|night|good night)\b|"
+                   r"\bthat'?s all\b|\bgotta go\b|"
+                   r"\b(i'?m|we'?re) (going|off)( now| home)?$",
         "text": "See you later. Don't eat it all at once. Actually, do.",
     },
     {

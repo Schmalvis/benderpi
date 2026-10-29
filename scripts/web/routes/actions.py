@@ -6,7 +6,7 @@ import sys
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from web.auth import require_token
-from web.service_guard import ServiceBusy, guard_lock
+from web.service_guard import ServiceBusy, _start_converse, guard_lock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
@@ -80,12 +80,32 @@ async def service_status():
         return {"running": False, "uptime": "N/A (not on Pi)"}
 
 
-def _restart_converse_guarded() -> None:
+# Shown on the phone when systemd will not start Bender. The usual cause is
+# StartLimitBurst: 5 starts per 300s, which a few STOP/START presses or one
+# Save & Restart after them can use up.
+_NOT_STARTED = ("Bender did not start: systemd refused, probably the start "
+                "limit (5 starts in 5 minutes). Wait 5 minutes and press START, "
+                "or on the Pi: sudo systemctl reset-failed bender-converse && "
+                "sudo systemctl start bender-converse")
+
+
+def _restart_converse_guarded() -> bool:
+    """Restart bender-converse. False when systemd would not start it.
+
+    A refused restart falls back to `_start_converse()`, which runs
+    reset-failed and retries. The exit code used to be ignored, so Save &
+    Restart said "Halloween mode is live" with Bender down (2026-10-29).
+    """
     with guard_lock():
-        subprocess.run(
+        rc = subprocess.run(
             ["sudo", "systemctl", "restart", "bender-converse"],
             capture_output=True, text=True, timeout=30,
         )
+        if rc.returncode == 0:
+            return True
+        log.error("bender-converse restart refused (rc=%s): %s", rc.returncode,
+                  (rc.stderr or rc.stdout).strip()[:300])
+        return _start_converse()
 
 
 @router.post("/api/actions/restart")
@@ -94,12 +114,14 @@ async def action_restart(request: Request):
     if not _IS_LINUX:
         return {"status": "ok", "message": "Simulated restart (not on Pi)"}
     try:
-        await asyncio.to_thread(_restart_converse_guarded)
-        return {"status": "ok"}
+        started = await asyncio.to_thread(_restart_converse_guarded)
     except ServiceBusy:
         raise HTTPException(status_code=409, detail="Bender is busy (puppet/vision/mic in use) — try again in a moment")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    if not started:
+        raise HTTPException(status_code=503, detail=_NOT_STARTED)
+    return {"status": "ok"}
 
 
 @router.post("/api/actions/refresh-briefings")
@@ -174,9 +196,22 @@ def _clear_session_ipc() -> None:
             log.warning("could not remove %s: %s", path, exc)
 
 
-def _toggle_mode_guarded(cmd: list[str]) -> None:
+def _toggle_mode_guarded(cmd: list[str]) -> bool:
+    """Run the stop or start. False when systemctl failed.
+
+    A start goes through `_start_converse()` for its reset-failed retry. The
+    exit code used to be ignored both ways, so a refused START showed a green
+    "Bender starting" toast with Bender down, and a failed STOP turned the
+    button green while he kept talking (2026-10-29).
+    """
     with guard_lock():
-        subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if "start" in cmd:
+            return _start_converse()
+        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if rc.returncode != 0:
+            log.error("%s failed (rc=%s): %s", " ".join(cmd), rc.returncode,
+                      (rc.stderr or rc.stdout).strip()[:300])
+        return rc.returncode == 0
 
 
 @router.post("/api/actions/toggle-mode")
@@ -218,11 +253,17 @@ async def action_toggle_mode(request: Request, body: dict = Body(...)):
         await asyncio.to_thread(_clear_session_ipc)
     try:
         cmd = ["sudo", "systemctl", "stop" if puppet else "start", "bender-converse"]
-        await asyncio.to_thread(_toggle_mode_guarded, cmd)
+        ok = await asyncio.to_thread(_toggle_mode_guarded, cmd)
     except ServiceBusy:
         raise HTTPException(status_code=409, detail="Bender is busy (puppet/vision/mic in use) — try again in a moment")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    # `is False`, not falsy: a test double that returns None means "ran".
+    if ok is False:
+        raise HTTPException(status_code=503, detail=(
+            "Bender did not stop: systemctl failed. He may still be listening. "
+            "On the Pi: sudo systemctl stop bender-converse")
+            if puppet else _NOT_STARTED)
     if puppet:
         # AFTER the stop: the process is gone, so nothing is left to consume
         # them, and session-status would otherwise report a live conversation
