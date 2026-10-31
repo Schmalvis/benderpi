@@ -198,6 +198,8 @@ Confirmed by the reviewers unless marked.
 | 8 | Config page checkbox and status line, rebuild `web/dist` | `Config.svelte`, `api.js`, `web/dist` | sonnet | Save flow has known traps |
 | 9 | Device check script, not run in this work | `scripts/probe_turn_frames.py` | sonnet | See the owner's test |
 | 10 | Docs | `CLAUDE.md`, `HANDOVER.md` | haiku | Text only |
+| 11 | Colours in See Room and the VLM, added by the owner | `web/routes/puppet.py`, `vision.py`, `vlm.py`, tests | sonnet | Two consumers treat a BGR frame as RGB |
+| 12 | White listening LED, added by the owner | `config.py`, `bender_config.json`, `leds.py`, `HANDOVER.md`, tests | sonnet | Shipped default and code default must agree |
 
 ## Constraints
 
@@ -276,6 +278,31 @@ HTTP layer, the 2026-10-14 lesson:
 Full suite stays green: `venv/bin/python -m pytest -q`. The suite must not write
 frames under the repo's `logs/`.
 
+### Tasks 11 and 12, added by the owner on 2026-10-31
+
+The owner added both during the run. They run after Task 10 and before the final
+review. They were not peer reviewed. The final review is their check.
+
+Task 11: `capture_frame()` gives BGR, and two consumers treat it as RGB.
+
+- See Room uses `camera.to_pil(frame)`, not `Image.fromarray(frame)`.
+- `vision.analyse_scene` converts before `vlm.describe_scene`, with
+  `np.asarray(camera.to_pil(frame))`. **No channel swap inside `vlm.py`.**
+  `describe_scene` documents an RGB input, and a later VLM pass over saved turn
+  frames reads RGB from JPEG files. A swap there would make those frames wrong.
+- `vlm._preprocess` keeps its code. Its docstring changes.
+- Each test fails on the old code: a pure-colour BGR frame through `analyse_scene`,
+  and through the See Room stream as a decoded JPEG.
+
+Task 12: the mouth LED is white while waiting and listening, not blue.
+
+- `led_listening_colour` is `(255, 255, 255)` in `config.py` and in the shipped
+  `bender_config.json`.
+- `led_colour`, `led_talking_colour`, `led_listening_enabled`, `led_brightness`,
+  `leds.set_level`, the off state and every web file stay as they are.
+- The device keeps its own `bender_config.json`. Merging alone leaves it blue, so
+  the owner must change that key on the device once.
+
 ### Owner's on-device test, after an approved deploy
 
 Not part of this run. `scripts/probe_turn_frames.py`, with `bender-converse` running and See Room closed:
@@ -301,7 +328,6 @@ By hand:
 
 - Any VLM run, and any change to `vlm_enabled`.
 - A web gallery, or a route that serves a frame.
-- Fixing the colours in See Room and `vlm.py`, which receive BGR. Reported to the owner separately.
 - Better night images: exposure tuning, a light, `AfMode`.
 - Face detection, person counts, or any analysis.
 - Frames for the greeting, for puppet lines, or in Puppet Mode.
