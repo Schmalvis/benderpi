@@ -269,7 +269,7 @@ See Room, through the route:
 - sweep with None or 0 uses 7 and deletes
 - sweep never raises, and runs with the feature off
 - writer, sweep and status resolve one directory
-- `status()` counts from `outcomes.jsonl`, counts `.jpg` only, and shows a stuck worker
+- `status()` counts from `outcomes.jsonl`, and shows a stuck worker
 - importing `turn_frames` does not import `picamera2`
 
 `session.py` and `wake_converse.py`, with real `ConversationSession` objects:

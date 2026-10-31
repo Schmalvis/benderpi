@@ -797,7 +797,7 @@ sudo systemctl restart bender-converse
 - Frames: `logs/frames/YYYY-MM-DD/<session_id>_tNN.jpg`, 1280x720 JPEG, written as `.tmp` then renamed. Folders 0700, files 0600. No web route serves a frame. Read them over SSH.
 - `outcomes.jsonl` beside them holds one line per valid frame note that the worker finished: `saved`, `failed`, `stale` or `dropped`.
 - The worker sweeps expired dated folders at start and hourly, with the feature on or off. Nothing sweeps while `bender-web` is down.
-- A refused camera leaks one fd per failed `Picamera2()`, so after a failed open (not `CameraBusy`) the worker waits 120 s before the next open. Frame notes in that time record `failed`.
+- A refused camera leaks one fd per failed `Picamera2()`, so after a failed open (not `CameraBusy`) the worker waits 120 s before the next open. Frame notes in that time record `failed`, unless another holder already has the camera open.
 
 **To turn it off:** clear the checkbox on the Config page and restart `bender-converse`. To delete the frames: `rm -r logs/frames/` on the device.
 

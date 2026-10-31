@@ -25,11 +25,13 @@ Open before the feature is enabled:
 2. Check the device's `python3-libcamera` build. The GIL fact was read from the binding on the dev clone only, and simulated with a fake camera. No real hang was seen.
 3. Run `scripts/probe_turn_frames.py` on the device, and the plan's listening test. If he drops out, turn it off.
 
-The device keeps its own `bender_config.json`, so pin `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_settle_s` there once.
+Pinning `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_settle_s` in the device's `bender_config.json` is optional. With the keys absent, the code defaults apply, and ticking the box writes the first one.
 
 See Room and the VLM now see the right colours (owner request, 2026-10-31). `capture_frame()` gives BGR, and both treated it as RGB. Both go through `camera.to_pil`. `vlm.py` swaps nothing, so saved JPEG frames stay valid input for a later VLM pass.
 
-The listening LED is now white (owner request, 2026-10-31). The device keeps its own `bender_config.json`, so change `led_listening_colour` there to `[255, 255, 255]` once. Merging alone leaves it blue.
+The listening LED is now white (owner request, 2026-10-31). If the device's `bender_config.json` differs from the tracked copy, `git_pull.sh` keeps the device copy, so merging alone leaves it blue. Edit `led_listening_colour` to `[255, 255, 255]` in that file by hand, then restart `bender-converse`. The Config page colour box does nothing: it writes `led_listening_color`, a key nothing reads, and it still shows blue. Save a Config tab opened before the edit and the old value comes back.
+
+Solid white draws about 2.3 times the current of the old blue, by the usual 60 mA per LED figure. Not measured, and what powers the strip is not recorded. Read `vcgencmd get_throttled` during the listening test. Change the colour before the plan's night image test, so the test sees the real light.
 
 `camera.py` and See Room changed for good, with the feature on or off: every wait on `_cam_lock` is bounded (5 s, then `CameraBusy`), a capture waits at most 3 s for its frame, and a capture timeout ends the stream. Two waits inside a capture take Picamera2's own lock, which has no timeout. See the Turn frames section of `CLAUDE.md`.
 
