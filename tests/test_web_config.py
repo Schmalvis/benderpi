@@ -281,6 +281,7 @@ def test_turn_frames_null_is_accepted_by_the_route(tmp_path, key):
     with patch("web.routes.config._CONFIG_PATH", str(cfg_file)):
         resp = client.put("/api/config", json={key: None}, headers=headers())
     assert resp.status_code == 200, f"got {resp.status_code}: {resp.text[:200]}"
+    assert json.loads(cfg_file.read_text())[key] is None
 
 
 @pytest.mark.parametrize("body,field", [

@@ -142,16 +142,16 @@ class BenderConfigUpdate(BaseModel):
     presence_signal_rate_mcps: float | None = None
     presence_max_resets: int | None = None
     presence_wait_slice_s: float | None = None
+    stt_onset_frames: int | None = None
+    stt_vad_warmup_frames: int | None = None
+    stt_speech_onset_timeout_s: float | None = None
+    hailo_stt_enabled: bool | None = None
 
     # --- Turn frames ---
     # null is valid for all three: a cleared Svelte box sends it.
     turn_frames_enabled: bool | None = None
     turn_frames_retention_days: int | None = None
     turn_frames_settle_s: float | None = None
-    stt_onset_frames: int | None = None
-    stt_vad_warmup_frames: int | None = None
-    stt_speech_onset_timeout_s: float | None = None
-    hailo_stt_enabled: bool | None = None
 
     # --- AI backend ---
     ai_backend: str | None = None
@@ -263,8 +263,8 @@ class BenderConfigUpdate(BaseModel):
     @field_validator("turn_frames_settle_s")
     @classmethod
     def _turn_frames_settle_s(cls, v):
-        # 5 s is the age at which a frame note goes stale, so a longer settle
-        # could never produce a frame.
+        # A frame later than 5 s shows the wrong person, the same reason a
+        # frame note goes stale at 5 s.
         if v is not None and not (0.0 <= v <= 5.0):
             raise ValueError("turn_frames_settle_s must be 0-5 seconds")
         return v

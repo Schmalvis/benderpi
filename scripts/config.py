@@ -180,17 +180,6 @@ class Config:
     #   Seconds the trigger loop waits for someone before looping back to feed
     #   the systemd watchdog and serve puppet say-requests. Not a gate value.
     presence_wait_slice_s: float = 5.0
-    # --- Turn frames ---
-    #   Keep one camera still per Halloween turn, for the owner to review.
-    #   Ships OFF: frames hold images of children and a public street, so
-    #   keeping them is an explicit act. Read through a None-safe helper,
-    #   because a cleared Config box stores null.
-    turn_frames_enabled: bool = False
-    #   Days a frames folder is kept. Schema minimum 1; None or under 1 means 7.
-    turn_frames_retention_days: int = 7
-    #   Seconds the camera must have been open before a frame is taken, so the
-    #   auto-exposure has settled. Max 5, the age at which a frame note is stale.
-    turn_frames_settle_s: float = 0.5
     stt_onset_frames: int = 3
     stt_vad_warmup_frames: int = 5    # frames fed to a fresh VAD and ignored for onset
     # Seconds to wait for speech onset before giving up on a capture (0 = wait
@@ -199,6 +188,19 @@ class Config:
     stt_speech_onset_timeout_s: float = 6.0
     hailo_stt_enabled: bool = True
     vlm_enabled: bool = True  # set False to skip Hailo VLM scene capture  # set False to use faster-whisper CPU only
+
+    # --- Turn frames ---
+    #   Keep one camera frame each time Bender starts to reply, in household
+    #   and Halloween mode. Ships OFF: frames hold images of children and a
+    #   public street, so keeping them is an explicit act. Read through a
+    #   None-safe helper, because a cleared Config box stores null.
+    turn_frames_enabled: bool = False
+    #   Days a frames folder is kept. Schema minimum 1; None or under 1 means 7.
+    turn_frames_retention_days: int = 7
+    #   Seconds the camera must have been open before a frame is taken, so the
+    #   auto-exposure has settled. Max 5: a frame later than that shows the
+    #   wrong person, the same reason a frame note goes stale at 5 s.
+    turn_frames_settle_s: float = 0.5
 
     # TTS
     piper_bin: str = os.path.join(_BASE_DIR, "piper", "piper")
