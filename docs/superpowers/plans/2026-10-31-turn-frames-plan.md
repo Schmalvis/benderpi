@@ -256,7 +256,7 @@ See Room, through the route:
 - a note over 5 s old makes no frame and records `stale`, in both clock directions
 - notes present at worker start are removed
 - the note is gone before the capture starts
-- camera refused: records `failed`, worker keeps running, next note works
+- camera refused: records `failed`, worker keeps running, next note works once the 120 s open retry has passed. `CameraBusy` has no such wait
 - release always runs when capture raises, and a failed acquire releases nothing
 - the worker waits for settle on a fresh open, and not on an open camera
 - `warm()` opens the camera and saves no frame
@@ -408,3 +408,7 @@ corrected. The gate's I1 stays open for the owner. Its M2 is recorded beside it:
 
 `warm()` gained the `presence.available()` condition after the Task 7 review.
 Decided by the coordinator. See the Warm-up row.
+
+The gate also found that each failed `Picamera2()` leaks one fd. The worker now
+waits 120 s after a failed open that is not `CameraBusy`. A frame note in that time
+records `failed`.

@@ -27,16 +27,16 @@ CameraBusy
 
 What is bounded, and what is not
 --------------------------------
-Python-level waits are bounded: the lock wait by _LOCK_TIMEOUT_S and the
-capture wait by _CAPTURE_TIMEOUT_S.
+Two waits are bounded: a wait on _cam_lock by _LOCK_TIMEOUT_S, and a wait for
+a captured frame by _CAPTURE_TIMEOUT_S.
 
 A capture is bounded for the usual case. dispatch_functions() and
 cancel_all_and_flush() take Picamera2's own lock, and that lock has no
 timeout. A stuck event thread can hold it, and then one thread is stuck
 while it holds _cam_lock.
 
-Picamera2(), configure(), start() and close() are C++ calls with no timeout.
-A hang that waits in Python holds _cam_lock in that one thread for ever.
+Picamera2(), configure(), start() and close() have no timeout. A call that
+stops while the GIL is free holds _cam_lock in that one thread for ever.
 Callers then get CameraBusy after _LOCK_TIMEOUT_S, and the camera stays
 unusable until bender-web restarts. The bound protects the 8-thread default
 executor, which STOP BENDER needs.
