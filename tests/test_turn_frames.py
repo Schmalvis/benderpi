@@ -1120,12 +1120,18 @@ class TestSurvival:
         monkeypatch.setattr(turn_frames, "_POLL_S", 0.01)
         turn_frames.start_worker()
         assert wait_for(lambda: os.path.isdir(queue_dir()))
-        # Stop first: rmtree racing a live worker that recreates .queue can
-        # fail with "directory not empty".
-        turn_frames.stop_worker()
-        shutil.rmtree(frames_root())
-        assert not os.path.exists(queue_dir())
-        turn_frames.start_worker()
+        # The worker stays live, as it does when the owner runs `rm -r`. The
+        # delete races it and can fail with "directory not empty", so retry.
+        # The worker skips folders in .queue, so this one goes only with the
+        # delete, and its absence proves the old .queue was really removed.
+        marker = os.path.join(queue_dir(), "marker")
+        os.mkdir(marker)
+
+        def deleted():
+            shutil.rmtree(frames_root(), ignore_errors=True)
+            return not os.path.exists(marker)
+
+        assert wait_for(deleted)
         assert wait_for(lambda: os.path.isdir(queue_dir()))
 
     @pytest.mark.parametrize("target", ["_sweep", "_take_notes",
