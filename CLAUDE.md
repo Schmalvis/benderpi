@@ -91,7 +91,9 @@ bender/
 │   ├── handler_base.py       — base classes/utilities shared by intent handlers
 │   ├── ai_local.py           — local LLM responder: Hailo NPU primary, Ollama CPU fallback
 │   ├── hailo_hub.py          — process-lifetime owner of the Hailo VDevice + resident Whisper/Qwen handles
-│   ├── camera.py             — Picamera2 (IMX708) singleton, thread-safe ref-counted access
+│   ├── camera.py             — Picamera2 (IMX708) singleton, thread-safe ref-counted access, bounded Python-level waits
+│   ├── turn_frames.py        — saves one camera frame per reply: note queue, worker thread in bender-web, sweep, status
+│   ├── probe_turn_frames.py  — on-device check for turn frames. Run by hand after a deploy. Stops no service
 │   ├── presence.py           — VL53L0X distance gate for the Halloween open mic (fails open)
 │   ├── probe_vl53l0x.py      — standalone VL53L0X probe: is it on the bus, and what does it read?
 │   ├── serve_web_local.py    — serve web/dist on a dev box (hardware stubbed) so the pages can be looked at.
@@ -214,6 +216,9 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `presence_max_resets` | `3` | XSHUT power-cycles allowed per process. After the last one the gate fails open for good, so a broken sensor cannot spin the trigger loop (`presence_resets_exhausted`) |
 | *(behaviour, no key)* | | **The gate also holds during a session** (2026-10-31). `presence.still_present()` runs before each reply capture in `_halloween_turn_loop`; a closed gate ends the session with reason `walked_off` (metric `halloween_walked_off`). It fails open like the rest of the module. Before this, one reading could run 2m18s of replies to invented sentences from outdoor noise |
 | `presence_wait_slice_s` | `5.0` | How long `wait_for_presence()` polls before returning to the loop. **Not** a gate value: the service is `Type=notify` with `WatchdogSec=120`, so the wait must be bounded for the loop to keep calling `_note_progress()` and to keep serving puppet say-requests between passes |
+| `turn_frames_enabled` | `false` | Save one camera frame each time Bender starts to reply, in household and Halloween mode. **Off by default**: frames hold images of children and a public street, so keeping them is an explicit act. Read only by `bender-converse`, so a change needs a restart of that service. See Turn frames below |
+| `turn_frames_retention_days` | `7` | Days a dated frames folder is kept. Schema minimum 1. `null`, or under 1 in a hand edit, means 7. Never kept for ever. Read from the saved file by the `bender-web` worker, so it needs no restart |
+| `turn_frames_settle_s` | `0.5` | Seconds the camera must have been open before a frame is taken. Schema range 0-5. Read from the saved file by the `bender-web` worker |
 
 ### Hailo residency (`scripts/hailo_hub.py`)
 
@@ -487,6 +492,8 @@ Both refresh at service start (in a background thread) and lazily when TTL expir
 
 One JSON Lines file per day in `logs/YYYY-MM-DD.jsonl`. Each line is a `session_start`, `turn`, or `session_end` event.
 
+With `turn_frames_enabled` on, a turn entry also carries `frame_requested`, `presence_mm` and `presence_age_s`. `frame_requested` records a request, not a result: `logs/frames/<date>/outcomes.jsonl` holds what happened to it. `presence_mm` null with a number in `presence_age_s` means out of range at that reading. Both null means the sensor never read. The value can be several seconds old, and the age says so.
+
 **Turn methods:** `real_clip`, `pre_gen_tts`, `promoted_tts`, `handler_weather`, `handler_news`, `handler_ha`, `ai_fallback`, `error_fallback`
 
 ```bash
@@ -657,7 +664,7 @@ sudo udevadm trigger --attr-match=idVendor=2886 --attr-match=idProduct=001a`.
   the IPC notes. Starting costs ~23s before the wake word is live
 - **Dashboard** — health, performance metrics, usage stats, watchdog alerts
 - **Logs** — conversation browser, system log viewer, metrics explorer, downloads
-- **Config** — edit bender_config.json and watchdog_config.json, LED colour/brightness, speech rate. **There is no Vision section.** It was deleted 2026-10-15 because every control in it was inert: Passive Mode called `/api/vision/passive`, three routes `bfbd831` deleted on 2026-04-02 along with the watcher thread behind them, and Confidence Threshold and Detection Allowlist were YOLO settings that nothing has read since `0d0d4ff` replaced YOLO with the Qwen2-VL VLM. The page polled the dead GET every 60 seconds: **93** 404s in the device journal by the day it was found. `tests/test_frontend_routes_exist.py` now checks every `/api/` call in `web/src/lib/api.js` against the app's own OpenAPI document, so the next deleted route fails the suite instead of shipping
+- **Config** — edit bender_config.json and watchdog_config.json, LED colour/brightness, speech rate. **There is no Vision section.** It was deleted 2026-10-15 because every control in it was inert: Passive Mode called `/api/vision/passive`, three routes `bfbd831` deleted on 2026-04-02 along with the watcher thread behind them, and Confidence Threshold and Detection Allowlist were YOLO settings that nothing has read since `0d0d4ff` replaced YOLO with the Qwen2-VL VLM. The page polled the dead GET every 60 seconds: **93** 404s in the device journal by the day it was found. `tests/test_frontend_routes_exist.py` now checks every `/api/` call in `web/src/lib/api.js` against the app's own OpenAPI document, so the next deleted route fails the suite instead of shipping. The **Maintenance** section holds the turn frames checkbox and a status line from `GET /api/frames/status`, which stays visible in Halloween mode. A failed poll shows "Frame status unavailable.", not the last numbers.
 - **Halloween mode** — a Normal/Halloween switch at the top of the Config page. It sets `halloween_mode` **and** `presence_sensor_enabled` together, because an open mic with no distance gate starts 88.6 sessions/hour from ordinary room speech and the gate fails open, so coupling them cannot cause silence. Clearing the gate checkbox decouples them and shows what that costs. In Halloween mode the AI Backend, Home Assistant and LED sections are hidden: none of them apply at the door. General, Maintenance and Watchdog stay. The gate's own controls (gate distance, release distance, confirming reads) and the session limits appear only when they are in use. **Neither flag takes effect until `bender-converse` restarts**, so the save shows the usual `restart_required` banner. The Halloween section also carries its own
 **Save & Restart Bender** button, shown whenever `halloween_mode` or
 `presence_sensor_enabled` differ from the saved copy. Save-then-restart as two
@@ -744,6 +751,7 @@ returned 500 until 2026-10-29.
 - `scripts/web/app.py` — FastAPI application (serves `web/dist/`)
 - `scripts/web/auth.py` — auth: `POST /api/auth/login` verifies the PIN (`hmac.compare_digest`) and issues an HMAC-signed ~12h token (sent as `X-Bender-Token`); mints ~60s stream tokens for the camera `<img>` stream + mic websocket; in-memory login rate-limit (429 on backoff); fails closed if `BENDER_WEB_PIN` is unset/placeholder
 - `scripts/web/routes/config_schema.py` — pydantic validation for config PUTs
+- `scripts/web/routes/frames.py` — `GET /api/frames/status`, token-gated. No route serves a frame
 - `scripts/web/service_guard.py` — process-wide lock serializing WM8960 access (puppet/vision/mic-stream)
 - `systemd/bender-web.service` — systemd service file
 
@@ -775,6 +783,26 @@ BENDER_AI_MODEL=claude-sonnet-4-6
 ```bash
 sudo systemctl restart bender-converse
 ```
+
+---
+
+## Turn frames
+
+`scripts/turn_frames.py`. Saves one camera frame each time Bender starts to reply, so the owner can see who was in front of him. **Off by default.**
+
+- `bender-converse` never opens the camera. `session._snap()` writes one empty note into `logs/frames/.queue`. `_halloween_loop` calls `warm()` once the gate has passed, so the camera opens while no audio plays.
+- `warm()` runs only when `presence.available()` is true. A gate that fails open passes on every loop, so warming there would hold the camera open all night. With no usable sensor, the first frame of a session opens cold during the thinking clip, as household mode always does.
+- `bender-web` runs one daemon worker, started in the FastAPI lifespan. It polls the queue every 0.2 s, takes the newest fresh note, and holds the camera for 15 s after the last note. A note over 5 s old makes no frame.
+- Frames: `logs/frames/YYYY-MM-DD/<session_id>_tNN.jpg`, 1280x720 JPEG, written as `.tmp` then renamed. Folders 0700, files 0600. No web route serves a frame. Read them over SSH.
+- `outcomes.jsonl` beside them holds one line per frame note: `saved`, `failed`, `stale` or `dropped`.
+- The worker sweeps expired dated folders at start and hourly, with the feature on or off. Nothing sweeps while `bender-web` is down.
+- A refused camera leaks one fd per failed `Picamera2()`, so the worker waits 120 s before the next open.
+
+**To turn it off:** clear the checkbox on the Config page and restart `bender-converse`. To delete the frames: `rm -r logs/frames/` on the device.
+
+**What `camera.py` bounds, and what it does not.** Python-level waits are bounded: 5 s for `_cam_lock`, then `CameraBusy`, and 3 s for a capture, then `TimeoutError`. A hang inside a libcamera C++ call is not bounded. The binding has no `gil_scoped_release`, so that hang holds the GIL and freezes all of `bender-web`, including STOP BENDER. Recovery is SSH: `sudo systemctl stop bender-converse`, then `sudo systemctl restart bender-web`, which can wait the default 90 s for SIGKILL. No hang of this kind is on record. Measured on the dev clone only, python3-libcamera 0.7.2+rpt20261009-1. The device build is not verified. `worker_stuck_s` shows a hang in the worker thread only.
+
+**Device check:** `venv/bin/python scripts/probe_turn_frames.py`, with `bender-converse` running, See Room closed and no live session.
 
 ---
 

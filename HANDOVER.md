@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-10-29
+Last updated: 2026-10-31
 
 ---
 
@@ -10,6 +10,24 @@ Last updated: 2026-10-29
   508-2227ms (worst 4551ms) of dead air after the speaker stops, in front of the
   LLM's own 1.0-3.5s. A partial hypothesis could start the turn early. Not
   started, and not before the Halloween safety work.
+
+---
+
+## 2026-10-31 (evening) — Turn frames, branch feat/turn-frames, NOT merged
+
+Goal: save one camera frame each time Bender starts to reply, because the logs could not answer "was anyone there?". Plan: `docs/superpowers/plans/2026-10-31-turn-frames-plan.md`. Nothing here is deployed. Nothing was run against a real camera.
+
+Off by default. Merging restarts `bender-converse` and `bender-web`, even with the feature off.
+
+Open before the feature is enabled:
+
+1. **Owner to rule.** A hang in a libcamera C++ call holds the GIL and freezes all of `bender-web`, including STOP BENDER. The plan said STOP BENDER would still work, and the opus gate refuted that. Accept the risk, or move camera ownership to a third process. Recovery and detail: the Turn frames section of `CLAUDE.md`.
+2. Check the device's `python3-libcamera` build. The GIL fact was read on the dev clone only.
+3. Run `scripts/probe_turn_frames.py` on the device, and the plan's listening test. If he drops out, turn it off.
+
+The device keeps its own `bender_config.json`, so pin `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_settle_s` there once.
+
+`camera.py` and See Room changed for good, with the feature on or off: every capture and lock wait is bounded, and a capture timeout ends the stream.
 
 ---
 
