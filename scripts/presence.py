@@ -420,9 +420,9 @@ def distance_mm() -> int | None:
     # `probe_vl53l0x.py --baseline`.
     floor = int(_cfg("presence_min_mm", 0))
     if floor and mm <= floor:
-        metrics.count("presence_below_floor", mm=mm, floor=floor)
         _last_mm = None
         _last_reading = (None, time.monotonic())
+        metrics.count("presence_below_floor", mm=mm, floor=floor)
         return None
     _last_mm = mm
     _last_reading = (mm, time.monotonic())
@@ -434,7 +434,7 @@ def last_reading() -> tuple[int | None, float | None]:
 
     | Last completed read             | Returns       |
     |---------------------------------|---------------|
-    | none yet (sensor off or dead)   | (None, None)  |
+    | none yet (sensor off, or never) | (None, None)  |
     | out of range / under the floor  | (None, age)   |
     | in range                        | (mm, age)     |
 
