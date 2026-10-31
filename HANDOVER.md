@@ -27,6 +27,8 @@ Open before the feature is enabled:
 
 The device keeps its own `bender_config.json`, so pin `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_settle_s` there once.
 
+See Room and the VLM now see the right colours (owner request, 2026-10-31). `capture_frame()` gives BGR, and both treated it as RGB. Both go through `camera.to_pil`. `vlm.py` swaps nothing, so saved JPEG frames stay valid input for a later VLM pass.
+
 The listening LED is now white (owner request, 2026-10-31). The device keeps its own `bender_config.json`, so change `led_listening_colour` there to `[255, 255, 255]` once. Merging alone leaves it blue.
 
 `camera.py` and See Room changed for good, with the feature on or off: every wait on `_cam_lock` is bounded (5 s, then `CameraBusy`), a capture waits at most 3 s for its frame, and a capture timeout ends the stream. Two waits inside a capture take Picamera2's own lock, which has no timeout. See the Turn frames section of `CLAUDE.md`.
