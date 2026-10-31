@@ -425,7 +425,10 @@ async def puppet_camera_stream(token: str = ""):
         except asyncio.CancelledError:
             pass
         finally:
-            await asyncio.to_thread(_release_stream_ref)
+            # Shielded: with the thread pool full, a repeated cancel removes the
+            # pending work item and the ref leaks. Measured 0 of 3 without the
+            # shield and 3 of 3 with it.
+            await asyncio.shield(asyncio.to_thread(_release_stream_ref))
 
     return StreamingResponse(_generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
