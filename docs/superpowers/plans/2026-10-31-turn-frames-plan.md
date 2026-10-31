@@ -101,10 +101,25 @@ through `vision`, not `cam.capture_array`. `cancel_all_and_flush()` is global, s
 direct call could lose its job and block with no timeout. One job at a time, under
 one lock, always bounded. A timeout ends the stream, and `finally` releases.
 
-**The real guarantee.** `Picamera2()`, `configure()`, `start()` and `close()` are
-C++ calls with no timeout. A hang there holds `_cam_lock` in that one thread for
-ever. Routes then get `CameraBusy` after 5 s, and STOP BENDER still works. The
-camera stays unusable until `bender-web` restarts, and `worker_stuck_s` shows it.
+**The real guarantee.** Python-level waits are bounded: the lock wait at 5 s, and
+the capture wait at 3 s. A hang that waits in Python holds `_cam_lock` in that one
+thread. Routes then get `CameraBusy` after 5 s, and STOP BENDER still works. The
+camera stays unusable until `bender-web` restarts.
+
+**A C++ hang is not bounded.** `Picamera2()`, `configure()`, `start()` and `close()`
+are C++ calls with no timeout. The libcamera binding has no `gil_scoped_release`, so
+a hang inside one of them holds the GIL as well as the lock. That freezes all of
+`bender-web`, including STOP BENDER. Recovery is SSH: `sudo systemctl stop
+bender-converse`, then `sudo systemctl restart bender-web`, which can wait the
+default 90 s for SIGKILL. No hang of this kind is on record. Measured on this dev
+clone, python3-libcamera 0.7.2+rpt20261009-1. The device build is not verified.
+
+`worker_stuck_s` shows a hang in the worker thread only. A hang in a pool thread
+reads as a healthy worker, and `failed_today` rises when the next note arrives.
+
+**Open for the owner, before the feature is enabled:** accept this risk, or move
+camera ownership to a third process. The second is a design change, not on this
+branch.
 
 ### Presence fields
 
@@ -383,3 +398,13 @@ alternative opens the camera during audio on every frame.
 Parked: orphan frames on abort paths (the session ends). Local date folders against
 UTC log timestamps (the name carries the session id). A wrong clock at boot can
 misdate a folder. The legal point on filming a public street stays with the owner.
+
+### Opus gate, during implementation, 2026-10-31
+
+The gate refuted the old "real guarantee", which said that STOP BENDER still works
+during any C++ hang. That holds only for a wait in Python. The text above is
+corrected. The gate's I1 stays open for the owner. Its M2 is recorded beside it:
+`worker_stuck_s` does not show a hang in a pool thread.
+
+`warm()` gained the `presence.available()` condition after the Task 7 review.
+Decided by the coordinator. See the Warm-up row.
