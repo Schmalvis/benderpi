@@ -387,8 +387,27 @@ class _Worker:
     # -- one pass -----------------------------------------------------------
 
     def run_pass(self, stop, startup: bool = False) -> None:
-        q = _ensure_queue()
+        # last_pass means "when the worker last BEGAN a pass". It is set first,
+        # before anything that can raise, so a filesystem fault does not read
+        # as a stuck worker. A worker stuck in a C++ call never begins the
+        # next pass, and that is what worker_stuck_s shows.
         self.last_pass = time.monotonic()
+        try:
+            self._run_pass_body(stop, startup)
+        finally:
+            # Whatever the pass did, an expired hold must release the camera.
+            # _expire_hold never raises, so it cannot mask the pass's error.
+            self._expire_hold()
+
+    def _expire_hold(self) -> None:
+        try:
+            if self.held and time.monotonic() >= self.hold_until:
+                self._release()
+        except Exception as exc:
+            _warn("expire", "turn frames: hold check failed: %s", _err(exc))
+
+    def _run_pass_body(self, stop, startup: bool) -> None:
+        q = _ensure_queue()
         if (self.last_sweep is None
                 or self.last_pass - self.last_sweep >= _SWEEP_EVERY_S):
             self.last_sweep = self.last_pass  # first, so a raise cannot spin
@@ -447,8 +466,6 @@ class _Worker:
                 self.hold_until = 0.0  # a sick camera is not held for 15 s
             elif saw_note:
                 self.hold_until = time.monotonic() + _HOLD_S
-            if time.monotonic() >= self.hold_until:
-                self._release()
 
     def _take_notes(self, q: str):
         """List the queue and remove every note. Returns [(name, mtime_ns)]."""

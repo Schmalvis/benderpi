@@ -802,6 +802,81 @@ class TestHold:
         assert worker.held is False
 
 
+class TestHoldWhenAPassFails:
+    """I1: a fault early in the pass must not keep the camera open."""
+
+    def _held(self, cam, worker):
+        make_note("a")
+        run(worker)
+        assert worker.held is True and cam.refs == 1
+
+    @pytest.mark.parametrize("target", ["_ensure_queue", "_take_notes"])
+    def test_an_expired_hold_releases_though_the_pass_raises(
+            self, cam, worker, monkeypatch, target):
+        self._held(cam, worker)
+        worker.hold_until = time.monotonic() - 0.1
+        self._break(monkeypatch, target)
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="boom"):
+                run(worker)
+        assert worker.held is False
+        assert cam.refs == 0
+        assert cam.events.count("release") == 1
+
+    @pytest.mark.parametrize("target", ["_ensure_queue", "_take_notes"])
+    def test_a_hold_not_yet_expired_stays_held(
+            self, cam, worker, monkeypatch, target):
+        self._held(cam, worker)
+        self._break(monkeypatch, target)
+        with pytest.raises(RuntimeError, match="boom"):
+            run(worker)
+        assert worker.held is True
+        assert "release" not in cam.events
+
+    @pytest.mark.parametrize("target", ["_ensure_queue", "_take_notes"])
+    def test_last_pass_moves_on_a_pass_that_raises(
+            self, cam, worker, monkeypatch, target):
+        worker.last_pass = time.monotonic() - 100.0
+        before = worker.last_pass
+        self._break(monkeypatch, target)
+        with pytest.raises(RuntimeError, match="boom"):
+            run(worker)
+        assert worker.last_pass > before + 99.0
+
+    def test_a_busy_release_in_the_finally_keeps_the_original_error(
+            self, cam, worker, monkeypatch):
+        self._held(cam, worker)
+        worker.hold_until = time.monotonic() - 0.1
+        cam.release_error = CameraBusy("lock held")
+        self._break(monkeypatch, "_take_notes")
+        with pytest.raises(RuntimeError, match="boom"):
+            run(worker)
+        assert worker.held is True  # kept for a later pass
+
+    def test_the_loop_still_logs_the_original_exception(
+            self, cam, worker, monkeypatch):
+        fake_log = MagicMock()
+        monkeypatch.setattr(turn_frames, "log", fake_log)
+        self._held(cam, worker)
+        worker.hold_until = time.monotonic() - 0.1
+        worker.startup_done = True
+        self._break(monkeypatch, "_take_notes")
+        worker._main(StepStop(passes=2))
+        messages = [str(c) for c in fake_log.warning.call_args_list]
+        assert any("boom" in m for m in messages)
+        assert cam.refs == 0
+
+    @staticmethod
+    def _break(monkeypatch, target):
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        if target == "_take_notes":
+            monkeypatch.setattr(turn_frames._Worker, "_take_notes", boom)
+        else:
+            monkeypatch.setattr(turn_frames, target, boom)
+
+
 class TestStopReleases:
     def test_the_loop_releases_a_held_camera_on_exit(self, cam, worker):
         worker.startup_done = True
