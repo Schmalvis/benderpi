@@ -959,3 +959,110 @@ class TestAnInvertedHysteresisBandCannotFlapTheMic:
         assert presence.present() is True     # inside the band, still open
         assert presence.present() is False    # past the release distance
         assert not any(n == "presence_bad_band" for n, _ in gate.counts)
+
+
+# ---------------------------------------------------------------------------
+# last_reading() -- the value the turn log records next to a frame
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A scripted monotonic clock for presence.time."""
+    state = types.SimpleNamespace(now=1000.0)
+    fake_time = types.SimpleNamespace(
+        monotonic=lambda: state.now,
+        sleep=lambda s: None,
+    )
+    monkeypatch.setattr(presence, "time", fake_time)
+    return state
+
+
+class TestLastReading:
+    def test_never_read_is_none_none(self, gate, clock):
+        gate.install([])
+        assert presence.last_reading() == (None, None)
+
+    def test_in_range_read_returns_mm_and_age(self, gate, clock):
+        gate.install([640])
+        presence.distance_mm()
+        clock.now += 1.234
+        assert presence.last_reading() == (640, 1.23)
+
+    def test_out_of_range_read_returns_none_and_age(self, gate, clock):
+        gate.install([8190])
+        presence.distance_mm()
+        clock.now += 2.0
+        assert presence.last_reading() == (None, 2.0)
+
+    def test_zero_read_returns_none_and_age(self, gate, clock):
+        gate.install([0])
+        presence.distance_mm()
+        assert presence.last_reading() == (None, 0.0)
+
+    def test_below_crosstalk_floor_returns_none_and_age(
+            self, gate, clock, monkeypatch):
+        monkeypatch.setattr(presence.cfg, "presence_min_mm", 100)
+        gate.install([80])
+        presence.distance_mm()
+        clock.now += 0.5
+        assert presence.last_reading() == (None, 0.5)
+
+    def test_later_read_replaces_earlier(self, gate, clock):
+        gate.install([640, 8190])
+        presence.distance_mm()
+        clock.now += 3.0
+        presence.distance_mm()
+        assert presence.last_reading() == (None, 0.0)
+
+    def test_raising_read_changes_neither_mm_nor_time(self, gate, clock):
+        gate.install([640, RuntimeError])
+        presence.distance_mm()
+        clock.now += 1.0
+        assert presence.distance_mm() is None       # the read raised
+        clock.now += 1.0
+        assert presence.last_reading() == (640, 2.0)  # age keeps growing
+
+    def test_raising_read_after_out_of_range_keeps_none(self, gate, clock):
+        gate.install([8190, RuntimeError])
+        presence.distance_mm()
+        clock.now += 1.0
+        presence.distance_mm()
+        assert presence.last_reading() == (None, 1.0)
+
+    def test_works_with_the_gate_disabled(self, monkeypatch, clock):
+        presence._reset_for_tests()
+        monkeypatch.setattr(presence.cfg, "presence_sensor_enabled", False,
+                            raising=False)
+        assert presence.last_reading() == (None, None)
+
+    def test_never_touches_the_sensor(self, gate, clock):
+        sensor = gate.install([640])
+        presence.distance_mm()
+        reads = sensor.reads
+        presence.last_reading()
+        assert sensor.reads == reads
+
+    def test_does_not_take_the_lock(self, gate, clock):
+        gate.install([640])
+        presence.distance_mm()
+        with presence._lock:                         # not re-entrant
+            assert presence.last_reading() == (640, 0.0)
+
+    def test_age_is_never_negative(self, gate, clock):
+        gate.install([640])
+        presence.distance_mm()
+        clock.now -= 5.0                             # clock goes backwards
+        mm, age = presence.last_reading()
+        assert mm == 640
+        assert age == 0.0
+
+    def test_reset_for_tests_clears_it(self, gate, clock):
+        gate.install([640])
+        presence.distance_mm()
+        presence._reset_for_tests()
+        assert presence.last_reading() == (None, None)
+
+    def test_uses_a_single_tuple_global(self, gate, clock):
+        gate.install([640])
+        presence.distance_mm()
+        assert presence._last_reading == (640, 1000.0)

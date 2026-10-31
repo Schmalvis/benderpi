@@ -53,6 +53,7 @@ PUBLIC API
 ----------
 available()                  -> bool   sensor usable right now
 distance_mm()                -> int|None  last good reading, None if absent
+last_reading()               -> (mm, age_s)  last completed read, never blocks
 present()                    -> bool   someone within `presence_max_mm`
 wait_for_presence(timeout_s) -> bool   poll until present, or timeout
 close()                      -> None   release the sensor (atexit)
@@ -95,6 +96,11 @@ _lock = threading.Lock()
 _dead = False            # no XSHUT, or resets exhausted: restart to recover
 _errors = 0
 _last_mm = None
+# (mm, monotonic time) of the last read that COMPLETED. mm is None for an out
+# of range or below-floor read. One tuple in one assignment, so
+# `last_reading()` needs no lock: `_lock` is not re-entrant and is held across
+# the sensor open, which must never stall a caller that only wants the number.
+_last_reading = None
 _present = False         # hysteresis state
 _confirm_run = 0         # consecutive reads agreeing with the pending change
 _warned_unavailable = False
@@ -383,7 +389,7 @@ def distance_mm() -> int | None:
     Marks the sensor dead after `_MAX_ERRORS` consecutive failures, so a wedged
     device stops being polled instead of being retried every loop pass.
     """
-    global _errors, _dead, _last_mm
+    global _errors, _dead, _last_mm, _last_reading
     sensor = _get_sensor()
     if sensor is None:
         return None
@@ -405,6 +411,7 @@ def distance_mm() -> int | None:
     _errors = 0
     if mm <= 0 or mm >= _OUT_OF_RANGE_MM:
         _last_mm = None
+        _last_reading = (None, time.monotonic())
         return None
     # Crosstalk floor. The sensor times its own IR pulse back, so it cannot
     # tell Bender's eye socket from a child. A recessed mounting returns a
@@ -415,9 +422,35 @@ def distance_mm() -> int | None:
     if floor and mm <= floor:
         metrics.count("presence_below_floor", mm=mm, floor=floor)
         _last_mm = None
+        _last_reading = (None, time.monotonic())
         return None
     _last_mm = mm
+    _last_reading = (mm, time.monotonic())
     return mm
+
+
+def last_reading() -> tuple[int | None, float | None]:
+    """`(mm, age_s)` of the last read that completed. Never raises or blocks.
+
+    | Last completed read             | Returns       |
+    |---------------------------------|---------------|
+    | none yet (sensor off or dead)   | (None, None)  |
+    | out of range / under the floor  | (None, age)   |
+    | in range                        | (mm, age)     |
+
+    A read that raised changes nothing, so the value from before it stands and
+    its age keeps growing. Takes no lock and never touches the sensor: the
+    turn log calls this on the reply path. Wrapped so that nothing here can
+    take a caller down, which is the failure mode this module is known for.
+    """
+    try:
+        snap = _last_reading            # one read of one global
+        if snap is None:
+            return (None, None)
+        mm, t = snap
+        return (mm, round(max(0.0, time.monotonic() - t), 2))
+    except Exception:
+        return (None, None)
 
 
 def present() -> bool:
@@ -544,6 +577,7 @@ atexit.register(close)
 def _reset_for_tests() -> None:
     """Clear module state. Tests only."""
     global _sensor, _dead, _errors, _last_mm, _present, _confirm_run
+    global _last_reading
     global _warned_unavailable, _resets, _xshut, _warned_bad_band
     _warned_bad_band = False
     _resets = 0
@@ -552,6 +586,7 @@ def _reset_for_tests() -> None:
     _dead = False
     _errors = 0
     _last_mm = None
+    _last_reading = None
     _present = False
     _confirm_run = 0
     _warned_unavailable = False

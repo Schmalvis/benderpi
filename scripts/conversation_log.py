@@ -43,10 +43,30 @@ def _write(record: dict):
         f.write(json.dumps(record) + "\n")
 
 
+# Fields a held note may never overwrite. The note carries only the turn-frame
+# fields (`frame_requested`, `presence_mm`, `presence_age_s`); these are the
+# ones `log_turn` owns.
+_CORE_FIELDS = frozenset({
+    "type", "session_id", "turn", "user_text", "intent", "sub_key",
+    "method", "response_text", "model", "ai_routing",
+})
+
+
 class SessionLogger:
     def __init__(self):
         self.session_id = str(uuid.uuid4())[:8]
         self.turn = 0
+        self._held: dict = {}
+
+    def note(self, **fields):
+        """Hold `fields` for the next `log_turn`, which merges and clears them.
+
+        Lets a caller add to the next turn entry without a new `log_turn`
+        argument at each of its call sites. Two calls merge. A session that
+        ends with no `log_turn` drops the note, which is correct: the session
+        is over.
+        """
+        self._held.update(fields)
 
     def session_start(self):
         _write({"type": "session_start", "session_id": self.session_id})
@@ -58,6 +78,9 @@ class SessionLogger:
     def log_turn(self, user_text: str, intent: str, sub_key: str | None,
                  method: str, response_text: str = "", model: str | None = None,
                  ai_routing: dict | None = None):
+        # Take the note first, so it is cleared even if the write below raises
+        # and cannot leak onto a later turn.
+        held, self._held = self._held, {}
         self.turn += 1
         entry = {
             "type":          "turn",
@@ -72,4 +95,7 @@ class SessionLogger:
         }
         if ai_routing:
             entry["ai_routing"] = ai_routing
+        for key, value in held.items():
+            if key not in _CORE_FIELDS:
+                entry[key] = value
         _write(entry)
