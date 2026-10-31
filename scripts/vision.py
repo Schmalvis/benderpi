@@ -7,7 +7,9 @@ Public API
 ----------
 acquire_camera()        Delegate to camera.acquire_camera()
 release_camera()        Delegate to camera.release_camera()
+capture_frame()         Delegate to camera.capture_frame()
 analyse_scene()         Capture a frame and describe it; returns SceneDescription
+CameraBusy              camera.CameraBusy, so callers need only this module
 """
 from __future__ import annotations
 
@@ -20,6 +22,8 @@ from logger import get_logger
 from config import cfg
 
 log = get_logger("vision")
+
+CameraBusy = camera.CameraBusy
 
 
 # ---------------------------------------------------------------------------
@@ -71,14 +75,22 @@ def release_camera():
     camera.release_camera()
 
 
+def capture_frame():
+    """Delegate to camera.capture_frame(). Bounded: see that docstring."""
+    return camera.capture_frame()
+
+
 def analyse_scene() -> SceneDescription:
     """Capture a frame and describe it via VLM. Returns SceneDescription.
 
     A failure sets `error` and leaves `description` empty, so the caller can
     tell a failed look from an empty room. See `SceneDescription.failed()`.
+    Never raises.
     """
+    acquired = False
     try:
         camera.acquire_camera()
+        acquired = True
         frame = camera.capture_frame()
         description = vlm.describe_scene(frame, prompt=cfg.vlm_prompt)
         if description is None:
@@ -87,14 +99,17 @@ def analyse_scene() -> SceneDescription:
             log.warning("analyse_scene: the vision model returned no answer")
             return SceneDescription(error="the vision model did not answer")
         return SceneDescription(description=description, captured_at=datetime.now())
-    except RuntimeError as e:
-        if "busy" in str(e).lower():
-            log.warning("Camera busy (held by another process) — vision skipped this session")
-            return SceneDescription(error="the camera is held by another process")
-        log.exception("analyse_scene failed (capture)")
-        return SceneDescription(error=f"the camera failed: {e}")
+    except camera.CameraBusy:
+        log.warning("Camera busy — vision skipped this look")
+        return SceneDescription(error="the camera is busy")
     except Exception as exc:
         log.exception("analyse_scene failed")
         return SceneDescription(error=f"the camera failed: {exc}")
     finally:
-        camera.release_camera()
+        # Only after a successful acquire. A failed one took no ref, and with
+        # CameraBusy a release here would close the camera under See Room.
+        if acquired:
+            try:
+                camera.release_camera()
+            except Exception as exc:
+                log.warning("analyse_scene: release failed: %s", exc)

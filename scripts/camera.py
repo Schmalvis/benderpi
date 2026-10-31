@@ -10,15 +10,35 @@ acquire_camera() -> Picamera2
     calls. Returns the shared Picamera2 instance.
 
 release_camera()
-    Decrement ref count; stop and close camera when count reaches 0.
+    Decrement ref count; cancel jobs and close camera when count reaches 0.
 
 capture_frame() -> np.ndarray
-    Capture a single RGB numpy array via capture_array("main").
+    Capture a single BGR-in-memory numpy array via capture_array("main").
     Camera must already be acquired by the caller.
+
+opened_at() -> float | None
+    Monotonic time of the last open, or None while the camera is closed.
+
+to_pil(frame) -> PIL.Image.Image
+    Convert a captured frame to an RGB PIL image.
+
+CameraBusy
+    Raised by the three calls that take _cam_lock when it stays held.
+
+What is bounded, and what is not
+--------------------------------
+A capture is bounded by _CAPTURE_TIMEOUT_S and every lock wait by
+_LOCK_TIMEOUT_S. Picamera2(), configure(), start() and close() are C++ calls
+with no timeout. A hang there holds _cam_lock in that one thread for ever.
+Callers then get CameraBusy after _LOCK_TIMEOUT_S, and the camera stays
+unusable until bender-web restarts. The bound protects the 8-thread default
+executor, which STOP BENDER needs.
 """
 from __future__ import annotations
 
 import threading
+import time
+from contextlib import contextmanager
 
 from logger import get_logger
 
@@ -31,18 +51,53 @@ log = get_logger("camera")
 _cam = None
 _cam_lock = threading.Lock()
 _cam_refcount = 0
+_opened_at = None
 
-# Main stream config: RGB888 → capture_array("main") returns H×W×3 uint8
+# Main stream config: capture_array("main") returns H×W×3 uint8. Despite the
+# name, picamera2's RGB888 is [B, G, R] in memory (picamera2/request.py).
 _MAIN_CONFIG = {"format": "RGB888", "size": (1920, 1080)}
+
+# Module constants, not cfg keys. wait=None blocks for ever and wait=0 returns
+# a Job, so a cleared Config box must never be able to reach these.
+_CAPTURE_TIMEOUT_S = 3.0
+_LOCK_TIMEOUT_S = 5.0
+
+
+class CameraBusy(RuntimeError):
+    """_cam_lock stayed held for _LOCK_TIMEOUT_S. Nothing changed."""
+
+
+@contextmanager
+def _locked():
+    """Hold _cam_lock, or raise CameraBusy after _LOCK_TIMEOUT_S."""
+    if not _cam_lock.acquire(timeout=_LOCK_TIMEOUT_S):
+        raise CameraBusy(f"camera lock held for over {_LOCK_TIMEOUT_S} s")
+    try:
+        yield
+    finally:
+        _cam_lock.release()
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _flush_jobs(cam):
+    """Cancel every queued job. Log a failure and go on.
+
+    The callers are recovering from something worse, and their own error or
+    their close() must survive this. Job.cancel raises InvalidStateError if a
+    job finished between its timeout and this call.
+    """
+    try:
+        cam.cancel_all_and_flush()
+    except Exception as exc:
+        log.warning("cancel_all_and_flush failed: %r", exc)
+
+
 def _open_camera():
     """Instantiate and start Picamera2. Caller must hold _cam_lock."""
-    global _cam
+    global _cam, _opened_at
     try:
         from picamera2 import Picamera2  # lazy import — allows mocking in tests
     except ImportError as exc:
@@ -52,30 +107,42 @@ def _open_camera():
 
     log.info("Opening Camera Module 3 (IMX708)")
     cam = Picamera2()
-    config = cam.create_video_configuration(main=_MAIN_CONFIG)
-    cam.configure(config)
     try:
+        config = cam.create_video_configuration(main=_MAIN_CONFIG)
+        cam.configure(config)
         cam.start()
     except Exception:
-        cam.close()
+        # Picamera2 registers atexit.register(self.close), a strong ref, so an
+        # unclosed instance keeps the camera for the life of the process.
+        try:
+            cam.close()
+        except Exception as exc:
+            log.warning("Error closing camera after a failed open: %r", exc)
         raise
     _cam = cam
+    _opened_at = time.monotonic()
     log.info("Camera started")
 
 
 def _close_camera():
-    """Stop and close Picamera2. Caller must hold _cam_lock."""
-    global _cam
+    """Cancel jobs and close Picamera2. Caller must hold _cam_lock.
+
+    Never call stop() here. It can block for ever after one exception in
+    process_requests. close() runs its own stop with no timeout, which is why
+    close() is on the unbounded list in the module docstring.
+    """
+    global _cam, _opened_at
     if _cam is None:
         return
     try:
-        _cam.stop()
+        _flush_jobs(_cam)
         _cam.close()
-        log.info("Camera stopped and closed")
+        log.info("Camera closed")
     except Exception as exc:
         log.warning("Error closing camera: %s", exc)
     finally:
         _cam = None
+        _opened_at = None
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +154,12 @@ def acquire_camera():
 
     Increments the internal reference count. Every call to acquire_camera()
     must be paired with a call to release_camera().
+
+    Raises CameraBusy if _cam_lock stays held. That call took no ref, so it
+    must not be paired with a release: a release would take another holder's.
     """
     global _cam_refcount
-    with _cam_lock:
+    with _locked():
         if _cam is None:
             _open_camera()
         _cam_refcount += 1
@@ -98,9 +168,12 @@ def acquire_camera():
 
 
 def release_camera():
-    """Decrement ref count; close camera when count reaches zero."""
+    """Decrement ref count; close camera when count reaches zero.
+
+    Raises CameraBusy if _cam_lock stays held. The ref then stays counted.
+    """
     global _cam_refcount
-    with _cam_lock:
+    with _locked():
         if _cam_refcount <= 0:
             log.warning("release_camera() called with refcount already 0 — ignoring")
             return
@@ -111,18 +184,63 @@ def release_camera():
 
 
 def capture_frame():
-    """Capture a single frame as an RGB numpy array.
+    """Capture a single frame as a numpy array, BGR in memory.
 
     Returns
     -------
     np.ndarray
-        Shape (H, W, 3), dtype uint8, RGB channel order.
+        Shape (H, W, 3), dtype uint8, [B, G, R] channel order in memory. Use
+        to_pil() to get an image with the colours right.
+
+    Raises
+    ------
+    TimeoutError
+        No frame in _CAPTURE_TIMEOUT_S. Every job is cancelled. The camera
+        stays open for its holders, who release it as usual. The last release
+        closes it, and the next acquire opens it fresh.
+    CameraBusy
+        _cam_lock stayed held for _LOCK_TIMEOUT_S.
 
     Notes
     -----
     The caller is responsible for having already called acquire_camera().
+
+    This holds _cam_lock for the whole capture, up to _CAPTURE_TIMEOUT_S, on
+    purpose. cancel_all_and_flush() is global, so one job at a time under one
+    lock means a flush can only ever hit the job that timed out. Do not call
+    capture_array anywhere else.
     """
-    with _cam_lock:
+    with _locked():
         if _cam is None:
             raise RuntimeError("Camera is not open. Call acquire_camera() first.")
-        return _cam.capture_array("main")
+        try:
+            return _cam.capture_array("main", wait=_CAPTURE_TIMEOUT_S)
+        except TimeoutError as exc:
+            # Job.get_result is Future.result(timeout=...), and on Python 3.11+
+            # that raises the builtin. Any other job failure is not a hang, so
+            # it propagates unchanged with no flush.
+            _flush_jobs(_cam)
+            raise TimeoutError(f"no frame in {_CAPTURE_TIMEOUT_S} s") from exc
+
+
+def opened_at():
+    """Monotonic time of the last open, or None while the camera is closed.
+
+    A second acquire does not move it, so a camera that is already open needs
+    no settle wait. Reads one value, so it never waits for _cam_lock.
+    """
+    return _opened_at
+
+
+def to_pil(frame):
+    """Convert a captured frame to an RGB PIL image.
+
+    The only place that knows the channel order. `frame` must be a contiguous
+    buffer, which make_array gives. Do not copy or slice it first. This form
+    measured a 6.2 ms worst GIL stall, against 56.6 ms for
+    `fromarray(arr[..., ::-1])`.
+    """
+    from PIL import Image  # lazy: bender-converse imports this module
+
+    height, width = frame.shape[:2]
+    return Image.frombuffer("RGB", (width, height), frame, "raw", "BGR", 0, 1)

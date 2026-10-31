@@ -232,14 +232,21 @@ def _check_camera() -> bool:
             return cached_result
     try:
         _vision.acquire_camera()
+    except _vision.CameraBusy:
+        # About this moment, not the camera, so no cache. A cached False would
+        # 503 See Room for the full TTL after the lock came free. Nothing polls
+        # this route, so a stuck lock costs one 5 s pool thread per page open.
+        return False
     except Exception:
         _camera_available_cache = (False, now)
         return False
+    _camera_available_cache = (True, now)
     try:
-        _camera_available_cache = (True, now)
-        return True
-    finally:
         _vision.release_camera()
+    except Exception as exc:
+        # The camera did open, so the answer stands. A raise here is a 500.
+        log.warning("camera check: release failed: %s", exc)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +352,13 @@ async def puppet_camera_stream(token: str = ""):
     async def _generate():
         import io
         from PIL import Image
-        cam = await asyncio.to_thread(_vision.acquire_camera)
+        try:
+            await asyncio.to_thread(_vision.acquire_camera)
+        except _vision.CameraBusy as exc:
+            # The 200 headers have gone, so ending the body is all that is
+            # left. No ref was taken, so there is nothing to release.
+            log.warning("See Room stream ended: %s", exc)
+            return
         deadline = time.monotonic() + max_s if max_s > 0 else None
         try:
             while True:
@@ -354,7 +367,14 @@ async def puppet_camera_stream(token: str = ""):
                 # forever — the exact resource-silently-held failure shape.
                 if deadline is not None and time.monotonic() >= deadline:
                     break
-                frame = await asyncio.to_thread(cam.capture_array)
+                # Always through capture_frame: one job at a time, under one
+                # lock, always bounded. cancel_all_and_flush() is global, so a
+                # direct capture_array could lose its job and block for ever.
+                try:
+                    frame = await asyncio.to_thread(_vision.capture_frame)
+                except (TimeoutError, _vision.CameraBusy) as exc:
+                    log.warning("See Room stream ended: %s", exc)
+                    break
                 buf = io.BytesIO()
                 Image.fromarray(frame).save(buf, format="JPEG", quality=70)
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.getvalue() + b"\r\n"
@@ -362,7 +382,10 @@ async def puppet_camera_stream(token: str = ""):
         except asyncio.CancelledError:
             pass
         finally:
-            await asyncio.to_thread(_vision.release_camera)
+            try:
+                await asyncio.to_thread(_vision.release_camera)
+            except Exception as exc:
+                log.warning("See Room stream: release failed: %s", exc)
 
     return StreamingResponse(_generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 

@@ -2,7 +2,9 @@
 import os
 import re
 import sys
-from unittest.mock import patch
+import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -316,6 +318,306 @@ def test_camera_status_reports_vision_disabled(monkeypatch):
     body = resp.json()
     assert body["available"] is True          # the stream still works
     assert body["vision_enabled"] is False    # the description does not
+
+
+# ---------------------------------------------------------------------------
+# See Room (/api/puppet/camera/stream) and the camera check
+#
+# See Room shares one ref-counted camera with _check_camera, and with the turn
+# frames worker later. cancel_all_and_flush() is global, so a direct
+# cam.capture_array here could lose its job and block with no timeout. Every
+# capture goes through camera.capture_frame: one job at a time, under one lock,
+# always bounded. The route must also never hold a stale ref or turn a busy
+# camera into a 500.
+# ---------------------------------------------------------------------------
+
+class _Busy(RuntimeError):
+    """Stands in for camera.CameraBusy in the fake vision module."""
+
+
+def _a_frame():
+    import numpy as np
+    return np.zeros((4, 4, 3), dtype=np.uint8)
+
+
+def _fake_vision(captures=None):
+    """A vision stand-in. `captures` are return values or exceptions, in order.
+    Its Picamera2 object refuses capture_array, so a direct call fails the test."""
+    cam = MagicMock()
+    cam.capture_array.side_effect = AssertionError("the route called capture_array")
+    return SimpleNamespace(
+        CameraBusy=_Busy,
+        acquire_camera=MagicMock(return_value=cam),
+        release_camera=MagicMock(),
+        capture_frame=MagicMock(side_effect=captures),
+    )
+
+
+def _get_stream(client):
+    from web.auth import issue_stream_token
+    return client.get(f"/api/puppet/camera/stream?token={issue_stream_token()}")
+
+
+def _stream_with(fake, client=None):
+    client = client or get_client()
+    with patch("web.routes.puppet._vision", fake), \
+         patch("web.routes.puppet._check_camera", return_value=True):
+        return _get_stream(client)
+
+
+def _real_camera(monkeypatch, cam):
+    """A private copy of scripts/camera.py around a fake Picamera2 object.
+
+    A private copy, so the suite's other reloads of `camera` cannot reach it.
+    """
+    import importlib.util
+    picamera2 = types.ModuleType("picamera2")
+    picamera2.Picamera2 = MagicMock(return_value=cam)
+    monkeypatch.setitem(sys.modules, "picamera2", picamera2)
+    spec = importlib.util.spec_from_file_location(
+        "camera_for_puppet_tests",
+        os.path.join(os.path.dirname(__file__), "..", "scripts", "camera.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _vision_over(camera_module):
+    return SimpleNamespace(
+        CameraBusy=camera_module.CameraBusy,
+        acquire_camera=camera_module.acquire_camera,
+        release_camera=camera_module.release_camera,
+        capture_frame=camera_module.capture_frame,
+    )
+
+
+@pytest.fixture
+def fresh_camera_cache(monkeypatch):
+    monkeypatch.setattr("web.routes.puppet._camera_available_cache", None)
+
+
+class TestSeeRoomStream:
+    def test_it_captures_through_capture_frame(self):
+        fake = _fake_vision([_a_frame(), TimeoutError("no frame")])
+
+        resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+        assert resp.content.count(b"--frame") == 1
+        assert fake.capture_frame.call_count == 2
+
+    def test_a_capture_timeout_ends_the_stream_and_releases(self):
+        fake = _fake_vision([_a_frame(), _a_frame(), TimeoutError("no frame")])
+
+        resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+        assert resp.content.count(b"--frame") == 2
+        fake.release_camera.assert_called_once()
+
+    def test_a_timeout_is_logged(self, caplog):
+        import logging
+        fake = _fake_vision([TimeoutError("no frame in 3.0 s")])
+
+        with caplog.at_level(logging.WARNING, logger="bender.puppet"):
+            _stream_with(fake)
+
+        assert any("no frame in 3.0 s" in r.message for r in caplog.records)
+
+    def test_a_busy_capture_ends_the_stream_and_releases(self):
+        fake = _fake_vision([_a_frame(), _Busy("lock held")])
+
+        resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+        assert resp.content.count(b"--frame") == 1
+        fake.release_camera.assert_called_once()
+
+    def test_a_busy_acquire_ends_the_stream_with_no_release(self):
+        """It runs after the 200 headers, so all it can do is end cleanly. It
+        took no ref, so a release would take someone else's."""
+        fake = _fake_vision([_a_frame()])
+        fake.acquire_camera.side_effect = _Busy("lock held")
+
+        resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+        assert resp.content == b""
+        fake.capture_frame.assert_not_called()
+        fake.release_camera.assert_not_called()
+
+    def test_a_busy_release_does_not_escape(self, caplog):
+        """TestClient re-raises a server error, so an escape fails this test."""
+        import logging
+        fake = _fake_vision([_a_frame(), TimeoutError("no frame")])
+        fake.release_camera.side_effect = _Busy("lock held")
+
+        with caplog.at_level(logging.WARNING, logger="bender.puppet"):
+            resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+        fake.release_camera.assert_called_once()
+        assert any("release" in r.message.lower() for r in caplog.records)
+
+    def test_another_capture_failure_still_releases(self):
+        fake = _fake_vision([RuntimeError("the sensor said no")])
+
+        with pytest.raises(RuntimeError, match="the sensor said no"):
+            _stream_with(fake)
+
+        fake.release_camera.assert_called_once()
+
+    def test_the_wall_clock_cap_still_ends_the_stream(self, monkeypatch):
+        from config import cfg
+        monkeypatch.setattr(cfg, "web_stream_max_s", 0.05, raising=False)
+        fake = _fake_vision(lambda: _a_frame())
+
+        resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+        assert resp.content.count(b"--frame") >= 1
+        fake.release_camera.assert_called_once()
+
+    def test_a_cancel_during_a_capture_ends_it_and_releases(self):
+        """The disconnect path. The browser left while a capture ran."""
+        import asyncio
+        import threading
+        from web.auth import issue_stream_token
+        from web.routes import puppet
+
+        unblock = threading.Event()
+        inside = threading.Event()
+
+        def capture():
+            inside.set()
+            unblock.wait(5)
+            return _a_frame()
+
+        fake = _fake_vision(capture)
+
+        async def drive():
+            with patch("web.routes.puppet._check_camera", return_value=True):
+                response = await puppet.puppet_camera_stream(token=issue_stream_token())
+            stream = response.body_iterator
+            task = asyncio.ensure_future(stream.__anext__())
+            assert await asyncio.to_thread(inside.wait, 5), "no capture started"
+            task.cancel()
+            try:
+                with pytest.raises(StopAsyncIteration):
+                    await task
+            finally:
+                unblock.set()
+
+        with patch("web.routes.puppet._vision", fake):
+            asyncio.run(drive())
+
+        fake.release_camera.assert_called_once()
+
+    def test_the_real_recovery_path_through_camera_py(self, monkeypatch):
+        """The real camera.py, with only Picamera2 faked. The second frame
+        never arrives. The stream ends, the camera closes, nothing calls stop()."""
+        import concurrent.futures
+
+        cam = MagicMock()
+        cam.capture_array.side_effect = [
+            _a_frame(),
+            concurrent.futures.TimeoutError(),
+        ]
+        camera_module = _real_camera(monkeypatch, cam)
+
+        resp = _stream_with(_vision_over(camera_module))
+
+        assert resp.status_code == 200
+        assert resp.content.count(b"--frame") == 1
+        for call in cam.capture_array.call_args_list:
+            assert call.kwargs["wait"] == camera_module._CAPTURE_TIMEOUT_S
+        cam.cancel_all_and_flush.assert_called()
+        cam.close.assert_called_once()
+        cam.stop.assert_not_called()
+        assert camera_module._cam is None
+        assert camera_module._cam_refcount == 0
+
+
+class TestCheckCamera:
+    def test_a_good_check_acquires_and_releases(self, fresh_camera_cache):
+        from web.routes import puppet
+        fake = _fake_vision()
+
+        with patch.object(puppet, "_vision", fake):
+            assert puppet._check_camera() is True
+
+        fake.acquire_camera.assert_called_once()
+        fake.release_camera.assert_called_once()
+
+    def test_busy_returns_false_and_releases_nothing(self, fresh_camera_cache):
+        from web.routes import puppet
+        fake = _fake_vision()
+        fake.acquire_camera.side_effect = _Busy("lock held")
+
+        with patch.object(puppet, "_vision", fake):
+            assert puppet._check_camera() is False
+
+        fake.release_camera.assert_not_called()
+
+    def test_busy_is_not_cached(self, fresh_camera_cache):
+        """Busy is about this moment, not the camera. A 10 s cached False would
+        return 503 from See Room for 10 s after the lock came free."""
+        from web.routes import puppet
+        fake = _fake_vision()
+        fake.acquire_camera.side_effect = [_Busy("lock held"), MagicMock()]
+
+        with patch.object(puppet, "_vision", fake):
+            assert puppet._check_camera() is False
+            assert puppet._check_camera() is True
+
+    def test_a_real_failure_is_still_cached(self, fresh_camera_cache):
+        """A missing camera stays missing. Do not retry an open on every call."""
+        from web.routes import puppet
+        fake = _fake_vision()
+        fake.acquire_camera.side_effect = RuntimeError("no camera")
+
+        with patch.object(puppet, "_vision", fake):
+            assert puppet._check_camera() is False
+            assert puppet._check_camera() is False
+
+        fake.acquire_camera.assert_called_once()
+
+    def test_a_busy_release_does_not_escape(self, fresh_camera_cache):
+        from web.routes import puppet
+        fake = _fake_vision()
+        fake.release_camera.side_effect = _Busy("lock held")
+
+        with patch.object(puppet, "_vision", fake):
+            assert puppet._check_camera() is True
+
+    def test_a_busy_release_is_not_a_500(self, fresh_camera_cache):
+        fake = _fake_vision()
+        fake.release_camera.side_effect = _Busy("lock held")
+        client = get_client()
+
+        with patch("web.routes.puppet._vision", fake):
+            resp = client.get("/api/puppet/camera/status", headers=auth())
+
+        assert resp.status_code == 200
+        assert resp.json()["available"] is True
+
+    def test_a_held_lock_does_not_block_past_the_timeout(self, fresh_camera_cache, monkeypatch):
+        """The real camera.py and a real held lock, with a short timeout."""
+        import time
+        from web.routes import puppet
+
+        camera_module = _real_camera(monkeypatch, MagicMock())
+        camera_module._LOCK_TIMEOUT_S = 0.05
+        assert camera_module._cam_lock.acquire(timeout=1)
+        started = time.monotonic()
+        try:
+            with patch.object(puppet, "_vision", _vision_over(camera_module)):
+                assert puppet._check_camera() is False
+        finally:
+            camera_module._cam_lock.release()
+
+        assert time.monotonic() - started < 1.0
+        assert puppet._camera_available_cache is None
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,10 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+class CameraBusy(RuntimeError):
+    """Stands in for camera.CameraBusy, because the stub module replaces camera."""
+
+
 def _make_vision_module(
     camera_mock=None,
     vlm_mock=None,
@@ -33,6 +37,7 @@ def _make_vision_module(
     cam_mod.acquire_camera = camera_mock["acquire_camera"]
     cam_mod.release_camera = camera_mock["release_camera"]
     cam_mod.capture_frame = camera_mock["capture_frame"]
+    cam_mod.CameraBusy = CameraBusy
     sys.modules["camera"] = cam_mod
 
     # Build stub vlm module
@@ -196,14 +201,40 @@ def test_release_camera_delegates_to_camera_module():
     cam_mock["release_camera"].assert_called_once()
 
 
+def test_capture_frame_delegates_to_camera_module():
+    vision, cam_mock, _ = _make_vision_module()
+    result = vision.capture_frame()
+    cam_mock["capture_frame"].assert_called_once_with()
+    assert result is cam_mock["capture_frame"].return_value
+
+
+def test_camera_busy_is_the_camera_modules_class():
+    """puppet.py catches `vision.CameraBusy`, so it must be the same class."""
+    vision, _, _ = _make_vision_module()
+    assert vision.CameraBusy is CameraBusy
+
+
 def test_analyse_scene_returns_empty_on_acquire_error():
     cam_mock = _default_camera_mock()
     cam_mock["acquire_camera"].side_effect = RuntimeError("camera unavailable")
     vision, cam_mock, _ = _make_vision_module(camera_mock=cam_mock)
     result = vision.analyse_scene()
     assert result.is_empty()
-    # release_camera still called in finally (safe — guarded against refcount 0)
-    cam_mock["release_camera"].assert_called_once()
+    assert result.failed()
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("camera unavailable"),
+    CameraBusy("lock held"),
+], ids=["failed", "busy"])
+def test_a_failed_acquire_releases_nothing(error):
+    """With CameraBusy, another holder's ref can be live. A release here would
+    take that ref away and close the camera under See Room."""
+    cam_mock = _default_camera_mock()
+    cam_mock["acquire_camera"].side_effect = error
+    vision, cam_mock, _ = _make_vision_module(camera_mock=cam_mock)
+    vision.analyse_scene()
+    cam_mock["release_camera"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -211,12 +242,10 @@ def test_analyse_scene_returns_empty_on_acquire_error():
 # ---------------------------------------------------------------------------
 
 def test_camera_busy_logs_warning_not_error(caplog):
-    """Camera-busy RuntimeError should log at WARNING, not ERROR with traceback."""
+    """CameraBusy should log at WARNING, not ERROR with traceback."""
     import logging
     cam_mock = _default_camera_mock()
-    cam_mock["acquire_camera"].side_effect = RuntimeError(
-        "Failed to acquire camera: Device or resource busy"
-    )
+    cam_mock["acquire_camera"].side_effect = CameraBusy("lock held")
     vision, _, _ = _make_vision_module(camera_mock=cam_mock)
 
     with caplog.at_level(logging.DEBUG, logger="bender.vision"):
@@ -228,6 +257,34 @@ def test_camera_busy_logs_warning_not_error(caplog):
     assert any("busy" in r.message.lower() for r in warning_msgs), \
         "Expected a WARNING about camera being busy"
     assert len(error_msgs) == 0, "Should not log at ERROR for camera-busy condition"
+
+
+def test_busy_is_decided_by_type_and_not_by_message(caplog):
+    """picamera2 0.3.38 refuses an open with "Camera __init__ sequence did not
+    complete.", so the old `"busy" in str(e)` match never fired. A word in a
+    message says nothing. Only the type does."""
+    import logging
+    cam_mock = _default_camera_mock()
+    cam_mock["acquire_camera"].side_effect = RuntimeError("Device or resource busy")
+    vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+
+    with caplog.at_level(logging.DEBUG, logger="bender.vision"):
+        result = vision.analyse_scene()
+
+    assert result.error == "the camera failed: Device or resource busy"
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+def test_a_busy_capture_is_reported_and_released():
+    cam_mock = _default_camera_mock()
+    cam_mock["capture_frame"].side_effect = CameraBusy("lock held")
+    vision, cam_mock, _ = _make_vision_module(camera_mock=cam_mock)
+
+    result = vision.analyse_scene()
+
+    assert result.failed()
+    assert "busy" in result.error
+    cam_mock["release_camera"].assert_called_once()
 
 
 def test_real_error_still_logs_exception(caplog):
@@ -307,11 +364,20 @@ class TestFailedIsNotEmpty:
 
     def test_a_busy_camera_is_a_failure(self):
         cam_mock = _default_camera_mock()
-        cam_mock["acquire_camera"].side_effect = RuntimeError("Device busy")
+        cam_mock["acquire_camera"].side_effect = CameraBusy("lock held")
         vision, _, _ = _make_vision_module(camera_mock=cam_mock)
         result = vision.analyse_scene()
         assert result.failed() is True
-        assert "another process" in result.error
+        assert result.error == "the camera is busy"
+
+    def test_a_capture_timeout_is_a_failure(self):
+        cam_mock = _default_camera_mock()
+        cam_mock["capture_frame"].side_effect = TimeoutError("no frame in 3.0 s")
+        vision, cam_mock, _ = _make_vision_module(camera_mock=cam_mock)
+        result = vision.analyse_scene()
+        assert result.failed() is True
+        assert "no frame in 3.0 s" in result.error
+        cam_mock["release_camera"].assert_called_once()
 
     def test_a_vlm_exception_is_a_failure(self):
         vlm_mock = _default_vlm_mock()
@@ -328,3 +394,41 @@ class TestFailedIsNotEmpty:
         vision, cam_mock, _ = _make_vision_module(vlm_mock=vlm_mock)
         vision.analyse_scene()
         cam_mock["release_camera"].assert_called_once()
+
+
+class TestABusyReleaseDoesNotEscape:
+    """analyse_scene returns a SceneDescription and never raises. Its callers
+    run on a future and in a handler, and they rely on that."""
+
+    def test_after_a_good_look_the_answer_survives(self):
+        cam_mock = _default_camera_mock()
+        cam_mock["release_camera"].side_effect = CameraBusy("lock held")
+        vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+
+        result = vision.analyse_scene()
+
+        assert result.description == "A robot sits in a room."
+        assert result.failed() is False
+
+    def test_after_a_failed_look_the_failure_survives(self):
+        cam_mock = _default_camera_mock()
+        cam_mock["capture_frame"].side_effect = RuntimeError("Camera exploded")
+        cam_mock["release_camera"].side_effect = CameraBusy("lock held")
+        vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+
+        result = vision.analyse_scene()
+
+        assert result.failed() is True
+        assert "Camera exploded" in result.error
+
+    def test_it_is_logged(self, caplog):
+        import logging
+        cam_mock = _default_camera_mock()
+        cam_mock["release_camera"].side_effect = CameraBusy("lock held")
+        vision, _, _ = _make_vision_module(camera_mock=cam_mock)
+
+        with caplog.at_level(logging.DEBUG, logger="bender.vision"):
+            vision.analyse_scene()
+
+        assert any(r.levelno == logging.WARNING and "release" in r.message.lower()
+                   for r in caplog.records)
