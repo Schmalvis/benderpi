@@ -656,6 +656,24 @@ class TestCamera:
         assert by_name(outcomes())["b"]["outcome"] == "saved"
         assert worker.retry_open_at == 0.0
 
+    def test_an_open_camera_is_used_inside_the_window(self, cam, worker,
+                                                      monkeypatch):
+        # See Room opened it after the refusal. An acquire then builds no
+        # Picamera2 and leaks nothing, so the window must not cost a frame.
+        monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
+        cam.acquire_error = RuntimeError("refused")
+        make_note("a")
+        run(worker)
+        cam.acquire_error = None
+        cam.refs = 1
+        cam.open_t = time.monotonic() - 10
+        make_note("b")
+        run(worker)
+        assert cam.events.count("acquire") == 2
+        assert by_name(outcomes())["b"]["outcome"] == "saved"
+        assert worker.held is True
+        assert worker.retry_open_at == 0.0
+
     def test_a_busy_camera_sets_no_backoff(self, cam, worker, monkeypatch):
         monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
         cam.acquire_error = CameraBusy("busy")

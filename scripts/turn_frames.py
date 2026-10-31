@@ -457,9 +457,10 @@ class _Worker:
         if newest is not None or warm_fresh:
             if not self.held:
                 wait = self.retry_open_at - time.monotonic()
-                if wait > 0:
+                if wait > 0 and camera.opened_at() is None:
                     # An open failed lately. Do not open again yet: each
-                    # failed open leaks a file descriptor.
+                    # failed open leaks a file descriptor. A camera that is
+                    # already open builds no Picamera2, so it costs nothing.
                     if newest is not None:
                         mtime_ns, _f, day, name = newest
                         _record(day, name, "failed",
