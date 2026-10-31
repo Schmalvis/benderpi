@@ -319,8 +319,26 @@ class TestNoFrameRequested:
 
 
 class TestAHeldNoteDoesNotLeak:
-    def test_a_turn_with_no_log_turn_leaves_no_stale_values(self, rig,
-                                                            monkeypatch):
+    def test_a_note_held_at_session_end_never_reaches_the_next_session(
+            self, rig, monkeypatch):
+        # This is the plan's claim. Every path with no log_turn ends the
+        # session, and the next session has its own logger.
+        rig.responder.raise_next = RuntimeError("model fell over")
+        with pytest.raises(RuntimeError):
+            rig.session.handle_turn("first")
+        assert rig.log_._held                      # precondition: it is held
+        rig.session.end("error")
+        assert not any(k in row for row in rig.rows() for k in FRAME_KEYS)
+        # The next turn makes no note of its own, so a leak has nowhere to
+        # hide. A turn that makes one would overwrite it.
+        rig.make()
+        monkeypatch.setattr(turn_frames, "request", lambda name: None)
+        rig.session.handle_turn("second")
+        row = rig.turns()[-1]
+        assert row["user_text"] == "second"
+        assert not any(k in row for k in FRAME_KEYS)
+
+    def test_a_later_turn_writes_its_own_values(self, rig, monkeypatch):
         # Turn 1 raises after _snap and before log_turn: the note is still held.
         rig.responder.raise_next = RuntimeError("model fell over")
         with pytest.raises(RuntimeError):
@@ -471,6 +489,11 @@ class TestHalloweenLoopWarm:
         with pytest.raises((KeyboardInterrupt, IndexError, SystemExit)):
             wc._halloween_loop(None, object(), object(), wc.log)
 
+    def _usable_sensor(self, wc, monkeypatch):
+        """A sensor that works, with the gate open. warm() needs both."""
+        monkeypatch.setattr(wc.presence, "available", lambda: True)
+        monkeypatch.setattr(wc.presence, "wait_for_presence", lambda s: True)
+
     def test_a_raising_warm_does_not_stop_the_loop_or_the_capture(
             self, wc, monkeypatch, caplog):
         events = []
@@ -485,6 +508,7 @@ class TestHalloweenLoopWarm:
             raise RuntimeError("warm on fire")
 
         monkeypatch.setattr(wc.turn_frames, "warm", boom)
+        self._usable_sensor(wc, monkeypatch)
         self._listen_recorder(wc, events, [""])
         with caplog.at_level("WARNING"):
             self._run(wc)
@@ -497,10 +521,51 @@ class TestHalloweenLoopWarm:
         assert not [c for c in wc._metric_counts
                     if c[0] == "halloween_error"]
 
+    def test_no_usable_sensor_means_no_warm_and_the_capture_still_runs(
+            self, wc, monkeypatch):
+        # A gate that fails open passes on every loop. Warming there would hold
+        # the camera open all night.
+        events = []
+        monkeypatch.setattr(wc.turn_frames, "warm",
+                            lambda: events.append("warm"))
+        monkeypatch.setattr(wc.presence, "available", lambda: False)
+        monkeypatch.setattr(wc.presence, "wait_for_presence", lambda s: True)
+        self._listen_recorder(wc, events, ["", ""])
+        self._run(wc)
+        assert events == ["listen"] * 3
+
+    def test_a_usable_sensor_means_warm_runs(self, wc, monkeypatch):
+        events = []
+        monkeypatch.setattr(wc.turn_frames, "warm",
+                            lambda: events.append("warm"))
+        self._usable_sensor(wc, monkeypatch)
+        self._listen_recorder(wc, events, ["", ""])
+        self._run(wc)
+        assert events == ["warm", "listen"] * 3
+
+    def test_a_raising_available_does_not_stop_the_capture(
+            self, wc, monkeypatch):
+        # available() sits inside the guard for this reason. Bounded: without
+        # the guard the capture never runs, and it is the test's only exit.
+        events = []
+
+        def boom():
+            events.append("available")
+            if events.count("available") > 3:
+                raise KeyboardInterrupt
+            raise RuntimeError("sensor on fire")
+
+        monkeypatch.setattr(wc.presence, "available", boom)
+        monkeypatch.setattr(wc.presence, "wait_for_presence", lambda s: True)
+        self._listen_recorder(wc, events, [""])
+        self._run(wc)
+        assert events == ["available", "listen", "available", "listen"]
+
     def test_warm_runs_once_per_pass_before_the_capture(self, wc, monkeypatch):
         events = []
         monkeypatch.setattr(wc.turn_frames, "warm",
                             lambda: events.append("warm"))
+        self._usable_sensor(wc, monkeypatch)
         self._listen_recorder(wc, events, ["", ""])
         self._run(wc)
         assert events == ["warm", "listen"] * 3
@@ -535,6 +600,7 @@ class TestHalloweenLoopWarm:
                 raise KeyboardInterrupt
             return answers.pop(0)
 
+        monkeypatch.setattr(wc.presence, "available", lambda: True)
         monkeypatch.setattr(wc.presence, "wait_for_presence", gate)
         self._listen_recorder(wc, events, [""])
         self._run(wc)

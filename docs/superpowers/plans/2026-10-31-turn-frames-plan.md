@@ -36,7 +36,7 @@ handle_turn(), after end-session         drops any note over 5 s old
 | Trigger | `handle_turn`, after the end-session check. One frame per reply | The person has just spoken and he starts to answer |
 | No greeting frame | **Cut** | A cold open during the greeting is the overlap `f435936` moved away from. The first reply frame comes seconds later |
 | No puppet frames | **Cut** | The owner typed the line. This also removes an unvalidated `id` path |
-| Warm-up | `_halloween_loop` calls `turn_frames.warm()` when the gate is open, before the capture | The camera opens while no audio plays. The first frame of a Halloween session is then warm and settled. Household mode has no gate, so its first frame opens cold (see Open risk) |
+| Warm-up | `_halloween_loop` calls `turn_frames.warm()` when the gate is open **and `presence.available()` is true**, before the capture, inside its own guard | The camera opens while no audio plays. The first frame of a Halloween session is then warm and settled. Household mode has no gate, so its first frame opens cold (see Open risk). A gate that fails open passes on every loop, so warming there would hold the camera open all night: with no usable sensor the first frame opens cold too. Decided by the coordinator on 2026-10-31, after the Task 7 review |
 | Where the camera runs | Daemon thread in `bender-web` | See Room, `_check_camera` and the frames share one ref-counted camera in one process. `bender-converse` never imports `picamera2` while `vlm_enabled` is false |
 | Queue | Empty file per request in `<frames>/.queue/`, named `<YYYY-MM-DD>__<name>`. Newest by `st_mtime_ns` wins. A note is removed **before** the capture | A slow camera cannot build a backlog. The name carries the date, so the logged path matches the file. A crash cannot retry a note for ever |
 | Stale note | Age over 5 s by `abs(now - mtime)`: dropped and recorded. All notes are removed at worker start | A late frame shows the wrong person under the wrong turn. `abs` because the clock steps at boot |
@@ -156,7 +156,8 @@ This plan reduces the risk. It does not prove it gone:
 - the Halloween warm-up opens the camera while no audio plays
 - the 15 s hold keeps the ISP streaming through replies, at a CPU cost not yet measured
 
-Household mode's first frame still opens cold during the thinking clip.
+Household mode's first frame still opens cold during the thinking clip. So does the
+first frame of a Halloween session with no usable sensor.
 
 The owner's on-device test decides. **If he hears dropouts, turn the feature off.**
 
@@ -265,6 +266,8 @@ See Room, through the route:
 - a held note does not leak to a later turn
 - `session.start()` makes no request
 - `warm()` raising does not stop `_halloween_loop`
+- `available()` False with `wait_for_presence()` True: no `warm()`, and the capture still runs
+- `available()` True: `warm()` runs
 
 HTTP layer, the 2026-10-14 lesson:
 

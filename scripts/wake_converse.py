@@ -231,8 +231,13 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
             # plays, so the first frame of the session is warm. Its own guard:
             # a raise reaching the outer except would skip this capture and
             # sleep the cooldown, which makes Bender deaf for the pass.
+            #
+            # Only with a usable sensor. A gate that fails open passes on every
+            # loop, so warm() would hold the camera open all night. With no
+            # sensor the first frame opens cold, as in household mode.
             try:
-                turn_frames.warm()
+                if presence.available():
+                    turn_frames.warm()
             except Exception as exc:
                 log_.warning("turn frame warm failed: %s", exc)
             leds.set_listening(True)
