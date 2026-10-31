@@ -1,4 +1,5 @@
 """BenderPi Web UI — FastAPI application."""
+import contextlib
 import os
 import sys
 
@@ -10,7 +11,9 @@ sys.path.insert(0, _SCRIPTS_DIR)
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
+import turn_frames
 from config import cfg
+from logger import get_logger
 from metrics import metrics
 from web.auth import require_configured_pin
 from web.routes.auth import router as auth_router
@@ -23,6 +26,7 @@ from web.routes.timers import router as timers_router
 from web.routes.status import router as status_router
 from web.routes.remote import router as remote_router
 from web.routes.vision import router as vision_router
+from web.routes.frames import router as frames_router
 
 _DIST_DIR = os.path.join(_BASE_DIR, "web", "dist")
 
@@ -36,7 +40,34 @@ require_configured_pin()
 for _secret in cfg.validate():
     metrics.count("secrets_missing", secret=_secret)
 
-app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None)
+_log = get_logger("web.app")
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """Run the turn frames worker for the life of the server.
+
+    Each call is guarded. A raise here stops uvicorn, and bender-web holds
+    STOP BENDER. start_worker and stop_worker never raise by design, so this
+    is the second wall. Nothing here runs at import: importlib.reload(web.app)
+    happens at about 14 test sites.
+    """
+    try:
+        turn_frames.start_worker()
+    except Exception:
+        _log.exception("turn frames worker did not start")
+    try:
+        yield
+    finally:
+        try:
+            # Joins for at most 1 s and never waits on the camera.
+            turn_frames.stop_worker()
+        except Exception:
+            _log.exception("turn frames worker did not stop")
+
+
+app = FastAPI(title="BenderPi", docs_url=None, redoc_url=None,
+              lifespan=_lifespan)
 
 # Security headers. CSP is deliberately strict; the committed Vite build inlines
 # some styles, so style-src allows 'unsafe-inline'. No inline scripts are used.
@@ -73,6 +104,7 @@ app.include_router(timers_router)
 app.include_router(status_router)
 app.include_router(remote_router)
 app.include_router(vision_router)
+app.include_router(frames_router)
 
 if os.path.isdir(_DIST_DIR):
     app.mount("/", StaticFiles(directory=_DIST_DIR, html=True), name="static")
