@@ -75,7 +75,13 @@ def release() -> None:
 
 
 def _preprocess(frame: np.ndarray) -> np.ndarray:
-    """Resize frame to 336x336 RGB uint8. Input is already RGB from Picamera2 (RGB888)."""
+    """Resize frame to 336x336 RGB uint8.
+
+    The input must be RGB, and this function does not swap channels.
+    `camera.capture_frame()` gives BGR in memory (Picamera2 RGB888), so a
+    caller converts first, as `vision.analyse_scene` does with `camera.to_pil`.
+    Frames read from saved JPEG files are already RGB.
+    """
     resized = cv2.resize(frame, (_IMAGE_SIZE, _IMAGE_SIZE), interpolation=cv2.INTER_LINEAR)
     return resized.astype(np.uint8)
 

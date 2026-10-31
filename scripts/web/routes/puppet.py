@@ -394,7 +394,6 @@ async def puppet_camera_stream(token: str = ""):
 
     async def _generate():
         import io
-        from PIL import Image
         try:
             await _acquire_for_stream()
         except _vision.CameraBusy as exc:
@@ -419,7 +418,7 @@ async def puppet_camera_stream(token: str = ""):
                     log.warning("See Room stream ended: %s", exc)
                     break
                 buf = io.BytesIO()
-                Image.fromarray(frame).save(buf, format="JPEG", quality=70)
+                _vision.to_pil(frame).save(buf, format="JPEG", quality=70)
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.getvalue() + b"\r\n"
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:

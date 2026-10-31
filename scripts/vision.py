@@ -8,6 +8,7 @@ Public API
 acquire_camera()        Delegate to camera.acquire_camera()
 release_camera()        Delegate to camera.release_camera()
 capture_frame()         Delegate to camera.capture_frame()
+to_pil(frame)           Delegate to camera.to_pil(): a captured frame as an RGB image
 analyse_scene()         Capture a frame and describe it; returns SceneDescription
 CameraBusy              camera.CameraBusy, so callers need only this module
 """
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+
+import numpy as np
 
 import camera
 import vlm
@@ -80,6 +83,11 @@ def capture_frame():
     return camera.capture_frame()
 
 
+def to_pil(frame):
+    """Delegate to camera.to_pil(). The one place that knows the channel order."""
+    return camera.to_pil(frame)
+
+
 def analyse_scene() -> SceneDescription:
     """Capture a frame and describe it via VLM. Returns SceneDescription.
 
@@ -92,7 +100,10 @@ def analyse_scene() -> SceneDescription:
         camera.acquire_camera()
         acquired = True
         frame = camera.capture_frame()
-        description = vlm.describe_scene(frame, prompt=cfg.vlm_prompt)
+        # capture_frame gives BGR in memory. describe_scene takes RGB, so the
+        # conversion happens here, at the seam, and not inside vlm.py.
+        rgb = np.asarray(camera.to_pil(frame))
+        description = vlm.describe_scene(rgb, prompt=cfg.vlm_prompt)
         if description is None:
             # The VLM timed out, or it could not load. On this device the load
             # fails every time while bender-converse holds the KV-Cache.

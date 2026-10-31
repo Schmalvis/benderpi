@@ -38,6 +38,9 @@ def _make_vision_module(
     cam_mod.release_camera = camera_mock["release_camera"]
     cam_mod.capture_frame = camera_mock["capture_frame"]
     cam_mod.CameraBusy = CameraBusy
+    # The channel order lives in one function. Use the real one, so these tests
+    # see the real conversion and not a copy of it.
+    cam_mod.to_pil = _real_to_pil()
     sys.modules["camera"] = cam_mod
 
     # Build stub vlm module
@@ -50,6 +53,19 @@ def _make_vision_module(
     import vision
     importlib.reload(vision)
     return vision, camera_mock, vlm_mock
+
+
+def _real_to_pil():
+    """camera.to_pil from the real scripts/camera.py, loaded privately so the
+    stub in sys.modules stays a stub."""
+    import importlib.util
+    import os
+    spec = importlib.util.spec_from_file_location(
+        "camera_for_vision_tests",
+        os.path.join(os.path.dirname(__file__), "..", "scripts", "camera.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.to_pil
 
 
 def _default_camera_mock():
@@ -143,12 +159,52 @@ def test_analyse_scene_releases_camera():
     cam_mock["release_camera"].assert_called_once()
 
 
-def test_analyse_scene_passes_frame_to_vlm():
+def test_analyse_scene_passes_the_frame_to_vlm_as_rgb():
+    import numpy as np
     vision, cam_mock, vlm_mock = _make_vision_module()
     frame = cam_mock["capture_frame"].return_value
     vision.analyse_scene()
     from config import cfg
-    vlm_mock["describe_scene"].assert_called_once_with(frame, prompt=cfg.vlm_prompt)
+    vlm_mock["describe_scene"].assert_called_once()
+    args, kwargs = vlm_mock["describe_scene"].call_args
+    assert kwargs == {"prompt": cfg.vlm_prompt}
+    assert args[0].shape == frame.shape
+    assert args[0].dtype == np.uint8
+
+
+def test_the_vlm_gets_rgb_when_the_camera_gives_bgr():
+    """capture_frame returns BGR in memory. vlm.describe_scene documents an RGB
+    input. A pure red frame is [0, 0, 255] in memory, and it must reach the VLM
+    as (255, 0, 0). A green frame would pass either way, so it proves nothing."""
+    import numpy as np
+    cam_mock = _default_camera_mock()
+    red_bgr = np.zeros((4, 4, 3), dtype=np.uint8)
+    red_bgr[..., 2] = 255
+    cam_mock["capture_frame"].return_value = red_bgr
+    seen = []
+    vlm_mock = _default_vlm_mock()
+    vlm_mock["describe_scene"].side_effect = (
+        lambda frame, prompt=None: seen.append(np.array(frame)) or "a red thing")
+    vision, _, _ = _make_vision_module(camera_mock=cam_mock, vlm_mock=vlm_mock)
+
+    result = vision.analyse_scene()
+
+    assert result.description == "a red thing"
+    assert len(seen) == 1
+    assert tuple(seen[0][0, 0]) == (255, 0, 0)
+
+
+def test_a_failed_conversion_is_a_failed_look_and_releases():
+    """The conversion sits inside the try, like every other step of the look."""
+    cam_mock = _default_camera_mock()
+    cam_mock["capture_frame"].return_value = "not a frame"
+    vision, cam_mock, vlm_mock = _make_vision_module(camera_mock=cam_mock)
+
+    result = vision.analyse_scene()
+
+    assert result.failed() is True
+    vlm_mock["describe_scene"].assert_not_called()
+    cam_mock["release_camera"].assert_called_once()
 
 
 def test_analyse_scene_returns_empty_on_camera_exception():
@@ -206,6 +262,15 @@ def test_capture_frame_delegates_to_camera_module():
     result = vision.capture_frame()
     cam_mock["capture_frame"].assert_called_once_with()
     assert result is cam_mock["capture_frame"].return_value
+
+
+def test_to_pil_delegates_to_camera_module():
+    vision, cam_mock, _ = _make_vision_module()
+    sentinel = object()
+    frame = object()
+    sys.modules["camera"].to_pil = mock.MagicMock(return_value=sentinel)
+    assert vision.to_pil(frame) is sentinel
+    sys.modules["camera"].to_pil.assert_called_once_with(frame)
 
 
 def test_camera_busy_is_the_camera_modules_class():

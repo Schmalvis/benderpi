@@ -340,6 +340,18 @@ def _a_frame():
     return np.zeros((4, 4, 3), dtype=np.uint8)
 
 
+def _real_to_pil():
+    """camera.to_pil from the real scripts/camera.py. The channel order lives in
+    that one function, so the fake vision module borrows it instead of copying."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "camera_for_puppet_to_pil",
+        os.path.join(os.path.dirname(__file__), "..", "scripts", "camera.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.to_pil
+
+
 def _fake_vision(captures=None):
     """A vision stand-in. `captures` are return values or exceptions, in order.
     Its Picamera2 object refuses capture_array, so a direct call fails the test."""
@@ -350,6 +362,7 @@ def _fake_vision(captures=None):
         acquire_camera=MagicMock(return_value=cam),
         release_camera=MagicMock(),
         capture_frame=MagicMock(side_effect=captures),
+        to_pil=_real_to_pil(),
     )
 
 
@@ -388,6 +401,7 @@ def _vision_over(camera_module):
         acquire_camera=camera_module.acquire_camera,
         release_camera=camera_module.release_camera,
         capture_frame=camera_module.capture_frame,
+        to_pil=camera_module.to_pil,
     )
 
 
@@ -397,6 +411,26 @@ def fresh_camera_cache(monkeypatch):
 
 
 class TestSeeRoomStream:
+    def test_the_stream_shows_the_colours_the_camera_saw(self):
+        """capture_frame returns BGR in memory. A pure red frame is [0, 0, 255].
+        Decode the JPEG the viewer would get. A green frame would pass on the
+        old code too, so it proves nothing."""
+        import io
+        import numpy as np
+        from PIL import Image
+
+        red_bgr = np.zeros((16, 16, 3), dtype=np.uint8)
+        red_bgr[..., 2] = 255
+        fake = _fake_vision([red_bgr, TimeoutError("no frame")])
+
+        resp = _stream_with(fake)
+
+        body = resp.content
+        start = body.index(b"\xff\xd8")
+        end = body.rindex(b"\xff\xd9") + 2
+        r, g, b = Image.open(io.BytesIO(body[start:end])).convert("RGB").getpixel((8, 8))
+        assert r > 200 and g < 60 and b < 60, (r, g, b)
+
     def test_it_captures_through_capture_frame(self):
         fake = _fake_vision([_a_frame(), TimeoutError("no frame")])
 
