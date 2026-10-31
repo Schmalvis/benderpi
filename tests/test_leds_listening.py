@@ -8,7 +8,6 @@ import os
 import sys
 import types
 
-import pytest
 
 sys.path.insert(0, "scripts")
 
@@ -78,4 +77,4 @@ def test_set_listening_stays_dark_when_disabled(monkeypatch):
     monkeypatch.setattr(leds, "pixels", fake)
     monkeypatch.setattr(leds, "all_off", lambda: fake.calls.append(("off", None)))
     leds.set_listening(True)
-    assert ("fill", WHITE) not in fake.calls
+    assert fake.calls == []
