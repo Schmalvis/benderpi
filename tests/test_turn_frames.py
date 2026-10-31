@@ -1120,7 +1120,12 @@ class TestSurvival:
         monkeypatch.setattr(turn_frames, "_POLL_S", 0.01)
         turn_frames.start_worker()
         assert wait_for(lambda: os.path.isdir(queue_dir()))
+        # Stop first: rmtree racing a live worker that recreates .queue can
+        # fail with "directory not empty".
+        turn_frames.stop_worker()
         shutil.rmtree(frames_root())
+        assert not os.path.exists(queue_dir())
+        turn_frames.start_worker()
         assert wait_for(lambda: os.path.isdir(queue_dir()))
 
     @pytest.mark.parametrize("target", ["_sweep", "_take_notes",
