@@ -233,8 +233,13 @@
   });
   onDestroy(() => clearInterval(framesTimer));
 
-  $: framesStuck = framesStatus !== null
+  // A dead worker has its own line. It is not a stuck camera.
+  $: framesStuck = framesStatus !== null && framesStatus.worker_alive
     && framesStatus.worker_stuck_s !== null && framesStatus.worker_stuck_s > FRAMES_STUCK_S;
+  // The promise is a maximum, so show the value the sweep uses. Anything under
+  // 1 is treated as 7 there too.
+  $: framesDays = $config.turn_frames_retention_days >= 1
+    ? $config.turn_frames_retention_days : 7;
   $: framesWaiting = framesStatus !== null && framesStatus.waiting_notes > 0
     && framesStatus.oldest_note_age_s !== null && framesStatus.oldest_note_age_s > FRAMES_WAITING_S;
 
@@ -636,7 +641,7 @@
           />
           <label for="turn_frames_enabled" class="text-text-default text-sm">Keep a camera frame each time Bender replies</label>
         </div>
-        <p class="text-[11px] text-text-muted mt-1">Frames hold images of children and the street. They stay on the device for 7 days at most. A change takes effect after a restart.</p>
+        <p class="text-[11px] text-text-muted mt-1">Frames hold images of children and the street. They stay on the device for {framesDays} {framesDays === 1 ? 'day' : 'days'} at most. A change takes effect after a restart.</p>
 
         <div class="text-[12px] mt-2 space-y-1" data-testid="frames-status">
           {#if framesFailed}

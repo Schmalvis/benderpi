@@ -81,3 +81,17 @@ def test_the_checkbox_is_outside_every_halloween_block():
         else:
             stack.append(m.group(1))
     assert not any("halloweenOn" in cond for cond in stack), stack
+
+
+def test_the_page_states_the_retention_it_uses():
+    """A fixed "7 days" would be false once the key says otherwise."""
+    src = _page()
+    assert "7 days at most" not in src
+    assert re.search(r"\{framesDays\}.*at most", src)
+
+
+def test_a_dead_worker_is_not_reported_as_a_stuck_camera():
+    src = _page()
+    match = re.search(r"\$: framesStuck = (.*?);", src, re.S)
+    assert match, "framesStuck no longer has the shape this test reads"
+    assert "framesStatus.worker_alive" in match.group(1)
