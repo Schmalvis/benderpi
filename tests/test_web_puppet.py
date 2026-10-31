@@ -1,7 +1,10 @@
 """Tests for puppet mode API."""
 import os
+import re
 import sys
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
@@ -109,6 +112,48 @@ def test_volume_set():
         resp = client.post("/api/config/volume", json={"level": 75}, headers=auth())
         assert resp.status_code == 200
         assert resp.json()["level"] == 75
+
+
+class TestVolumeSeam:
+    """The page and the route must use the same key.
+
+    `api.js` sent `{volume}`, the route wants `{level}`, and it answered every
+    slider move with 400 for months. The GET had the same mismatch, so the
+    slider always showed 80. The page swallowed both errors and each side's own
+    tests passed, so this reads the keys out of the frontend source and uses
+    them against the real route. Found live on 2026-10-31.
+    """
+
+    @staticmethod
+    def _source(*parts):
+        root = os.path.join(os.path.dirname(__file__), "..", "web", "src")
+        with open(os.path.join(root, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_key_the_page_sends_is_the_key_the_route_reads(self):
+        match = re.search(r"setVolume = .*?JSON\.stringify\(\{ (\w+) \}\)",
+                          self._source("lib", "api.js"))
+        assert match, "setVolume no longer has the shape this test reads"
+        ok = type("R", (), {"returncode": 0, "stdout": ""})()
+        with patch("subprocess.run", return_value=ok):
+            resp = get_client().post("/api/config/volume",
+                                     json={match.group(1): 75},
+                                     headers=auth())
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize("parts, name", [
+        (("lib", "components", "VolumeSlider.svelte"), "data"),
+        (("pages", "Config.svelte"), "v"),
+    ])
+    def test_the_key_each_slider_reads_is_the_key_the_route_sends(
+            self, parts, name):
+        match = re.search(rf"\b{name}\.(\w+) \?\? null", self._source(*parts))
+        assert match, f"{parts[-1]} no longer has the shape this test reads"
+        out = type("R", (), {"returncode": 0,
+                             "stdout": "  Front Left: Playback 114 [90%]"})()
+        with patch("subprocess.run", return_value=out):
+            body = get_client().get("/api/config/volume", headers=auth()).json()
+        assert body[match.group(1)] == 90
 
 
 # ---------------------------------------------------------------------------

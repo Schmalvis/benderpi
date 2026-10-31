@@ -46,8 +46,13 @@ Open after the 17:31 visit: 4 of 6 AI replies copied the child's words back
 ("I see them! I see them!"), and one reply leaked script text ("Child(ren):").
 A group of children hit the 15 s `max_record_seconds` cap on 4 of 13 captures.
 
-Also found the same evening, not fixed: the volume slider has never worked.
-`api.js` sends `{volume}` and reads `.volume`; the route uses `level`.
+Volume slider fixed the same evening. It had never worked: `api.js` sent
+`{volume}` and both sliders read `.volume`, while the route uses `level`, so every
+move returned 400 and the slider showed 80 whatever the real level was. The page
+swallowed both errors. The slider now reads the real level, is disabled until it
+has one, reports a failed write, and always sends the last value of a drag.
+`TestVolumeSeam` reads the keys from the frontend source and uses them against
+the real route.
 
 ## 2026-10-29 (evening) — Hear Room made Bender deaf and blocked typed replies
 

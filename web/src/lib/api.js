@@ -87,7 +87,7 @@ export const updateConfig = (data) => request('/api/config', { method: 'PUT', bo
 export const getWatchdogConfig = () => request('/api/config/watchdog');
 export const updateWatchdogConfig = (data) => request('/api/config/watchdog', { method: 'PUT', body: JSON.stringify(data) });
 export const getVolume = () => request('/api/config/volume');
-export const setVolume = (volume) => request('/api/config/volume', { method: 'POST', body: JSON.stringify({ volume }) });
+export const setVolume = (level) => request('/api/config/volume', { method: 'POST', body: JSON.stringify({ level }) });
 
 // Puppet
 export const speak = (text) => request('/api/puppet/speak', { method: 'POST', body: JSON.stringify({ text }) });

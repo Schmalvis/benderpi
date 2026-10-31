@@ -170,10 +170,10 @@
   // Maintenance actions
   let maintenance = { rebuild: false, status: false };
   let maintenanceMsg = '';
-  let volume = 50;
+  let volume = null;
 
   onMount(async () => {
-    try { const v = await getVolume(); volume = v.volume ?? 50; } catch { /* ignore */ }
+    try { const v = await getVolume(); volume = v.level ?? null; } catch { /* the slider stays disabled */ }
   });
 
   async function handleRebuild() {
@@ -198,7 +198,7 @@
 
   async function handleVolume(e) {
     volume = parseInt(e.target.value);
-    try { await setVolume(volume); } catch { /* ignore */ }
+    try { await setVolume(volume); } catch (err) { toast.push('Volume not set: ' + err.message, 'error'); }
   }
 
 </script>
@@ -575,9 +575,9 @@
     <div class="px-4 pb-4 pt-2 space-y-4">
 
       <div>
-        <label class={labelClass}>Volume — <span class="text-text-default">{volume}</span></label>
+        <label class={labelClass}>Volume — <span class="text-text-default">{volume ?? '?'}</span></label>
         <input type="range" min="0" max="100" step="1" class="w-full accent-accent"
-          bind:value={volume} on:change={handleVolume} />
+          disabled={volume === null} bind:value={volume} on:change={handleVolume} />
         <div class="flex justify-between text-[11px] text-text-muted mt-1">
           <span>Mute (0)</span><span>Full (100)</span>
         </div>
