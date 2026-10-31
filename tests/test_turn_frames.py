@@ -128,10 +128,14 @@ def make_note(name, day=None, age=0.0, filename=None):
     os.makedirs(q, exist_ok=True)
     fname = filename if filename is not None else f"{day or today()}__{name}"
     path = os.path.join(q, fname)
-    with open(path, "w"):
-        pass
     t = time.time() - age
-    os.utime(path, (t, t))
+    # Build the note outside the queue and rename it in. A live worker polling
+    # the queue must never see a file whose mtime is not yet set, or remove it
+    # between create and utime.
+    tmp = os.path.join(os.path.dirname(q), ".make_note_" + fname)
+    with open(tmp, "w") as f:
+        os.utime(f.fileno(), (t, t))
+    os.rename(tmp, path)
     return path
 
 
@@ -327,6 +331,43 @@ class TestRequest:
         assert turn_frames.request("a") is not None
         assert turn_frames.request("a") is None
         assert len(os.listdir(queue_dir())) == 1
+
+
+class TestMkdirPrivate:
+    """M1: the worker walks the folders 5 times a second, so no idle chmod."""
+
+    def test_a_folder_at_0700_gets_no_chmod(self, tmp_path, monkeypatch):
+        d = tmp_path / "d"
+        d.mkdir(mode=0o700)
+        os.chmod(d, 0o700)
+        chmod = MagicMock(wraps=os.chmod)
+        monkeypatch.setattr(turn_frames.os, "chmod", chmod)
+        turn_frames._mkdir_private(str(d))
+        turn_frames._mkdir_private(str(d))
+        chmod.assert_not_called()
+
+    def test_a_new_folder_is_0700_under_a_permissive_umask(self, tmp_path):
+        os.umask(0o000)
+        try:
+            turn_frames._mkdir_private(str(tmp_path / "new"))
+        finally:
+            os.umask(0o022)
+        assert mode_of(str(tmp_path / "new")) == 0o700
+
+    def test_a_folder_at_0755_is_fixed_to_0700(self, tmp_path):
+        d = tmp_path / "d"
+        d.mkdir()
+        os.chmod(d, 0o755)
+        turn_frames._mkdir_private(str(d))
+        assert mode_of(str(d)) == 0o700
+
+    def test_an_idle_pass_makes_no_chmod(self, cam, worker, monkeypatch):
+        run(worker)  # builds the folders
+        chmod = MagicMock(wraps=os.chmod)
+        monkeypatch.setattr(turn_frames.os, "chmod", chmod)
+        for _ in range(5):
+            run(worker)
+        chmod.assert_not_called()
 
 
 class TestWarm:
@@ -561,6 +602,7 @@ class TestCamera:
         assert "release" not in cam.events
         assert worker.held is False
         cam.acquire_error = None
+        worker.retry_open_at = 0.0  # the retry window has passed
         make_note("b")
         run(worker)
         assert by_name(outcomes())["b"]["outcome"] == "saved"
@@ -579,6 +621,79 @@ class TestCamera:
         run(worker)
         assert outcomes() == []
         assert worker.held is False
+
+    # -- I2: a refused open leaks one fd, so it is retried slowly -------------
+
+    def test_a_refused_open_is_not_retried_inside_the_window(
+            self, cam, worker, monkeypatch):
+        monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
+        cam.acquire_error = RuntimeError("Camera __init__ sequence did not complete.")
+        make_note("a")
+        run(worker)
+        assert cam.events.count("acquire") == 1
+        assert worker.retry_open_at > time.monotonic() + 900
+        cam.acquire_error = None  # the camera is fine now, but we must not look
+        make_note("b")
+        run(worker)
+        assert cam.events.count("acquire") == 1
+        rows = by_name(outcomes())
+        assert rows["b"]["outcome"] == "failed"
+        assert "refused" in rows["b"]["error"]
+        assert "next open in" in rows["b"]["error"]
+        assert worker.held is False
+
+    def test_the_open_is_retried_after_the_window(self, cam, worker,
+                                                  monkeypatch):
+        monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
+        cam.acquire_error = RuntimeError("refused")
+        make_note("a")
+        run(worker)
+        cam.acquire_error = None
+        worker.retry_open_at = time.monotonic() - 0.01  # window over
+        make_note("b")
+        run(worker)
+        assert cam.events.count("acquire") == 2
+        assert by_name(outcomes())["b"]["outcome"] == "saved"
+        assert worker.retry_open_at == 0.0
+
+    def test_a_busy_camera_sets_no_backoff(self, cam, worker, monkeypatch):
+        monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
+        cam.acquire_error = CameraBusy("busy")
+        make_note("a")
+        run(worker)
+        assert by_name(outcomes())["a"]["outcome"] == "failed"
+        assert worker.retry_open_at == 0.0
+        cam.acquire_error = None
+        make_note("b")
+        run(worker)
+        assert cam.events.count("acquire") == 2
+        assert by_name(outcomes())["b"]["outcome"] == "saved"
+
+    def test_a_warm_note_inside_the_window_does_nothing(self, cam, worker,
+                                                        monkeypatch):
+        monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
+        cam.acquire_error = RuntimeError("refused")
+        make_note("a")
+        run(worker)
+        before = list(outcomes())
+        make_note("x", filename="warm")
+        run(worker)
+        assert cam.events.count("acquire") == 1
+        assert outcomes() == before
+        assert worker.held is False
+
+    def test_a_failed_warm_open_also_starts_the_window(self, cam, worker,
+                                                       monkeypatch):
+        monkeypatch.setattr(turn_frames, "_OPEN_RETRY_S", 1000.0)
+        cam.acquire_error = RuntimeError("refused")
+        make_note("x", filename="warm")
+        run(worker)
+        make_note("x", filename="warm")
+        run(worker)
+        assert cam.events.count("acquire") == 1
+
+    def test_the_window_is_a_bounded_default(self):
+        assert 60.0 <= turn_frames._OPEN_RETRY_S <= 600.0
 
     def test_the_error_text_is_cut_to_200_chars(self, cam, worker):
         cam.acquire_error = RuntimeError("x" * 500)
@@ -972,6 +1087,32 @@ class TestSave:
         day = os.path.join(frames_root(), today())
         assert os.listdir(day) == ["outcomes.jsonl"]
         assert outcomes()[0]["outcome"] == "failed"
+
+    def test_no_jpg_exists_while_the_bytes_are_being_written(self, cam,
+                                                             worker):
+        """A reader must never see half a file: write a .tmp, then rename."""
+        seen = {}
+
+        class Spy:
+            def resize(self, *a, **k):
+                return self
+
+            def save(self, fp, **k):
+                day = os.path.join(frames_root(), today())
+                fp.write(b"first half")
+                fp.flush()
+                seen["during"] = sorted(os.listdir(day))
+                fp.write(b"second half")
+
+        cam.to_pil = lambda frame: Spy()
+        make_note("a")
+        run(worker)
+        assert "a.jpg" not in seen["during"]
+        assert "a.jpg.tmp" in seen["during"]
+        day = os.path.join(frames_root(), today())
+        assert sorted(os.listdir(day)) == ["a.jpg", "outcomes.jsonl"]
+        with open(os.path.join(day, "a.jpg"), "rb") as f:
+            assert f.read() == b"first halfsecond half"
 
     def test_a_failed_rename_leaves_no_tmp(self, cam, worker, monkeypatch):
         monkeypatch.setattr(turn_frames.os, "replace",

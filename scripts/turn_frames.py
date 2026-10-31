@@ -67,6 +67,10 @@ _JPEG_QUALITY = 80
 _DEFAULT_RETENTION_DAYS = 7
 _DEFAULT_SETTLE_S = 0.5
 _LOG_EVERY_S = 60.0
+# Each failed Picamera2() open leaks one fd, because the constructor opens a
+# pipe that a failed constructor never closes. 120 s bounds the leak at about
+# 450 in a 15 h power-on day, against a soft limit of 1024 open files.
+_OPEN_RETRY_S = 120.0
 
 _WARM = "warm"
 _QUEUE = ".queue"
@@ -182,7 +186,10 @@ def _mkdir_private(path: str) -> None:
         os.mkdir(path, 0o700)
     except FileExistsError:
         pass
-    os.chmod(path, 0o700)
+    # chmod only on a wrong mode. The worker walks these folders about 5 times
+    # a second, and a chmod dirties the inode even when the mode is unchanged.
+    if stat.S_IMODE(os.stat(path).st_mode) != 0o700:
+        os.chmod(path, 0o700)
 
 
 def _ensure_frames() -> str:
@@ -365,6 +372,7 @@ class _Worker:
         self.thread = None
         self.held = False          # worker-local: this worker holds a camera ref
         self.hold_until = 0.0      # monotonic
+        self.retry_open_at = 0.0   # monotonic: no acquire before this
         self.last_sweep = None     # monotonic
         self.last_pass = time.monotonic()
         self.startup_done = False
@@ -448,16 +456,34 @@ class _Worker:
         capture_failed = False
         if newest is not None or warm_fresh:
             if not self.held:
-                try:
-                    camera.acquire_camera()
-                    self.held = True
-                except Exception as exc:
-                    _warn("acquire", "turn frames: camera not available: %s",
-                          _err(exc))
+                wait = self.retry_open_at - time.monotonic()
+                if wait > 0:
+                    # An open failed lately. Do not open again yet: each
+                    # failed open leaks a file descriptor.
                     if newest is not None:
                         mtime_ns, _f, day, name = newest
-                        _record(day, name, "failed", _err(exc), mtime_ns, None)
+                        _record(day, name, "failed",
+                                "Camera refused the last open; next open in "
+                                f"{int(wait) + 1} s", mtime_ns, None)
                         newest = None
+                else:
+                    try:
+                        camera.acquire_camera()
+                        self.held = True
+                        self.retry_open_at = 0.0
+                    except Exception as exc:
+                        _warn("acquire",
+                              "turn frames: camera not available: %s",
+                              _err(exc))
+                        # CameraBusy builds no Picamera2, so it leaks nothing.
+                        if not isinstance(exc, CameraBusy):
+                            self.retry_open_at = (time.monotonic()
+                                                  + _OPEN_RETRY_S)
+                        if newest is not None:
+                            mtime_ns, _f, day, name = newest
+                            _record(day, name, "failed", _err(exc),
+                                    mtime_ns, None)
+                            newest = None
             if self.held and newest is not None:
                 capture_failed = self._take(newest, stop)
 
