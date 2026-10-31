@@ -1,8 +1,9 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { config, savedConfig, isDirty, loadConfig, saveConfig, resetConfig } from '../lib/stores/config.js';
   import { getWatchdogConfig, updateWatchdogConfig,
-           rebuildResponses, generateStatus, getVolume, setVolume, restartService } from '../lib/api.js';
+           rebuildResponses, generateStatus, getVolume, setVolume, restartService,
+           getFramesStatus } from '../lib/api.js';
   import { toast } from '../lib/stores/toast.js';
 
   let saving = false;
@@ -24,6 +25,7 @@
     try {
       const result = await saveConfig();
       if (result && result.restart_required) restartRequired = true;
+      refreshFrames();
       if (watchdogDirty) {
         await updateWatchdogConfig(watchdog);
         watchdogDirty = false;
@@ -195,6 +197,47 @@
     } catch (e) { maintenanceMsg = 'Error: ' + e.message; }
     maintenance.status = false;
   }
+
+  // Turn frames status. Poll, and never show the last good numbers as current:
+  // a failed poll clears them (the STOP button rule: never claim a state a
+  // failed poll did not give you).
+  const FRAMES_POLL_MS = 30000;
+  // Seconds since the worker last began a pass. 30 s sits above the slowest
+  // healthy pass: about 5 s lock + open + 5 s settle + 3 s capture.
+  const FRAMES_STUCK_S = 30;
+  // A waiting request older than this means the worker is not taking them.
+  const FRAMES_WAITING_S = 10;
+
+  let framesStatus = null;
+  let framesFailed = false;
+  let framesTimer;
+
+  async function refreshFrames() {
+    try {
+      framesStatus = await getFramesStatus();
+      framesFailed = false;
+    } catch {
+      framesStatus = null;
+      framesFailed = true;
+    }
+  }
+
+  function framesTime(iso) {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? String(iso) : d.toLocaleTimeString();
+  }
+
+  onMount(() => {
+    refreshFrames();
+    framesTimer = setInterval(refreshFrames, FRAMES_POLL_MS);
+  });
+  onDestroy(() => clearInterval(framesTimer));
+
+  $: framesStuck = framesStatus !== null
+    && framesStatus.worker_stuck_s !== null && framesStatus.worker_stuck_s > FRAMES_STUCK_S;
+  $: framesWaiting = framesStatus !== null && framesStatus.waiting_notes > 0
+    && framesStatus.oldest_note_age_s !== null && framesStatus.oldest_note_age_s > FRAMES_WAITING_S;
+
 
   async function handleVolume(e) {
     volume = parseInt(e.target.value);
@@ -580,6 +623,44 @@
           disabled={volume === null} bind:value={volume} on:change={handleVolume} />
         <div class="flex justify-between text-[11px] text-text-muted mt-1">
           <span>Mute (0)</span><span>Full (100)</span>
+        </div>
+      </div>
+
+      <div>
+        <div class="flex items-center gap-3">
+          <input
+            id="turn_frames_enabled"
+            type="checkbox"
+            class="w-4 h-4 accent-accent"
+            bind:checked={$config.turn_frames_enabled}
+          />
+          <label for="turn_frames_enabled" class="text-text-default text-sm">Keep a camera frame each time Bender replies</label>
+        </div>
+        <p class="text-[11px] text-text-muted mt-1">Frames hold images of children and the street. They stay on the device for 7 days at most. A change takes effect after a restart.</p>
+
+        <div class="text-[12px] mt-2 space-y-1" data-testid="frames-status">
+          {#if framesFailed}
+            <p class="text-warning">Frame status unavailable.</p>
+          {:else if framesStatus}
+            <p class="text-text-muted">
+              Today: {framesStatus.saved_today} saved,
+              <span class={framesStatus.failed_today > 0 ? 'text-warning font-semibold' : ''}>{framesStatus.failed_today} failed</span>,
+              {framesStatus.stale_today} stale, {framesStatus.dropped_today} dropped.
+              {#if framesStatus.last_saved}Last saved {framesTime(framesStatus.last_saved)}.{:else}Last saved: none today.{/if}
+            </p>
+            {#if framesStatus.enabled_saved}
+              <p class="text-text-muted">On in the saved config. A running bender-converse applies it after a restart.</p>
+            {/if}
+            {#if !framesStatus.worker_alive}
+              <p class="text-warning">Frame worker is not running.</p>
+            {/if}
+            {#if framesStuck}
+              <p class="text-warning">Frame worker has not moved for {Math.round(framesStatus.worker_stuck_s)} s. The camera may be stuck. Restart bender-web.</p>
+            {/if}
+            {#if framesWaiting}
+              <p class="text-warning">{framesStatus.waiting_notes} frame requests are waiting. The worker is not taking them.</p>
+            {/if}
+          {/if}
         </div>
       </div>
 

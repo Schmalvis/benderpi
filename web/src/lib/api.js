@@ -125,3 +125,4 @@ export const remoteAsk = (text) => request('/api/remote/ask-text', { method: 'PO
 // watcher thread behind it. The Config page kept calling it for six months and
 // polled it every 60s: 93 404s in the device journal by 2026-10-15.
 export const analyseVision = () => request('/api/vision/analyse', { method: 'POST' });
+export const getFramesStatus = () => request('/api/frames/status');
