@@ -15,11 +15,23 @@ USAGE (on the device, after an approved deploy)
     venv/bin/python scripts/probe_turn_frames.py              # steps 0-3 in order
     venv/bin/python scripts/probe_turn_frames.py --step 2     # one step
     venv/bin/python scripts/probe_turn_frames.py --cycles 50  # step 1 with 50 cycles
+    venv/bin/python scripts/probe_turn_frames.py --force      # ignore a live session
 
 Run it with bender-converse running and See Room CLOSED. The camera is a
 single-owner device. If See Room is open, or the bender-web worker still holds
 the camera, step 1 and step 2 are refused. Close See Room, or wait 20 s, then
 run it again.
+
+It refuses steps 1-3, with one line and exit 2, while <repo>/.session_active.json
+exists, because camera activity near Piper may drop audio and a child may be
+talking. It checks again at the start of each step. --force overrides it.
+
+DEADLINE
+Picamera2(), start() and close() are C++ calls with no timeout, and a hang there
+ignores Ctrl-C. Every camera call in steps 1 and 2 runs under
+faulthandler.dump_traceback_later(30 s, exit=True), re-armed for each call and
+cancelled in a finally. A hang prints the stack and ends the process, and the
+kernel then frees the camera.
 
 STEPS
     0  Print the Pillow version. Run camera.to_pil on a pure blue BGR array.
@@ -36,8 +48,11 @@ STEPS
     3  CPU of bender-web during a 15 s camera hold. Read a 10 s baseline, then
        refresh <frames>/.queue/warm so the bender-web worker opens and holds the
        camera, whatever turn_frames_enabled says. Print CPU percent of one core
-       over 14 s, and the delta from the baseline. It skips if bender-web is
-       not running.
+       over 14 s, and the delta from the baseline. It counts bender-web's
+       /dev/video* and /dev/media* fds before the baseline, three times in the
+       window and after, and prints DONE only when a hold was seen and ended. It
+       reports INCONCLUSIVE if the camera was already open at the baseline, or
+       if none opened. It skips if bender-web is not running.
 
 WHAT IT DOES NOT DO
     - It does not stop or restart any service. Step 3 runs one read-only
@@ -50,8 +65,8 @@ WHAT IT DOES NOT DO
       reads those numbers.
 
 EXIT CODE
-    0  no step failed. 1  a step reported FAIL or INCONCLUSIVE. 2  usage error
-    or the camera was refused.
+    0  no step failed. 1  a step reported FAIL or INCONCLUSIVE. 2  usage error,
+    a live session, or the first camera acquire failed.
 
 Importing this module imports no picamera2 and no PIL. The camera module
 imports picamera2 itself, and only when a camera is opened. Run as a script, it
@@ -60,6 +75,7 @@ also imports no bender config.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
 import os
 import subprocess
@@ -105,18 +121,48 @@ _FORCED_ATTEMPTS = 5
 _BASELINE_S = 10.0
 _HOLD_WINDOW_S = 14.0
 _NOTE_CHECK_S = 1.0       # the worker polls every 0.2 s, so it takes a note in 1 s
-_RELEASE_WAIT_S = 2.0     # the worker holds 15 s from its pass; we measured 14 s
+_WINDOW_SAMPLES_S = (_NOTE_CHECK_S, 7.0, 13.0)  # when to look for the camera fd
+# The worker releases at about note + poll (0.2 s) + camera open + 15 s. The
+# window ends 14 s after the note, so the rest of the hold is about 1.2 s plus
+# the open time. This is the MOST the probe waits for it. It stops as soon as
+# the fd is gone.
+_RELEASE_WAIT_S = 10.0
+_RELEASE_POLL_S = 0.5
 _SYSTEMCTL_TIMEOUT_S = 5
 
+# faulthandler ends the process if one camera call takes longer than this.
+# Picamera2(), start() and close() are C++ with no timeout (see camera.py).
+_CAMERA_DEADLINE_S = 30.0
+
 _REFUSED_HINT = (
-    "The camera was refused. The likely cause: See Room is open, or the "
-    "bender-web worker is holding the camera. Close See Room, or wait 20 s, "
-    "then run it again."
+    "Likely cause: See Room is open, or the bender-web worker is holding the "
+    "camera. Close See Room, or wait 20 s, then run it again."
 )
 
 
 class Refused(Exception):
     """The first acquire failed. This process took no camera ref."""
+
+    @property
+    def cause(self) -> BaseException:
+        return self.args[0]
+
+    def is_camera_refusal(self) -> bool:
+        """True only for a failure that means another holder has the camera."""
+        cause = self.cause
+        busy = getattr(camera, "CameraBusy", ())
+        if isinstance(cause, busy):
+            return True
+        text = str(cause).lower()
+        return (isinstance(cause, RuntimeError)
+                and ("busy" in text or "acquire" in text))
+
+    def line(self) -> str:
+        """One line for the owner."""
+        if self.is_camera_refusal():
+            return f"REFUSED: {_err(self.cause)}. {_REFUSED_HINT}"
+        return (f"CAMERA ERROR: {_err(self.cause)}. This is not a camera "
+                "refusal, so fix this first.")
 
 
 def _say(msg: str = "") -> None:
@@ -133,6 +179,12 @@ _now = time.monotonic
 
 def _sleep(seconds: float) -> None:
     time.sleep(seconds)
+
+
+def _session_file() -> str:
+    """cfg.session_file, worked out without config. bender-converse writes it
+    for the life of a conversation."""
+    return os.path.join(_BASE_DIR, ".session_active.json")
 
 
 def _frames_dir() -> str:
@@ -154,16 +206,39 @@ def _acquire_first() -> None:
 
 
 @contextmanager
-def _held(first: bool = False):
-    """Acquire, and always release. A failed acquire takes no ref, so no release."""
-    if first:
-        _acquire_first()
-    else:
-        camera.acquire_camera()
+def _deadline():
+    """End the process if the body takes over _CAMERA_DEADLINE_S.
+
+    A hang in C++ ignores Ctrl-C, so only this can stop the probe holding the
+    camera. exit=True ends the process, and the kernel then frees the camera.
+    Cancelled in a finally. One timer exists at a time, so each camera call
+    re-arms it.
+    """
+    faulthandler.dump_traceback_later(_CAMERA_DEADLINE_S, exit=True)
     try:
         yield
     finally:
-        camera.release_camera()
+        faulthandler.cancel_dump_traceback_later()
+
+
+def _announce_deadline() -> None:
+    _say(f"  Deadline: each camera call gets {_CAMERA_DEADLINE_S:.0f} s. A hang "
+         "will end the process, and the kernel then frees the camera.")
+
+
+@contextmanager
+def _held(first: bool = False):
+    """Acquire, and always release. A failed acquire takes no ref, so no release."""
+    with _deadline():
+        if first:
+            _acquire_first()
+        else:
+            camera.acquire_camera()
+    try:
+        yield
+    finally:
+        with _deadline():
+            camera.release_camera()
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +313,7 @@ def _fmt_delta(a, b) -> str:
 
 def step1(cycles: int = _DEFAULT_CYCLES) -> str:
     _say(f"STEP 1: {cycles} acquire and release cycles, no capture")
+    _announce_deadline()
     samples = []   # (cycle, sample)
     try:
         for i in range(1, cycles + 1):
@@ -270,6 +346,7 @@ def step1(cycles: int = _DEFAULT_CYCLES) -> str:
 
 def step2() -> str:
     _say("STEP 2: forced capture timeout, close, reopen, capture")
+    _announce_deadline()
     original = camera._CAPTURE_TIMEOUT_S
     try:
         timed_out = False
@@ -277,7 +354,8 @@ def step2() -> str:
             for attempt in range(1, _FORCED_ATTEMPTS + 1):
                 camera._CAPTURE_TIMEOUT_S = _FORCED_TIMEOUT_S
                 try:
-                    camera.capture_frame()
+                    with _deadline():
+                        camera.capture_frame()
                 except TimeoutError as exc:
                     _say(f"  attempt {attempt}: TimeoutError as expected: "
                          f"{_err(exc)}")
@@ -294,7 +372,8 @@ def step2() -> str:
                  "attempts, so the recovery path did not run")
             return "INCONCLUSIVE"
         with _held():
-            frame = camera.capture_frame()
+            with _deadline():
+                frame = camera.capture_frame()
         shape = tuple(frame.shape)
         _say(f"  PASS: after close and reopen a normal capture gave shape "
              f"{shape}")
@@ -345,19 +424,37 @@ def _touch_warm(queue: str) -> None:
         os.close(fd)
 
 
-def _cpu_percent(pid: int, seconds: float, first_leg=None, check=None):
+def _camera_links(pid: int) -> int:
+    """Open fds of `pid` that point at /dev/video* or /dev/media*.
+
+    The camera shows as these while a process holds it. Raises OSError if the
+    process is gone, and PermissionError if its fds belong to another user.
+    """
+    base = f"{_PROC}/{pid}/fd"
+    count = 0
+    for name in os.listdir(base):
+        try:
+            target = os.readlink(f"{base}/{name}")
+        except FileNotFoundError:
+            continue   # the fd closed between the listing and the read
+        if target.startswith(("/dev/video", "/dev/media")):
+            count += 1
+    return count
+
+
+def _cpu_percent(pid: int, seconds: float, checks=()):
     """CPU of `pid` as percent of one core over `seconds`.
 
-    `check` runs once after `first_leg` seconds. The window still covers all
-    `seconds`.
+    `checks` is a sequence of (at_s, fn) in ascending order. Each fn runs once,
+    at_s seconds into the window. The window still covers all `seconds`.
     """
     t0, c0 = _now(), _cpu_ticks(pid)
-    if check is not None:
-        _sleep(first_leg)
-        check()
-        _sleep(seconds - first_leg)
-    else:
-        _sleep(seconds)
+    done = 0.0
+    for at, fn in checks:
+        _sleep(at - done)
+        done = at
+        fn()
+    _sleep(seconds - done)
     t1, c1 = _now(), _cpu_ticks(pid)
     elapsed = t1 - t0
     if elapsed <= 0:
@@ -367,6 +464,20 @@ def _cpu_percent(pid: int, seconds: float, first_leg=None, check=None):
 
 def _pct(value) -> str:
     return "n/a" if value is None else f"{value:.1f}%"
+
+
+def _wait_for_release(pid: int) -> int:
+    """Poll until bender-web has no camera fd, for at most _RELEASE_WAIT_S.
+
+    Returns the last count. Stops at once when it reaches 0.
+    """
+    waited = 0.0
+    links = _camera_links(pid)
+    while links > 0 and waited < _RELEASE_WAIT_S:
+        _sleep(_RELEASE_POLL_S)
+        waited += _RELEASE_POLL_S
+        links = _camera_links(pid)
+    return links
 
 
 def step3() -> str:
@@ -386,35 +497,71 @@ def step3() -> str:
     _say(f"  bender-web PID {pid}")
 
     taken = {"ok": None}
+    seen = []   # camera fd counts, during the window
 
-    def check_taken():
+    def sample():
+        seen.append(_camera_links(pid))
+
+    def first_look():
         taken["ok"] = not os.path.exists(os.path.join(queue, "warm"))
+        sample()
+
+    checks = [(_WINDOW_SAMPLES_S[0], first_look)]
+    checks += [(at, sample) for at in _WINDOW_SAMPLES_S[1:]]
 
     try:
+        before = _camera_links(pid)
+        if before > 0:
+            _say(f"  INCONCLUSIVE: bender-web already holds the camera "
+                 f"({before} fd) before the baseline. See Room may be open, or "
+                 "the worker is in a hold. Close See Room, wait 20 s, then run "
+                 "step 3 again. Nothing was measured.")
+            return "INCONCLUSIVE"
         baseline = _cpu_percent(pid, _BASELINE_S)
-        _say(f"  baseline over {_BASELINE_S:.0f} s, before the warm note: "
-             f"{_pct(baseline)} of one core")
+        _say(f"  baseline over {_BASELINE_S:.0f} s, before the warm note, "
+             f"camera closed: {_pct(baseline)} of one core")
         _touch_warm(queue)
-        hold = _cpu_percent(pid, _HOLD_WINDOW_S, first_leg=_NOTE_CHECK_S,
-                            check=check_taken)
+        hold = _cpu_percent(pid, _HOLD_WINDOW_S, checks=checks)
+        after = _wait_for_release(pid)
+    except PermissionError as exc:
+        _say(f"  INCONCLUSIVE: cannot read {_PROC}/{pid}/fd, so a camera hold "
+             f"cannot be seen: {_err(exc)}")
+        return "INCONCLUSIVE"
     except OSError as exc:
         _say(f"  SKIP: lost bender-web (PID {pid}) or the queue: {_err(exc)}")
         return "SKIP"
-    _say(f"  with the camera held, over {_HOLD_WINDOW_S:.0f} s: "
-         f"{_pct(hold)} of one core")
+
+    held = any(n > 0 for n in seen)
+    if held:
+        _say(f"  with the camera held, over {_HOLD_WINDOW_S:.0f} s: "
+             f"{_pct(hold)} of one core")
+    else:
+        _say(f"  over {_HOLD_WINDOW_S:.0f} s, with no camera seen in "
+             f"bender-web: {_pct(hold)} of one core. This is not a hold "
+             "reading.")
     if baseline is not None and hold is not None:
         _say(f"  delta over the baseline: {hold - baseline:+.1f} points of "
              "one core")
     else:
         _say("  delta over the baseline: n/a")
-    # Let the worker's 15 s hold run out, so the next run is not refused.
-    _sleep(_RELEASE_WAIT_S)
+    _say(f"  camera fds in bender-web: before {before}, in the window "
+         f"{seen}, after {after}")
     if not taken["ok"]:
         _say("  INCONCLUSIVE: the warm note was not taken after "
              f"{_NOTE_CHECK_S:.0f} s. The bender-web worker may not be running, "
-             "so the hold reading is not a camera reading.")
+             "so the reading is not a camera reading.")
         return "INCONCLUSIVE"
-    _say("  The worker took the warm note. Compare the delta to the baseline.")
+    if not held:
+        _say("  INCONCLUSIVE: the worker took the note, but no camera link "
+             "appeared. It may have failed to open the camera "
+             "(see the bender-web journal).")
+        return "INCONCLUSIVE"
+    if after > 0:
+        _say(f"  FAIL: bender-web still holds the camera {_RELEASE_WAIT_S:.0f} "
+             "s after the window, which is longer than the 15 s hold. The "
+             "worker is not releasing, or See Room was opened.")
+        return "FAIL"
+    _say("  A hold was seen and it ended. Compare the delta to the baseline.")
     _say("  DONE")
     return "DONE"
 
@@ -452,7 +599,22 @@ def _parser() -> argparse.ArgumentParser:
                         "3 bender-web CPU). Default: all, in order.")
     p.add_argument("--cycles", type=_positive_int, default=_DEFAULT_CYCLES,
                    help=f"cycles in step 1 (default {_DEFAULT_CYCLES})")
+    p.add_argument("--force", action="store_true",
+                   help="run the camera steps even while a conversation "
+                        "session is live (.session_active.json exists)")
     return p
+
+
+def _session_refusal(n: int, force: bool):
+    """A one-line refusal for camera step `n`, or None. Step 0 never refuses."""
+    if n == 0 or force:
+        return None
+    if os.path.exists(_session_file()):
+        return ("REFUSED: a conversation session is live "
+                f"({os.path.basename(_session_file())} exists), and camera "
+                "activity near Piper may drop audio. Run again when it ends, "
+                "or pass --force.")
+    return None
 
 
 def main(argv=None) -> int:
@@ -460,11 +622,14 @@ def main(argv=None) -> int:
     steps = [args.step] if args.step is not None else list(_STEP_NUMBERS)
     results = {}
     for n in steps:
+        refusal = _session_refusal(n, args.force)
+        if refusal is not None:
+            _say(refusal)
+            return 2
         try:
             results[n] = _run_step(n, args.cycles)
         except Refused as exc:
-            _say(f"  REFUSED: {_err(exc.args[0])}")
-            _say(_REFUSED_HINT)
+            _say(f"  {exc.line()}")
             return 2
         except Exception as exc:
             _say(f"  FAIL: step {n} crashed: {_err(exc)}")

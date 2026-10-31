@@ -16,6 +16,7 @@ import camera
 import probe_turn_frames as probe
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REAL_SESSION_FILE = probe._session_file   # taken before the autouse fixture swaps it
 REAL_RUN = subprocess.run   # for the tests' own child Python, taken before the guard
 SCRIPT = os.path.join(REPO, "scripts", "probe_turn_frames.py")
 
@@ -77,8 +78,29 @@ class FakeCam:
     to_pil = staticmethod(camera.to_pil)
 
 
+class Faults:
+    """Records faulthandler.dump_traceback_later and its cancel."""
+
+    def __init__(self, capsys):
+        self.capsys = capsys
+        self.arms = []
+        self.cancels = 0
+        self.armed = False
+        self.out_before_first_arm = None
+
+    def arm(self, timeout, repeat=False, file=None, exit=False):
+        if not self.arms:
+            self.out_before_first_arm = self.capsys.readouterr().out
+        self.arms.append({"timeout": timeout, "exit": exit})
+        self.armed = True
+
+    def cancel(self):
+        self.cancels += 1
+        self.armed = False
+
+
 @pytest.fixture(autouse=True)
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, capsys):
     logdir = tmp_path / "logs"
     logdir.mkdir()
     monkeypatch.setenv("BENDER_LOG_DIR", str(logdir))
@@ -87,7 +109,19 @@ def env(tmp_path, monkeypatch):
         raise AssertionError(f"a test reached the real subprocess: {a!r}")
 
     monkeypatch.setattr(probe.subprocess, "run", no_subprocess)
-    return logdir
+    # The real repo root may hold a live session file on a dev box.
+    monkeypatch.setattr(probe, "_session_file",
+                        lambda: str(tmp_path / ".session_active.json"))
+    faults = Faults(capsys)
+    monkeypatch.setattr(probe.faulthandler, "dump_traceback_later", faults.arm)
+    monkeypatch.setattr(probe.faulthandler, "cancel_dump_traceback_later",
+                        faults.cancel)
+    return faults
+
+
+@pytest.fixture
+def faults(env):
+    return env
 
 
 @pytest.fixture
@@ -190,6 +224,89 @@ class TestStep1:
         probe.step1(cycles=3)
         out = capsys.readouterr().out
         assert "PASS" not in out
+
+
+class TestDeadline:
+    """faulthandler.dump_traceback_later(exit=True) around every camera call.
+
+    A hang in Picamera2() or close() is C++ and ignores Ctrl-C. The timer ends
+    the process, and the kernel then frees the camera.
+    """
+
+    def test_constant(self):
+        assert probe._CAMERA_DEADLINE_S == 30.0
+
+    def test_step1_arms_and_cancels_around_every_acquire_and_release(
+            self, cam, faults):
+        probe.step1(cycles=4)
+        assert len(faults.arms) == 8             # 4 cycles x (acquire + release)
+        assert faults.cancels == 8
+        assert not faults.armed
+        for arm in faults.arms:
+            assert arm["exit"] is True
+            assert arm["timeout"] == probe._CAMERA_DEADLINE_S
+
+    def test_step1_re_arms_each_cycle_not_once(self, cam, faults):
+        probe.step1(cycles=3)
+        assert len(faults.arms) > 3
+
+    def test_every_camera_call_runs_with_the_timer_armed(self, cam, faults):
+        seen = []
+
+        def wrap(name, fn):
+            def inner(*a, **k):
+                seen.append((name, faults.armed))
+                return fn(*a, **k)
+            return inner
+
+        for name in ("acquire_camera", "release_camera", "capture_frame"):
+            setattr(cam, name, wrap(name, getattr(cam, name)))
+        assert probe.step2() == "PASS"
+        assert {n for n, _a in seen} == {"acquire_camera", "release_camera",
+                                         "capture_frame"}
+        assert all(armed for _n, armed in seen), seen
+
+    def test_the_timer_is_cancelled_when_the_call_raises(self, cam, faults):
+        cam.capture_error = RuntimeError("camera is not open")
+        probe.step2()
+        assert not faults.armed
+        assert faults.cancels == len(faults.arms)
+
+    def test_the_timer_is_cancelled_on_a_base_exception(self, cam, faults):
+        cam.capture_error = KeyboardInterrupt()
+        with pytest.raises(KeyboardInterrupt):
+            probe.step2()
+        assert not faults.armed
+        assert faults.cancels == len(faults.arms)
+
+    def test_the_timer_is_cancelled_when_release_raises(self, cam, faults):
+        cam.release_error = RuntimeError("close hung")
+        probe.step1(cycles=2)
+        assert not faults.armed
+        assert faults.cancels == len(faults.arms)
+
+    def test_a_refused_acquire_cancels_the_timer(self, cam, faults):
+        cam.acquire_errors[1] = RuntimeError("Device or resource busy")
+        with pytest.raises(probe.Refused):
+            probe.step1(cycles=2)
+        assert not faults.armed
+
+    @pytest.mark.parametrize("step", ["step1", "step2"])
+    def test_one_line_says_what_the_deadline_does_before_arming(
+            self, cam, faults, step):
+        getattr(probe, step)()
+        before = faults.out_before_first_arm
+        assert before is not None
+        assert "deadline" in before.lower()
+        assert "end the process" in before
+        assert "kernel" in before
+        assert "30 s" in before
+
+    def test_step0_and_step3_arm_nothing(self, cam, faults, monkeypatch):
+        probe.step0()
+        systemctl_says(monkeypatch, "0")
+        probe.step3()
+        assert faults.arms == []
 
 
 class TestProcReaders:
@@ -326,28 +443,57 @@ class Completed:
 
 
 class Sim:
-    """A fake clock and a fake /proc/<pid>/stat for step 3."""
+    """A fake clock, a fake /proc/<pid>/stat and a fake camera fd count.
 
-    def __init__(self, monkeypatch, ticks=(), takes_note=True):
+    The worker "opens" the camera at the sleep during which the warm note first
+    exists, holds it 15 s, then closes it. `pre_open` starts with the camera
+    already held. `opens_camera=False` is a worker that takes the note and
+    fails to open.
+    """
+
+    HOLD = 15.0
+
+    def __init__(self, monkeypatch, ticks=(), takes_note=True,
+                 opens_camera=True, pre_open=False, stuck_open=False):
         self.t = 1000.0
         self.sleeps = []
         self.ticks = list(ticks)
         self.takes_note = takes_note
+        self.opens_camera = opens_camera
+        self.pre_open = pre_open
+        self.stuck_open = stuck_open
+        self.hold_start = None
+        self.link_reads = []
         monkeypatch.setattr(probe, "_now", lambda: self.t)
         monkeypatch.setattr(probe, "_sleep", self.sleep)
         monkeypatch.setattr(probe, "_cpu_ticks", self.cpu_ticks)
+        monkeypatch.setattr(probe, "_camera_links", self.links)
         monkeypatch.setattr(probe, "_clk_tck", lambda: 100)
 
     def sleep(self, s):
         self.sleeps.append(s)
         self.t += s
-        if self.takes_note:
-            note = os.path.join(probe._frames_dir(), ".queue", "warm")
-            if os.path.exists(note):
+        note = os.path.join(probe._frames_dir(), ".queue", "warm")
+        if os.path.exists(note):
+            if self.opens_camera and self.hold_start is None:
+                self.hold_start = self.t
+            if self.takes_note:
                 os.unlink(note)
 
     def cpu_ticks(self, pid):
         return self.ticks.pop(0)
+
+    def links(self, pid):
+        if self.stuck_open and self.hold_start is not None:
+            n = 1
+        elif self.hold_start is not None and self.t < self.hold_start + self.HOLD:
+            n = 1
+        elif self.pre_open and self.hold_start is None:
+            n = 1
+        else:
+            n = 0
+        self.link_reads.append((self.t, n))
+        return n
 
 
 def systemctl_says(monkeypatch, stdout, calls=None):
@@ -365,6 +511,9 @@ def make_queue():
     q = os.path.join(probe._frames_dir(), ".queue")
     os.makedirs(q, exist_ok=True)
     return q
+
+
+TICKS = [100, 120, 130, 430]   # baseline 20 ticks / 10 s, hold 300 ticks / 14 s
 
 
 class TestStep3:
@@ -407,27 +556,39 @@ class TestStep3:
         assert probe.step3() == "SKIP"
         assert "queue" in capsys.readouterr().out.lower()
 
-    def test_prints_baseline_hold_and_delta(self, cam, monkeypatch, capsys):
+    def test_prints_baseline_hold_and_delta_when_a_hold_was_seen(
+            self, cam, monkeypatch, capsys):
         make_queue()
         systemctl_says(monkeypatch, "4242\n")
-        # baseline: 20 ticks over 10 s at 100 Hz = 2.0 %
-        # hold: 300 ticks over 14 s = 21.4 %
-        Sim(monkeypatch, ticks=[100, 120, 130, 430])
+        Sim(monkeypatch, ticks=TICKS)
         assert probe.step3() == "DONE"
         out = capsys.readouterr().out
         assert "2.0" in out
         assert "21.4" in out
         assert "19.4" in out
         assert "4242" in out
+        assert "with the camera held" in out
 
-    def test_the_baseline_runs_10_s_and_the_hold_14_s(self, cam, monkeypatch):
+    def test_the_baseline_runs_10_s_and_the_window_14_s(self, cam, monkeypatch):
         make_queue()
         systemctl_says(monkeypatch, "4242\n")
-        sim = Sim(monkeypatch, ticks=[0, 0, 0, 0])
+        sim = Sim(monkeypatch, ticks=TICKS)
         probe.step3()
-        assert sum(sim.sleeps[:1]) == 10
-        hold = sim.sleeps[1:3]
-        assert sum(hold) == 14
+        assert sim.sleeps[0] == 10
+        assert sum(sim.sleeps[1:5]) == 14
+
+    def test_the_camera_is_looked_at_before_during_and_after(
+            self, cam, monkeypatch):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        sim = Sim(monkeypatch, ticks=TICKS)
+        probe.step3()
+        times = [t for t, _n in sim.link_reads]
+        start = 1000.0
+        assert times[0] == start                         # before the baseline
+        during = [n for t, n in sim.link_reads if start + 10 < t <= start + 24]
+        assert len(during) >= 2 and max(during) >= 1     # in the window
+        assert sim.link_reads[-1][1] == 0                # after: released
 
     def test_the_warm_note_comes_after_the_baseline(self, cam, monkeypatch):
         make_queue()
@@ -444,7 +605,7 @@ class TestStep3:
         monkeypatch.setattr(probe, "_sleep", spy)
         probe.step3()
         assert seen[0] is False       # the baseline sleep: no note yet
-        assert seen[1] is True        # the hold: the note is there
+        assert seen[1] is True        # the window: the note is there
 
     def test_the_warm_note_is_private_and_needs_no_enabled_flag(
             self, cam, monkeypatch):
@@ -460,9 +621,65 @@ class TestStep3:
                                                      capsys):
         make_queue()
         systemctl_says(monkeypatch, "4242\n")
-        Sim(monkeypatch, ticks=[0, 0, 0, 0], takes_note=False)
+        Sim(monkeypatch, ticks=TICKS, takes_note=False, opens_camera=False)
         assert probe.step3() == "INCONCLUSIVE"
         assert "not taken" in capsys.readouterr().out.lower()
+
+    def test_inconclusive_when_the_note_is_taken_but_no_camera_opens(
+            self, cam, monkeypatch, capsys):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        Sim(monkeypatch, ticks=TICKS, opens_camera=False)
+        assert probe.step3() == "INCONCLUSIVE"
+        out = capsys.readouterr().out
+        assert "no camera" in out.lower()
+        assert "with the camera held" not in out
+        assert "DONE" not in out
+
+    def test_inconclusive_when_the_camera_is_already_open_at_baseline(
+            self, cam, monkeypatch, capsys):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        sim = Sim(monkeypatch, ticks=TICKS, pre_open=True)
+        assert probe.step3() == "INCONCLUSIVE"
+        out = capsys.readouterr().out
+        assert "already" in out.lower()
+        assert "See Room" in out
+        # nothing was measured and no note was left
+        assert sim.sleeps == []
+        assert not os.path.exists(
+            os.path.join(probe._frames_dir(), ".queue", "warm"))
+
+    def test_fail_when_the_worker_never_lets_go(self, cam, monkeypatch,
+                                                capsys):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        Sim(monkeypatch, ticks=TICKS, stuck_open=True)
+        assert probe.step3() == "FAIL"
+        assert "still" in capsys.readouterr().out.lower()
+
+    def test_waits_for_the_release_by_polling_not_by_a_fixed_sleep(
+            self, cam, monkeypatch):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        sim = Sim(monkeypatch, ticks=TICKS)
+        probe.step3()
+        tail = sim.sleeps[5:]
+        assert tail, "no wait after the window"
+        assert sum(tail) < probe._RELEASE_WAIT_S   # stopped when it released
+
+    def test_an_unreadable_fd_folder_is_inconclusive(self, cam, monkeypatch,
+                                                     capsys):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        Sim(monkeypatch, ticks=TICKS)
+
+        def denied(pid):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(probe, "_camera_links", denied)
+        assert probe.step3() == "INCONCLUSIVE"
+        assert "/proc/4242/fd" in capsys.readouterr().out
 
     def test_fail_when_this_process_holds_the_camera(self, cam, monkeypatch,
                                                      capsys):
@@ -477,7 +694,7 @@ class TestStep3:
                                                     capsys):
         make_queue()
         systemctl_says(monkeypatch, "4242\n")
-        sim = Sim(monkeypatch)
+        Sim(monkeypatch)
 
         def gone(pid):
             raise FileNotFoundError(f"/proc/{pid}/stat")
@@ -489,9 +706,84 @@ class TestStep3:
     def test_takes_no_camera(self, cam, monkeypatch):
         make_queue()
         systemctl_says(monkeypatch, "4242\n")
-        Sim(monkeypatch, ticks=[0, 0, 0, 0])
+        Sim(monkeypatch, ticks=TICKS)
         probe.step3()
         assert cam.events == []
+
+
+class TestCameraLinks:
+    def make_fd_tree(self, tmp_path, targets):
+        fd = tmp_path / "4242" / "fd"
+        fd.mkdir(parents=True)
+        for i, t in enumerate(targets):
+            os.symlink(t, fd / str(i))
+        return tmp_path
+
+    def test_counts_video_and_media_devices_only(self, tmp_path, monkeypatch):
+        root = self.make_fd_tree(tmp_path, [
+            "/dev/video0", "/dev/media1", "/dev/video19", "/dev/null",
+            "socket:[123]", "/home/pi/logs/video.log", "anon_inode:[eventfd]"])
+        monkeypatch.setattr(probe, "_PROC", str(root))
+        assert probe._camera_links(4242) == 3
+
+    def test_none_open_is_zero(self, tmp_path, monkeypatch):
+        root = self.make_fd_tree(tmp_path, ["/dev/null", "socket:[1]"])
+        monkeypatch.setattr(probe, "_PROC", str(root))
+        assert probe._camera_links(4242) == 0
+
+    def test_a_vanishing_fd_is_skipped(self, tmp_path, monkeypatch):
+        root = self.make_fd_tree(tmp_path, ["/dev/video0", "/dev/video1"])
+        monkeypatch.setattr(probe, "_PROC", str(root))
+        real = os.readlink
+
+        def flaky(path):
+            if path.endswith("/0"):
+                raise FileNotFoundError(path)
+            return real(path)
+
+        monkeypatch.setattr(probe.os, "readlink", flaky)
+        assert probe._camera_links(4242) == 1
+
+    def test_a_missing_process_raises_oserror(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(probe, "_PROC", str(tmp_path))
+        with pytest.raises(OSError):
+            probe._camera_links(4242)
+
+
+class TestStep3Constants:
+    def test_the_window_ends_before_the_workers_hold_does(self):
+        import turn_frames
+        assert probe._HOLD_WINDOW_S < turn_frames._HOLD_S
+
+    def test_the_note_check_leaves_the_worker_several_polls(self):
+        import turn_frames
+        assert probe._NOTE_CHECK_S >= 3 * turn_frames._POLL_S
+        assert probe._NOTE_CHECK_S < turn_frames._STALE_S
+
+    def test_the_release_wait_covers_the_rest_of_the_hold(self):
+        """The worker releases at about note + poll + open + _HOLD_S. The
+        window ends _HOLD_S - _HOLD_WINDOW_S before that, and an open can take
+        a few seconds."""
+        import turn_frames
+        rest = turn_frames._HOLD_S - probe._HOLD_WINDOW_S + turn_frames._POLL_S
+        assert probe._RELEASE_WAIT_S >= rest + 5
+
+
+class TestFramesDirMatchesTurnFrames:
+    def test_with_the_env_var_set(self, tmp_path, monkeypatch):
+        import turn_frames
+        monkeypatch.setenv("BENDER_LOG_DIR", str(tmp_path / "x"))
+        assert probe._frames_dir() == turn_frames.frames_dir()
+
+    def test_with_the_env_var_unset(self, monkeypatch):
+        import turn_frames
+        monkeypatch.delenv("BENDER_LOG_DIR", raising=False)
+        assert probe._frames_dir() == turn_frames.frames_dir()
+
+    def test_with_the_env_var_empty(self, monkeypatch):
+        import turn_frames
+        monkeypatch.setenv("BENDER_LOG_DIR", "")
+        assert probe._frames_dir() == turn_frames.frames_dir()
 
 
 class TestCpuTicks:
@@ -523,6 +815,8 @@ class TestMain:
                 r = results[n]
                 if isinstance(r, BaseException):
                     raise r
+                if callable(r):
+                    r = r()
                 return r
             return step
 
@@ -595,18 +889,66 @@ class TestMain:
         assert probe.main([]) == 1
         assert [n for n, _a, _k in ran] == [0, 1, 2, 3]
 
-    def test_a_refusal_names_the_cause_and_exits_non_zero(self, monkeypatch,
-                                                          capsys):
+    ALL_PASS = {0: "PASS", 1: "DONE", 2: "PASS", 3: "DONE"}
+
+    def lines(self, capsys):
+        return [x for x in capsys.readouterr().out.splitlines() if x.strip()]
+
+    def test_a_busy_refusal_is_one_line_naming_see_room_and_the_text(
+            self, monkeypatch, capsys):
         ran = self.stub_steps(monkeypatch, {
-            0: "PASS", 1: probe.Refused(RuntimeError("busy")), 2: "PASS",
-            3: "DONE"})
+            **self.ALL_PASS,
+            1: probe.Refused(RuntimeError(
+                "Failed to acquire camera: Device or resource busy"))})
         code = probe.main([])
-        out = capsys.readouterr().out
+        lines = self.lines(capsys)
         assert code != 0
-        assert "See Room" in out
-        assert "20 s" in out
-        assert "busy" in out
+        assert len(lines) == 1, lines
+        assert "See Room" in lines[0]
+        assert "20 s" in lines[0]
+        assert "resource busy" in lines[0]
         assert [n for n, _a, _k in ran] == [0, 1]   # stops at the refusal
+
+    def test_a_camera_busy_names_see_room_too(self, monkeypatch, capsys):
+        self.stub_steps(monkeypatch, {
+            **self.ALL_PASS, 2: probe.Refused(camera.CameraBusy("locked"))})
+        assert probe.main([]) != 0
+        lines = self.lines(capsys)
+        assert len(lines) == 1, lines
+        assert "See Room" in lines[0]
+        assert "locked" in lines[0]
+
+    def test_some_other_first_acquire_error_does_not_blame_see_room(
+            self, monkeypatch, capsys):
+        self.stub_steps(monkeypatch, {
+            **self.ALL_PASS,
+            1: probe.Refused(RuntimeError(
+                "picamera2 is not available. Install it or run on a "
+                "Raspberry Pi."))})
+        code = probe.main([])
+        lines = self.lines(capsys)
+        assert code != 0
+        assert len(lines) == 1, lines
+        assert "See Room" not in lines[0]
+        assert "not available" in lines[0]
+
+    def test_a_non_runtime_first_acquire_error_does_not_blame_see_room(
+            self, monkeypatch, capsys):
+        self.stub_steps(monkeypatch, {
+            **self.ALL_PASS, 1: probe.Refused(ImportError("no libcamera"))})
+        assert probe.main([]) != 0
+        lines = self.lines(capsys)
+        assert len(lines) == 1, lines
+        assert "See Room" not in lines[0]
+        assert "no libcamera" in lines[0]
+
+    def test_a_real_first_acquire_failure_goes_through_the_same_path(
+            self, cam, monkeypatch, capsys):
+        cam.acquire_errors[1] = RuntimeError("Device or resource busy")
+        monkeypatch.setattr(probe, "step0", lambda: "PASS")
+        assert probe.main(["--step", "2"]) == 2
+        lines = self.lines(capsys)
+        assert len(lines) == 1 and "See Room" in lines[0]
 
     def test_an_unexpected_crash_in_a_step_is_fail_not_a_traceback(
             self, monkeypatch, capsys):
@@ -614,6 +956,80 @@ class TestMain:
                                       2: "PASS", 3: "DONE"})
         assert probe.main(["--step", "0"]) == 1
         assert "oops" in capsys.readouterr().out
+
+
+class TestSessionGuard:
+    ALL_PASS = {0: "PASS", 1: "DONE", 2: "PASS", 3: "DONE"}
+
+    def stub(self, monkeypatch):
+        return TestMain().stub_steps(monkeypatch, dict(self.ALL_PASS))
+
+    def live_session(self):
+        open(probe._session_file(), "w").close()
+
+    def test_the_real_path_is_the_one_config_uses(self):
+        from config import cfg
+        assert REAL_SESSION_FILE() == cfg.session_file
+        assert REAL_SESSION_FILE() == os.path.join(probe._BASE_DIR,
+                                                   ".session_active.json")
+
+    def test_a_live_session_refuses_the_camera_steps(self, monkeypatch,
+                                                     capsys):
+        ran = self.stub(monkeypatch)
+        self.live_session()
+        code = probe.main([])
+        out = capsys.readouterr().out
+        assert code != 0
+        assert [n for n, _a, _k in ran] == [0]    # step 0 needs no guard
+        assert "--force" in out
+        assert "session" in out.lower()
+
+    @pytest.mark.parametrize("step", [1, 2, 3])
+    def test_each_camera_step_is_guarded(self, monkeypatch, capsys, step):
+        ran = self.stub(monkeypatch)
+        self.live_session()
+        assert probe.main(["--step", str(step)]) != 0
+        assert ran == []
+
+    def test_step_0_alone_ignores_a_live_session(self, monkeypatch):
+        ran = self.stub(monkeypatch)
+        self.live_session()
+        assert probe.main(["--step", "0"]) == 0
+        assert [n for n, _a, _k in ran] == [0]
+
+    def test_force_overrides_the_guard(self, monkeypatch):
+        ran = self.stub(monkeypatch)
+        self.live_session()
+        assert probe.main(["--force"]) == 0
+        assert [n for n, _a, _k in ran] == [0, 1, 2, 3]
+
+    def test_no_session_file_runs_everything(self, monkeypatch):
+        ran = self.stub(monkeypatch)
+        assert probe.main([]) == 0
+        assert [n for n, _a, _k in ran] == [0, 1, 2, 3]
+
+    def test_it_looks_again_at_the_start_of_each_step(self, monkeypatch,
+                                                      capsys):
+        ran = TestMain().stub_steps(monkeypatch, {
+            0: "PASS", 1: lambda: (open(probe._session_file(), "w").close(),
+                                   "DONE")[1],
+            2: "PASS", 3: "DONE"})
+        code = probe.main([])
+        assert code != 0
+        assert [n for n, _a, _k in ran] == [0, 1]   # a child arrived after step 1
+        assert "session" in capsys.readouterr().out.lower()
+
+    def test_the_refusal_is_one_line(self, monkeypatch, capsys):
+        self.stub(monkeypatch)
+        self.live_session()
+        probe.main(["--step", "1"])
+        lines = [x for x in capsys.readouterr().out.splitlines() if x.strip()]
+        assert len(lines) == 1, lines
+
+    def test_help_mentions_force(self, capsys):
+        with pytest.raises(SystemExit):
+            probe.main(["--help"])
+        assert "--force" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
