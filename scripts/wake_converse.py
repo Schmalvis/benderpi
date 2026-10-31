@@ -42,6 +42,7 @@ import briefings
 import leds
 import intent
 import presence
+import turn_frames
 import vision
 from ai_response import AIResponder
 from ai_local import LocalAIResponder
@@ -226,6 +227,14 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
                     float(_cfg("presence_wait_slice_s", 5.0))):
                 leds.set_listening(False)
                 continue
+            # The gate has passed. Ask for the camera now, while no audio
+            # plays, so the first frame of the session is warm. Its own guard:
+            # a raise reaching the outer except would skip this capture and
+            # sleep the cooldown, which makes Bender deaf for the pass.
+            try:
+                turn_frames.warm()
+            except Exception as exc:
+                log_.warning("turn frame warm failed: %s", exc)
             leds.set_listening(True)
             text = stt.listen_and_transcribe(after_playback=False)
             # A remote END that lands DURING this capture must not then open a

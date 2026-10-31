@@ -19,7 +19,9 @@ from typing import Callable, Protocol
 
 import audio
 import leds
+import presence
 import tts_generate
+import turn_frames
 from ai_response import AIResponder
 from ai_local import LocalAIResponder
 from conversation_log import SessionLogger
@@ -213,6 +215,10 @@ class ConversationSession:
             return TurnResult(text=text, intent="REMOTE", method="remote_abrupt",
                               should_end=True, end_reason="remote_abrupt")
 
+        # Ask for a camera frame. One empty file, no camera, no wait. On this
+        # thread and never in _infer: SessionLogger.note() is single-thread.
+        self._snap()
+
         # Run inference on a thread so thinking sound can overlap slow responses
         _resp_holder: list = [None]
         _exc_holder: list = [None]
@@ -367,6 +373,23 @@ class ConversationSession:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _snap(self) -> None:
+        """Ask bender-web for a frame of this turn. Never raises.
+
+        Leaves one note and records it in the next turn entry. The feature must
+        never stop him talking, so every failure is caught here.
+        """
+        try:
+            if not turn_frames.enabled():
+                return
+            log_ = self._session_log
+            path = turn_frames.request(f"{log_.session_id}_t{log_.turn + 1:02d}")
+            if path is not None:
+                mm, age_s = presence.last_reading()
+                log_.note(frame_requested=path, presence_mm=mm, presence_age_s=age_s)
+        except Exception as exc:
+            log.warning("turn frame request failed: %s", exc)
 
     def _try_inject_scene(self, *, block: bool) -> None:
         if not self._vision:
