@@ -216,7 +216,7 @@ Key tunables added by the 2026-05-14 audio resilience plan:
 | `presence_max_resets` | `3` | XSHUT power-cycles allowed per process. After the last one the gate fails open for good, so a broken sensor cannot spin the trigger loop (`presence_resets_exhausted`) |
 | *(behaviour, no key)* | | **The gate also holds during a session** (2026-10-31). `presence.still_present()` runs before each reply capture in `_halloween_turn_loop`; a closed gate ends the session with reason `walked_off` (metric `halloween_walked_off`). It fails open like the rest of the module. Before this, one reading could run 2m18s of replies to invented sentences from outdoor noise |
 | `presence_wait_slice_s` | `5.0` | How long `wait_for_presence()` polls before returning to the loop. **Not** a gate value: the service is `Type=notify` with `WatchdogSec=120`, so the wait must be bounded for the loop to keep calling `_note_progress()` and to keep serving puppet say-requests between passes |
-| `turn_frames_enabled` | `false` | Save one camera frame each time Bender starts to reply, in household and Halloween mode. **Off by default**: frames hold images of children and a public street, so keeping them is an explicit act. Read only by `bender-converse`, so a change needs a restart of that service. See Turn frames below |
+| `turn_frames_enabled` | `false` | Save one camera frame each time Bender starts to reply, in household and Halloween mode. **Off by default**: frames hold images of children and a public street, so keeping them is an explicit act. The notes are gated only in `bender-converse`, so a change needs a restart of that service. The `bender-web` worker does not check it, and `GET /api/frames/status` shows the saved value as `enabled_saved`. See Turn frames below |
 | `turn_frames_retention_days` | `7` | Days a dated frames folder is kept. Schema minimum 1. `null`, or under 1 in a hand edit, means 7. Never kept for ever. Read from the saved file by the `bender-web` worker, so it needs no restart |
 | `turn_frames_settle_s` | `0.5` | Seconds the camera must have been open before a frame is taken. Schema range 0-5. Read from the saved file by the `bender-web` worker |
 
@@ -492,7 +492,7 @@ Both refresh at service start (in a background thread) and lazily when TTL expir
 
 One JSON Lines file per day in `logs/YYYY-MM-DD.jsonl`. Each line is a `session_start`, `turn`, or `session_end` event.
 
-With `turn_frames_enabled` on, a turn entry also carries `frame_requested`, `presence_mm` and `presence_age_s`. `frame_requested` records a request, not a result: `logs/frames/<date>/outcomes.jsonl` holds what happened to it. `presence_mm` null with a number in `presence_age_s` means out of range at that reading. Both null means the sensor never read. The value can be several seconds old, and the age says so.
+With `turn_frames_enabled` on, a turn entry also carries `frame_requested`, `presence_mm` and `presence_age_s`. `frame_requested` records a request, not a result: `logs/frames/<date>/outcomes.jsonl` holds what happened to it. `presence_mm` null with a number in `presence_age_s` means out of range, or under `presence_min_mm`, at that reading. Both null means no read yet, or the gate is off. The three fields appear only on a turn whose request was written. The value can be several seconds old, and the age says so.
 
 **Turn methods:** `real_clip`, `pre_gen_tts`, `promoted_tts`, `handler_weather`, `handler_news`, `handler_ha`, `ai_fallback`, `error_fallback`
 
@@ -790,19 +790,20 @@ sudo systemctl restart bender-converse
 
 `scripts/turn_frames.py`. Saves one camera frame each time Bender starts to reply, so the owner can see who was in front of him. **Off by default.**
 
-- `bender-converse` never opens the camera. `session._snap()` writes one empty note into `logs/frames/.queue`. `_halloween_loop` calls `warm()` once the gate has passed, so the camera opens while no audio plays.
-- `warm()` runs only when `presence.available()` is true. A gate that fails open passes on every loop, so warming there would hold the camera open all night. With no usable sensor, the first frame of a session opens cold during the thinking clip, as household mode always does.
+- For turn frames, `bender-converse` never opens the camera. `session._snap()` writes one empty note into `logs/frames/.queue`. `_halloween_loop` calls `warm()` once the gate has passed, so the camera opens while no audio plays.
+- `warm()` runs only when `presence.available()` is true. A gate that fails open passes on every loop, so warming there would hold the camera open all night. With no usable sensor, the first frame of a session opens cold during the thinking clip, as household mode always does. A long capture can also outlast the 15 s hold, and then the first frame opens cold too.
+- No frame is taken for the greeting or for puppet lines.
 - `bender-web` runs one daemon worker, started in the FastAPI lifespan. It polls the queue every 0.2 s, takes the newest fresh note, and holds the camera for 15 s after the last note. A note over 5 s old makes no frame.
 - Frames: `logs/frames/YYYY-MM-DD/<session_id>_tNN.jpg`, 1280x720 JPEG, written as `.tmp` then renamed. Folders 0700, files 0600. No web route serves a frame. Read them over SSH.
-- `outcomes.jsonl` beside them holds one line per frame note: `saved`, `failed`, `stale` or `dropped`.
+- `outcomes.jsonl` beside them holds one line per valid frame note that the worker finished: `saved`, `failed`, `stale` or `dropped`.
 - The worker sweeps expired dated folders at start and hourly, with the feature on or off. Nothing sweeps while `bender-web` is down.
-- A refused camera leaks one fd per failed `Picamera2()`, so the worker waits 120 s before the next open.
+- A refused camera leaks one fd per failed `Picamera2()`, so after a failed open (not `CameraBusy`) the worker waits 120 s before the next open. Frame notes in that time record `failed`.
 
 **To turn it off:** clear the checkbox on the Config page and restart `bender-converse`. To delete the frames: `rm -r logs/frames/` on the device.
 
-**What `camera.py` bounds, and what it does not.** Python-level waits are bounded: 5 s for `_cam_lock`, then `CameraBusy`, and 3 s for a capture, then `TimeoutError`. A hang inside a libcamera C++ call is not bounded. The binding has no `gil_scoped_release`, so that hang holds the GIL and freezes all of `bender-web`, including STOP BENDER. Recovery is SSH: `sudo systemctl stop bender-converse`, then `sudo systemctl restart bender-web`, which can wait the default 90 s for SIGKILL. No hang of this kind is on record. Measured on the dev clone only, python3-libcamera 0.7.2+rpt20261009-1. The device build is not verified. `worker_stuck_s` shows a hang in the worker thread only.
+**What `camera.py` bounds, and what it does not.** Python-level waits are bounded: 5 s for `_cam_lock`, then `CameraBusy`, and 3 s for a capture's frame, then `TimeoutError`. Two calls inside a capture take Picamera2's own lock, which has no timeout (`dispatch_functions`, `cancel_all_and_flush`), so a capture is bounded for the usual case only. A hang inside a libcamera C++ call is not bounded. The binding has no `gil_scoped_release`, so that hang holds the GIL and freezes all of `bender-web`, including STOP BENDER. Recovery is SSH: `sudo systemctl stop bender-converse`, then `sudo systemctl restart bender-web`, which can wait the default 90 s for SIGKILL. No hang of this kind is on record. Read from the binding on the dev clone only (python3-libcamera 0.7.2+rpt20261009-1), and simulated with a fake camera. No real hang was seen. The device build is not verified. `worker_stuck_s` shows a hang in the worker thread only.
 
-**Device check:** `venv/bin/python scripts/probe_turn_frames.py`, with `bender-converse` running, See Room closed and no live session.
+**Device check:** `venv/bin/python scripts/probe_turn_frames.py`, with `bender-converse` running, See Room closed, no live session, and 20 s since the last frame. Both services need the new code first. Step 3 asks `bender-web` to open the camera even with the feature off. `--force` turns off the live-session check.
 
 ---
 

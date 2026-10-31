@@ -22,12 +22,12 @@ Off by default. Merging restarts `bender-converse` and `bender-web`, even with t
 Open before the feature is enabled:
 
 1. **Owner to rule.** A hang in a libcamera C++ call holds the GIL and freezes all of `bender-web`, including STOP BENDER. The plan said STOP BENDER would still work, and the opus gate refuted that. Accept the risk, or move camera ownership to a third process. Recovery and detail: the Turn frames section of `CLAUDE.md`.
-2. Check the device's `python3-libcamera` build. The GIL fact was read on the dev clone only.
+2. Check the device's `python3-libcamera` build. The GIL fact was read from the binding on the dev clone only, and simulated with a fake camera. No real hang was seen.
 3. Run `scripts/probe_turn_frames.py` on the device, and the plan's listening test. If he drops out, turn it off.
 
 The device keeps its own `bender_config.json`, so pin `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_settle_s` there once.
 
-`camera.py` and See Room changed for good, with the feature on or off: every capture and lock wait is bounded, and a capture timeout ends the stream.
+`camera.py` and See Room changed for good, with the feature on or off: every wait on `_cam_lock` is bounded (5 s, then `CameraBusy`), a capture waits at most 3 s for its frame, and a capture timeout ends the stream. Two waits inside a capture take Picamera2's own lock, which has no timeout. See the Turn frames section of `CLAUDE.md`.
 
 ---
 
