@@ -178,21 +178,71 @@ class TestLifespan:
             # Leaving the with block ran shutdown. It raised nothing.
         turn_frames.stop_worker()
 
-    def test_shutdown_does_not_wait_on_the_camera(self):
+    def test_shutdown_does_not_wait_on_the_camera(self, monkeypatch):
+        """The worker is INSIDE acquire_camera, blocked on the held lock.
+
+        An idle worker would pass this test whatever stop_worker did. So the
+        test makes the worker enter the camera call first. A join with no
+        timeout then waits out the 5 s lock wait and fails the 3 s bound.
+        """
         from fastapi.testclient import TestClient
+        camera = turn_frames.camera
+        entered = threading.Event()
+
+        def blocked_acquire():
+            entered.set()
+            with camera._locked():  # the real, bounded lock wait
+                pass
+            raise RuntimeError("no camera in tests")
+
+        monkeypatch.setattr(camera, "acquire_camera", blocked_acquire)
         app = get_app()
         client = TestClient(app)
         client.__enter__()
-        assert wait_for(lambda: len(worker_threads()) == 1)
-        assert turn_frames.camera._cam_lock.acquire(timeout=1)
         try:
-            started = time.monotonic()
-            client.__exit__(None, None, None)
-            elapsed = time.monotonic() - started
+            assert wait_for(lambda: turn_frames._current is not None
+                            and turn_frames._current.startup_done)
+            assert camera._cam_lock.acquire(timeout=1)
+            try:
+                note = os.path.join(turn_frames._ensure_queue(),
+                                    time.strftime("%Y-%m-%d") + "__a")
+                with open(note, "w"):
+                    pass
+                assert entered.wait(5), "the worker never reached the camera"
+                started = time.monotonic()
+                client.__exit__(None, None, None)
+                elapsed = time.monotonic() - started
+            finally:
+                camera._cam_lock.release()
         finally:
-            turn_frames.camera._cam_lock.release()
+            turn_frames.stop_worker()
         assert elapsed < 3.0
-        assert worker_threads() == []
+        assert wait_for(lambda: worker_threads() == [])
+
+
+class TestStatusOffTheLoop:
+    def test_status_does_not_run_on_the_event_loop_thread(self, monkeypatch):
+        """status() reads the disk. A slow disk must not stop the event loop,
+        which STOP BENDER shares."""
+        import asyncio
+        from web.routes import frames
+
+        seen = {}
+
+        def fake_status():
+            seen["ident"] = threading.get_ident()
+            return {"ok": True}
+
+        monkeypatch.setattr(frames.turn_frames, "status", fake_status)
+
+        async def drive():
+            loop_thread = threading.get_ident()
+            body = await frames.frames_status()
+            return loop_thread, body
+
+        loop_thread, body = asyncio.run(drive())
+        assert body == {"ok": True}
+        assert seen["ident"] != loop_thread
 
 
 # ---------------------------------------------------------------------------

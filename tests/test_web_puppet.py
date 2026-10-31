@@ -532,6 +532,54 @@ class TestSeeRoomStream:
 
         fake.release_camera.assert_called_once()
 
+    def test_camera_work_never_runs_on_the_event_loop_thread(self):
+        """Every camera call can wait 5 s for the lock. On the loop thread that
+        stops the whole web UI, STOP BENDER included. This covers the acquire,
+        each capture and the release in the stream's finally block."""
+        import asyncio
+        import threading
+        from web.auth import issue_stream_token
+        from web.routes import puppet
+
+        seen = {}
+        frames = [_a_frame(), TimeoutError("no frame")]
+
+        def record(name, result=None):
+            def fn(*a, **k):
+                seen[name] = threading.get_ident()
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            return fn
+
+        def capture():
+            seen["capture"] = threading.get_ident()
+            item = frames.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        fake = _fake_vision()
+        fake.acquire_camera = MagicMock(side_effect=record("acquire"))
+        fake.release_camera = MagicMock(side_effect=record("release"))
+        fake.capture_frame = MagicMock(side_effect=capture)
+
+        async def drive():
+            loop_thread = threading.get_ident()
+            with patch("web.routes.puppet._check_camera", return_value=True):
+                response = await puppet.puppet_camera_stream(
+                    token=issue_stream_token())
+            async for _chunk in response.body_iterator:
+                pass
+            return loop_thread
+
+        with patch("web.routes.puppet._vision", fake):
+            loop_thread = asyncio.run(drive())
+
+        assert set(seen) == {"acquire", "capture", "release"}
+        for name, ident in seen.items():
+            assert ident != loop_thread, f"{name} ran on the event loop thread"
+
     def test_the_real_recovery_path_through_camera_py(self, monkeypatch):
         """The real camera.py, with only Picamera2 faked. The second frame
         never arrives. The stream ends, the camera closes, nothing calls stop()."""
