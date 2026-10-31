@@ -199,6 +199,59 @@ def test_wait_returns_true_once_confirmed(gate):
     assert presence.wait_for_presence(5.0) is True
 
 
+def test_wait_does_not_open_on_a_departure_in_progress(gate):
+    """Live 2026-10-31: the first miss still returned True, so a capture ran
+    between the two reads and noise started a second session for nobody."""
+    gate.install([500, 500, 8190, 8190])
+    assert presence.wait_for_presence(1.0) is True
+    assert presence.wait_for_presence(0.05) is False
+    assert ("presence_left", {"mm": -1}) in gate.counts
+
+
+def test_wait_still_opens_when_one_miss_is_followed_by_a_reading(gate):
+    gate.install([500, 500, 8190, 500])
+    assert presence.wait_for_presence(1.0) is True
+    assert presence.wait_for_presence(1.0) is True
+    assert not [c for c in gate.counts if c[0] == "presence_left"]
+
+
+class TestStillPresent:
+    """The re-check `_halloween_turn_loop` makes before each reply capture."""
+
+    def test_someone_in_range_costs_one_read(self, gate):
+        sensor = gate.install([500, 500, 600])
+        assert presence.wait_for_presence(1.0) is True
+        assert presence.still_present() is True
+        assert sensor.reads == 3
+
+    def test_nobody_there_is_false(self, gate):
+        gate.install([500, 500, 8190, 8190])
+        assert presence.wait_for_presence(1.0) is True
+        assert presence.still_present() is False
+
+    def test_one_missed_reading_does_not_end_the_conversation(self, gate):
+        gate.install([500, 500, 8190, 700])
+        assert presence.wait_for_presence(1.0) is True
+        assert presence.still_present() is True
+
+    def test_the_gate_stays_open_inside_the_release_band(self, gate):
+        gate.install([500, 500, 2200])
+        assert presence.wait_for_presence(1.0) is True
+        assert presence.still_present() is True
+
+    def test_a_disabled_gate_never_ends_a_session(self, monkeypatch):
+        presence._reset_for_tests()
+        monkeypatch.setattr(presence.cfg, "presence_sensor_enabled", False,
+                            raising=False)
+        assert presence.still_present() is True
+
+    def test_a_sensor_dying_during_the_check_fails_open(self, gate):
+        gate.install([500, 500])
+        assert presence.wait_for_presence(1.0) is True
+        presence._dead = True
+        assert presence.still_present() is True
+
+
 def test_wait_times_out_when_nobody_is_there(gate):
     gate.install([8190] * 200)
     assert presence.wait_for_presence(0.02) is False

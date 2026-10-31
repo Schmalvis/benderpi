@@ -13,6 +13,29 @@ Last updated: 2026-10-29
 
 ---
 
+## 2026-10-31 — Halloween: Bender talked to an empty street
+
+Live 16:55:56–16:58:23, Bender outdoors, nobody in front of him. One
+`presence_arrived` at 276 mm opened the gate. What caused that reading is not
+known: the sensor read out of range afterwards, so nothing was fixed in view.
+
+Two bugs let that one reading run for 2m18s and 11 turns:
+
+1. The gate was only read before a session's first line. Inside a session,
+   outdoor noise at `voiced_rms` 204-291 became invented sentences on Hailo
+   Whisper, which has no confidence gates, and each one kept the session alive.
+2. `wait_for_presence()` returned True on a departure in progress. So a capture
+   ran between the two closing reads, and noise started a second session.
+
+Fix: `presence.still_present()` runs before each reply capture, and a closed
+gate ends the session (`walked_off`, metric `halloween_walked_off`).
+`wait_for_presence()` no longer opens on a pending departure.
+**Trade-off:** a child who steps out of the sensor's view mid-conversation ends
+the session, and must come back inside `presence_max_mm` to start another.
+
+Also found the same evening, not fixed: the volume slider has never worked.
+`api.js` sends `{volume}` and reads `.volume`; the route uses `level`.
+
 ## 2026-10-29 (evening) — Hear Room made Bender deaf and blocked typed replies
 
 **Reported:** in puppet mode, Hear Room "lasted a second or two before failing",

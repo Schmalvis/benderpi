@@ -109,6 +109,51 @@ def _drive(wc, heard, session, stop_after=1):
     return sessions
 
 
+class TestGateHoldsDuringTheSession:
+    """Live 2026-10-31: one reading opened the mic, then outdoor noise became
+    invented sentences and Bender talked to nobody for 2m18s over 11 turns."""
+
+    def _capture_counter(self, wc):
+        calls = []
+
+        def listen(after_playback=True):
+            calls.append(after_playback)
+            return "more words"
+
+        wc.stt = types.SimpleNamespace(listen_and_transcribe=listen)
+        return calls
+
+    def test_nobody_there_ends_the_session_before_the_next_capture(
+            self, wc, monkeypatch):
+        calls = self._capture_counter(wc)
+        monkeypatch.setattr(wc.presence, "still_present", lambda: False)
+        session = _Session()
+        wc._halloween_turn_loop(session, "hello", wc.log)
+        assert session.turns == ["hello"]
+        assert session.ended == ["walked_off"]
+        assert calls == []
+
+    def test_someone_there_keeps_the_session_going(self, wc, monkeypatch):
+        calls = self._capture_counter(wc)
+        monkeypatch.setattr(wc.presence, "still_present", lambda: True)
+        monkeypatch.setattr(wc.cfg, "halloween_max_turns", 3, raising=False)
+        session = _Session()
+        wc._halloween_turn_loop(session, "hello", wc.log)
+        assert len(session.turns) == 3
+        assert session.ended == ["max_turns"]
+        assert len(calls) == 2
+
+    def test_a_goodbye_does_not_need_the_gate(self, wc, monkeypatch):
+        def must_not_run():
+            raise AssertionError("the session has already ended")
+
+        monkeypatch.setattr(wc.presence, "still_present", must_not_run)
+        session = _Session(results=[types.SimpleNamespace(
+            should_end=True, end_reason="dismissal")])
+        wc._halloween_turn_loop(session, "bye", wc.log)
+        assert session.ended == ["dismissal"]
+
+
 class TestWatchdogHeartbeat:
     """The unit is Type=notify with WatchdogSec=120 and the only feeder was
     wait_for_wakeword(), which this mode never calls."""

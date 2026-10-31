@@ -488,11 +488,34 @@ def wait_for_presence(timeout_s: float) -> bool:
     poll = max(0.02, float(_cfg("presence_poll_s", 0.1)))
     deadline = time.monotonic() + max(0.0, timeout_s)
     while True:
-        if present():
+        # A departure in progress (`_confirm_run` > 0) is not an open gate.
+        # Returning True on it let an open-mic capture run between the two
+        # reads, so noise started a second session for nobody (2026-10-31).
+        if present() and _confirm_run == 0:
             return True
         if time.monotonic() >= deadline:
             return False
         time.sleep(poll)
+
+
+def still_present() -> bool:
+    """Re-check the gate during a session. True unless the person has gone.
+
+    One in-range reading answers at once, so the usual cost is one read. A
+    departure takes `presence_confirm_reads` reads, so one missed reading
+    cannot end a child's conversation. Fails open like the rest of this module:
+    a missing or dead sensor returns True.
+    """
+    if not available():
+        return True
+    poll = max(0.02, float(_cfg("presence_poll_s", 0.1)))
+    for _ in range(max(1, int(_cfg("presence_confirm_reads", 2)))):
+        if not present():
+            return not available()       # a sensor dying here fails open
+        if _confirm_run == 0:
+            return True
+        time.sleep(poll)
+    return present() or not available()
 
 
 def close() -> None:

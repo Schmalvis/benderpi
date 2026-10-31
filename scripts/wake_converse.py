@@ -125,6 +125,15 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
             return
         if turn == max_turns - 1:
             break
+        # The gate must hold for the whole session, not only for its first
+        # line. Live 2026-10-31: one reading opened the mic, then outdoor noise
+        # at RMS 204-291 became invented sentences on Hailo Whisper (no
+        # confidence gates) and Bender talked to nobody for 2m18s over 11 turns.
+        if not presence.still_present():
+            log_.info("Presence gate closed: nobody there, ending the session")
+            metrics.count("halloween_walked_off")
+            session.end("walked_off")
+            return
         last_reply = time.monotonic()
         # Anchor the idle check on when the recording STARTED, not on "now".
         # wake_converse's own loop documents this at length: a capture that
