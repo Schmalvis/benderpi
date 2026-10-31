@@ -5,7 +5,7 @@ LEDs on SPI MOSI (GPIO 10, Pin 19)
 
 Supports three modes:
   - Talking: amplitude-reactive (colour from cfg.led_talking_colour or cfg.led_colour)
-  - Listening: solid colour (cfg.led_listening_colour, default blue)
+  - Listening: solid colour (cfg.led_listening_colour, default white)
   - Off: all LEDs off
 """
 
@@ -62,7 +62,7 @@ def all_on(colour=None):
 
 
 def set_listening(on: bool = True):
-    """Set LEDs to solid listening colour (blue by default). Call when Bender is listening."""
+    """Set LEDs to solid listening colour (white by default). Call when Bender is listening."""
     global _mode
     if on and cfg.led_listening_enabled:
         _mode = "listening"
