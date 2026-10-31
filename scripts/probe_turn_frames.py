@@ -22,9 +22,16 @@ single-owner device. If See Room is open, or the bender-web worker still holds
 the camera, step 1 and step 2 are refused. Close See Room, or wait 20 s, then
 run it again.
 
+RUNTIME (an estimate from the plan's journal numbers, not measured): step 1 about
+3 to 5 minutes, step 3 about 40 s, the whole run about 5 minutes.
+
 It refuses steps 1-3, with one line and exit 2, while <repo>/.session_active.json
 exists, because camera activity near Piper may drop audio and a child may be
-talking. It checks again at the start of each step. --force overrides it.
+talking. It checks at the start of each step, and in step 1 between cycles: a
+session that starts during step 1 stops it after the current cycle, with the
+camera released, and step 1 reports INCONCLUSIVE with the numbers so far. A
+crashed service can leave the file stale. Delete it, or pass --force, which
+turns every one of these checks off.
 
 DEADLINE
 Picamera2(), start() and close() are C++ calls with no timeout, and a hang there
@@ -311,19 +318,32 @@ def _fmt_delta(a, b) -> str:
     return f"{b - a:+d}"
 
 
-def step1(cycles: int = _DEFAULT_CYCLES) -> str:
+def step1(cycles: int = _DEFAULT_CYCLES, force: bool = False) -> str:
     _say(f"STEP 1: {cycles} acquire and release cycles, no capture")
+    _say("  Runtime estimate (not measured): about 3 to 5 minutes for 300 "
+         "cycles. Nothing prints until cycle "
+         f"{_SAMPLE_EVERY}.")
     _announce_deadline()
     samples = []   # (cycle, sample)
+    stopped_at = None
     try:
         for i in range(1, cycles + 1):
             with _held(first=(i == 1)):
                 pass
-            if i % _SAMPLE_EVERY == 0 or i == cycles:
+            sampled = i % _SAMPLE_EVERY == 0 or i == cycles
+            # A session can start during these minutes. The camera is released
+            # by now. One exists() per cycle.
+            if (not force and i < cycles
+                    and os.path.exists(_session_file())):
+                stopped_at = i
+                sampled = True
+            if sampled:
                 s = _sample()
                 samples.append((i, s))
                 _say(f"  cycle {i}: "
                      + ", ".join(f"{k} {_fmt(k, s[k])}" for k in _UNITS))
+            if stopped_at is not None:
+                break
     except Refused:
         raise
     except Exception as exc:
@@ -336,6 +356,13 @@ def step1(cycles: int = _DEFAULT_CYCLES) -> str:
         _say(f"  delta from cycle {c0} to cycle {c1}: "
              + ", ".join(f"{k} {_fmt_delta(s0[k], s1[k])}" for k in _UNITS))
     _say("  No threshold is applied. Read the numbers.")
+    if stopped_at is not None:
+        _say(f"  INCONCLUSIVE: a conversation session started "
+             f"({os.path.basename(_session_file())} exists). Stopped after "
+             f"cycle {stopped_at} of {cycles}, with the camera released. "
+             "If no session is running the file is stale: delete it, or pass "
+             "--force.")
+        return "INCONCLUSIVE"
     _say("  DONE")
     return "DONE"
 
@@ -573,10 +600,10 @@ def step3() -> str:
 _STEP_NUMBERS = (0, 1, 2, 3)
 
 
-def _run_step(n: int, cycles: int) -> str:
+def _run_step(n: int, cycles: int, force: bool = False) -> str:
     """Look the step up by name at call time, so a test can replace one."""
     fn = globals()[f"step{n}"]
-    return fn(cycles) if n == 1 else fn()
+    return fn(cycles, force=force) if n == 1 else fn()
 
 
 def _positive_int(text: str) -> int:
@@ -593,7 +620,9 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="probe_turn_frames.py",
         description="Device check for turn frames. Run with bender-converse "
-                    "running and See Room closed. Never stops a service.")
+                    "running and See Room closed. Never stops a service. "
+                    "Runtime (an estimate, not measured): about 5 minutes "
+                    "for the whole run, most of it step 1.")
     p.add_argument("--step", type=int, choices=_STEP_NUMBERS,
                    help="run one step (0 Pillow, 1 cycles, 2 recovery, "
                         "3 bender-web CPU). Default: all, in order.")
@@ -610,10 +639,10 @@ def _session_refusal(n: int, force: bool):
     if n == 0 or force:
         return None
     if os.path.exists(_session_file()):
-        return ("REFUSED: a conversation session is live "
-                f"({os.path.basename(_session_file())} exists), and camera "
-                "activity near Piper may drop audio. Run again when it ends, "
-                "or pass --force.")
+        return ("REFUSED: a conversation session looks live "
+                f"({_session_file()} exists), and camera activity near Piper "
+                "may drop audio. Run again when it ends. If no session is "
+                "running the file is stale: delete it, or pass --force.")
     return None
 
 
@@ -627,7 +656,7 @@ def main(argv=None) -> int:
             _say(refusal)
             return 2
         try:
-            results[n] = _run_step(n, args.cycles)
+            results[n] = _run_step(n, args.cycles, args.force)
         except Refused as exc:
             _say(f"  {exc.line()}")
             return 2

@@ -226,6 +226,98 @@ class TestStep1:
         assert "PASS" not in out
 
 
+class TestStep1SessionWatch:
+    """A session that starts during step 1 must stop the cycles."""
+
+    def start_session(self):
+        open(probe._session_file(), "w").close()
+
+    def test_stops_after_the_cycle_in_which_a_session_appears(
+            self, cam, capsys):
+        real = cam.acquire_camera
+
+        def acquire():
+            if cam.acquire_calls == 2:      # the 3rd acquire is about to run
+                self.start_session()
+            return real()
+
+        cam.acquire_camera = acquire
+        assert probe.step1(cycles=300) == "INCONCLUSIVE"
+        assert cam.events.count("acquire") == 3
+        assert cam.events.count("release") == 3
+        assert cam.refs == 0
+        out = capsys.readouterr().out
+        assert "after cycle 3 of 300" in out
+        assert "session" in out.lower()
+        assert "DONE" not in out
+
+    def test_the_camera_is_released_before_it_stops(self, cam):
+        self.start_session()
+        probe.step1(cycles=10)
+        assert cam.events == ["acquire", "release"]
+
+    def test_the_numbers_so_far_still_print(self, cam, monkeypatch, capsys):
+        monkeypatch.setattr(probe, "_SAMPLE_EVERY", 2)
+        real = cam.acquire_camera
+
+        def acquire():
+            if cam.acquire_calls == 4:
+                self.start_session()
+            return real()
+
+        cam.acquire_camera = acquire
+        probe.step1(cycles=50)
+        out = capsys.readouterr().out
+        assert "cycle 2:" in out
+        assert "cycle 5:" in out          # a sample at the stop point
+        assert "delta from cycle 2 to cycle 5" in out
+
+    def test_force_runs_every_cycle(self, cam):
+        self.start_session()
+        assert probe.step1(cycles=6, force=True) == "DONE"
+        assert cam.events.count("acquire") == 6
+
+    def test_no_session_runs_every_cycle(self, cam):
+        assert probe.step1(cycles=6) == "DONE"
+        assert cam.events.count("acquire") == 6
+
+    def test_a_session_after_the_last_cycle_changes_nothing(self, cam):
+        real = cam.release_camera
+
+        def release():
+            real()
+            if cam.acquire_calls == 3:
+                self.start_session()
+
+        cam.release_camera = release
+        assert probe.step1(cycles=3) == "DONE"
+
+    def test_it_costs_one_exists_check_per_cycle(self, cam, monkeypatch):
+        calls = []
+        real = os.path.exists
+        monkeypatch.setattr(
+            probe.os.path, "exists",
+            lambda p: calls.append(p) or real(p))
+        probe.step1(cycles=5)
+        assert len([c for c in calls if c.endswith(".session_active.json")]) == 4
+
+    def test_main_passes_force_to_step1(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(probe, "step1",
+                            lambda cycles, force=False: seen.append(
+                                (cycles, force)) or "DONE")
+        self.start_session()
+        probe.main(["--step", "1", "--force", "--cycles", "7"])
+        probe.main(["--step", "1", "--cycles", "7"])      # refused up front
+        assert seen == [(7, True)]
+
+    def test_announces_the_runtime_estimate_at_the_start(self, cam, faults):
+        probe.step1(cycles=2)
+        first_lines = faults.out_before_first_arm.splitlines()[:4]
+        assert any("estimate" in x.lower() and "minutes" in x
+                   for x in first_lines), first_lines
+
+
 class TestDeadline:
     """faulthandler.dump_traceback_later(exit=True) around every camera call.
 
@@ -769,6 +861,25 @@ class TestStep3Constants:
         assert probe._RELEASE_WAIT_S >= rest + 5
 
 
+class TestWindowSamples:
+    def test_every_sample_sits_inside_the_window_and_the_hold_in_order(self):
+        import turn_frames
+        samples = list(probe._WINDOW_SAMPLES_S)
+        assert samples == sorted(samples)
+        assert len(set(samples)) == len(samples)
+        assert samples[0] == probe._NOTE_CHECK_S
+        for at in samples:
+            assert 0 < at < probe._HOLD_WINDOW_S
+            assert at < turn_frames._HOLD_S
+
+    def test_the_window_runs_with_no_negative_sleep(self, cam, monkeypatch):
+        make_queue()
+        systemctl_says(monkeypatch, "4242\n")
+        sim = Sim(monkeypatch, ticks=TICKS)
+        probe.step3()
+        assert all(x >= 0 for x in sim.sleeps), sim.sleeps
+
+
 class TestFramesDirMatchesTurnFrames:
     def test_with_the_env_var_set(self, tmp_path, monkeypatch):
         import turn_frames
@@ -983,6 +1094,9 @@ class TestSessionGuard:
         assert [n for n, _a, _k in ran] == [0]    # step 0 needs no guard
         assert "--force" in out
         assert "session" in out.lower()
+        assert "stale" in out.lower()
+        assert ".session_active.json" in out
+        assert "delete" in out.lower()
 
     @pytest.mark.parametrize("step", [1, 2, 3])
     def test_each_camera_step_is_guarded(self, monkeypatch, capsys, step):
@@ -1030,6 +1144,18 @@ class TestSessionGuard:
         with pytest.raises(SystemExit):
             probe.main(["--help"])
         assert "--force" in capsys.readouterr().out
+
+    def test_help_states_the_runtime_as_an_estimate(self, capsys):
+        with pytest.raises(SystemExit):
+            probe.main(["--help"])
+        out = " ".join(capsys.readouterr().out.split())
+        assert "estimate" in out.lower()
+        assert "minutes" in out
+
+    def test_the_header_states_the_runtime_as_an_estimate(self):
+        doc = " ".join(probe.__doc__.split())
+        assert "estimate" in doc.lower()
+        assert "minutes" in doc
 
 
 # ---------------------------------------------------------------------------
