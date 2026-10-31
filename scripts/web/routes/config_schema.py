@@ -142,6 +142,12 @@ class BenderConfigUpdate(BaseModel):
     presence_signal_rate_mcps: float | None = None
     presence_max_resets: int | None = None
     presence_wait_slice_s: float | None = None
+
+    # --- Turn frames ---
+    # null is valid for all three: a cleared Svelte box sends it.
+    turn_frames_enabled: bool | None = None
+    turn_frames_retention_days: int | None = None
+    turn_frames_settle_s: float | None = None
     stt_onset_frames: int | None = None
     stt_vad_warmup_frames: int | None = None
     stt_speech_onset_timeout_s: float | None = None
@@ -244,6 +250,23 @@ class BenderConfigUpdate(BaseModel):
         if v is not None and not (0.0 <= v <= 1.0):
             raise ValueError("presence_signal_rate_mcps must be 0-1 MCPS "
                              "(0 = leave the driver default)")
+        return v
+
+    @field_validator("turn_frames_retention_days")
+    @classmethod
+    def _turn_frames_retention_days(cls, v):
+        # Frames are never kept for ever, so 0 and negatives are refused.
+        if v is not None and v < 1:
+            raise ValueError("turn_frames_retention_days must be at least 1")
+        return v
+
+    @field_validator("turn_frames_settle_s")
+    @classmethod
+    def _turn_frames_settle_s(cls, v):
+        # 5 s is the age at which a frame note goes stale, so a longer settle
+        # could never produce a frame.
+        if v is not None and not (0.0 <= v <= 5.0):
+            raise ValueError("turn_frames_settle_s must be 0-5 seconds")
         return v
 
     @field_validator("presence_confirm_reads")

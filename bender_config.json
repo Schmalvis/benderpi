@@ -242,5 +242,8 @@
   "presence_confirm_reads": 2,
   "presence_poll_s": 0.1,
   "presence_signal_rate_mcps": 0.1,
-  "presence_timing_budget_us": 200000
+  "presence_timing_budget_us": 200000,
+  "turn_frames_enabled": false,
+  "turn_frames_retention_days": 7,
+  "turn_frames_settle_s": 0.5
 }

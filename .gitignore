@@ -50,6 +50,7 @@ STATUS.md
 logs/bender.log*
 logs/metrics.jsonl*
 logs/.watchdog_state.json
+logs/frames/
 .superpowers/
 
 favourites.json

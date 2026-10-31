@@ -262,3 +262,64 @@ def test_halloween_mode_is_a_bool():
     assert clean_bender_config({"halloween_mode": True})["halloween_mode"] is True
     with pytest.raises(ValidationError):
         clean_bender_config({"halloween_mode": "yes please"})
+
+
+# ── Turn frames ───────────────────────────────────────────────────────────────
+# A cleared Svelte number box sends null, so null must be accepted for all three.
+
+
+def test_turn_frames_shipped_values_accepted():
+    out = clean_bender_config({
+        "turn_frames_enabled": False,
+        "turn_frames_retention_days": 7,
+        "turn_frames_settle_s": 0.5,
+    })
+    assert out["turn_frames_enabled"] is False
+    assert out["turn_frames_retention_days"] == 7
+    assert out["turn_frames_settle_s"] == 0.5
+
+
+@pytest.mark.parametrize("key", [
+    "turn_frames_enabled", "turn_frames_retention_days", "turn_frames_settle_s",
+])
+def test_turn_frames_null_accepted(key):
+    clean_bender_config({key: None})
+
+
+@pytest.mark.parametrize("days", [0, -1])
+def test_turn_frames_retention_under_one_rejected(days):
+    with pytest.raises(ValidationError, match="turn_frames_retention_days"):
+        clean_bender_config({"turn_frames_retention_days": days})
+
+
+def test_turn_frames_retention_one_accepted():
+    clean_bender_config({"turn_frames_retention_days": 1})
+
+
+@pytest.mark.parametrize("s", [-0.1, 5.1, 6])
+def test_turn_frames_settle_out_of_range_rejected(s):
+    with pytest.raises(ValidationError, match="turn_frames_settle_s"):
+        clean_bender_config({"turn_frames_settle_s": s})
+
+
+@pytest.mark.parametrize("s", [0, 0.5, 5, 5.0])
+def test_turn_frames_settle_in_range_accepted(s):
+    clean_bender_config({"turn_frames_settle_s": s})
+
+
+def test_turn_frames_shipped_config_and_defaults():
+    from config import Config
+    shipped = _production_blob()
+    assert shipped["turn_frames_enabled"] is False
+    assert shipped["turn_frames_retention_days"] == 7
+    assert shipped["turn_frames_settle_s"] == 0.5
+    assert Config.turn_frames_enabled is False
+    assert Config.turn_frames_retention_days == 7
+    assert Config.turn_frames_settle_s == 0.5
+
+
+def test_gitignore_covers_frames():
+    import subprocess
+    r = subprocess.run(["git", "check-ignore", "logs/frames/x.jpg"],
+                       cwd=_BASE_DIR, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

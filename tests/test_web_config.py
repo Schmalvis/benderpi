@@ -265,3 +265,37 @@ def test_a_secret_in_the_body_is_not_echoed_back(tmp_path):
         resp = client.put("/api/config", json=body, headers=headers())
     assert resp.status_code == 422
     assert "should-never-come-back" not in resp.text, resp.text[:300]
+
+
+# ── Turn frames keys, through the route (the 2026-10-14 lesson) ───────────────
+
+
+@pytest.mark.parametrize("key", [
+    "turn_frames_enabled", "turn_frames_retention_days", "turn_frames_settle_s",
+])
+def test_turn_frames_null_is_accepted_by_the_route(tmp_path, key):
+    """A cleared Svelte number box or checkbox sends null."""
+    client = get_client()
+    cfg_file = tmp_path / "bender_config.json"
+    cfg_file.write_text(json.dumps({}))
+    with patch("web.routes.config._CONFIG_PATH", str(cfg_file)):
+        resp = client.put("/api/config", json={key: None}, headers=headers())
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text[:200]}"
+
+
+@pytest.mark.parametrize("body,field", [
+    ({"turn_frames_retention_days": 0}, "turn_frames_retention_days"),
+    ({"turn_frames_retention_days": -3}, "turn_frames_retention_days"),
+    ({"turn_frames_settle_s": 6}, "turn_frames_settle_s"),
+    ({"turn_frames_settle_s": -1}, "turn_frames_settle_s"),
+])
+def test_turn_frames_bad_value_is_422_naming_the_field(tmp_path, body, field):
+    client = get_client()
+    cfg_file = tmp_path / "bender_config.json"
+    cfg_file.write_text(json.dumps({"speech_rate": 1.0}))
+    with patch("web.routes.config._CONFIG_PATH", str(cfg_file)):
+        resp = client.put("/api/config", json=body, headers=headers())
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text[:200]}"
+    detail = resp.json()["detail"]
+    assert any(field in d["msg"] for d in detail), detail
+    assert json.loads(cfg_file.read_text()) == {"speech_rate": 1.0}
