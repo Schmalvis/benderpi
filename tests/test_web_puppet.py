@@ -446,18 +446,37 @@ class TestSeeRoomStream:
         fake.capture_frame.assert_not_called()
         fake.release_camera.assert_not_called()
 
-    def test_a_busy_release_does_not_escape(self, caplog):
+    def test_a_busy_release_does_not_escape(self):
         """TestClient re-raises a server error, so an escape fails this test."""
+        fake = _fake_vision([_a_frame(), TimeoutError("no frame")])
+        fake.release_camera.side_effect = _Busy("lock held")
+
+        resp = _stream_with(fake)
+
+        assert resp.status_code == 200
+
+    def test_a_busy_release_is_an_error_that_names_the_cost(self, caplog):
+        """The stream ends either way, but the ref stays counted, so the close
+        that recovers a timed-out camera never runs. That is not a warning."""
         import logging
         fake = _fake_vision([_a_frame(), TimeoutError("no frame")])
         fake.release_camera.side_effect = _Busy("lock held")
 
         with caplog.at_level(logging.WARNING, logger="bender.puppet"):
-            resp = _stream_with(fake)
+            _stream_with(fake)
 
-        assert resp.status_code == 200
+        errors = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "leaked" in errors[0]
+        assert "bender-web restarts" in errors[0]
+
+    def test_a_busy_release_is_not_retried(self):
+        fake = _fake_vision([_a_frame(), TimeoutError("no frame")])
+        fake.release_camera.side_effect = _Busy("lock held")
+
+        _stream_with(fake)
+
         fake.release_camera.assert_called_once()
-        assert any("release" in r.message.lower() for r in caplog.records)
 
     def test_another_capture_failure_still_releases(self):
         fake = _fake_vision([RuntimeError("the sensor said no")])
@@ -536,6 +555,138 @@ class TestSeeRoomStream:
         cam.stop.assert_not_called()
         assert camera_module._cam is None
         assert camera_module._cam_refcount == 0
+
+
+class TestDisconnectDuringAcquire:
+    """The browser leaves while the acquire thread runs. That cancel cannot stop
+    the thread, so the thread still takes its ref, and only a finished thread
+    can say whether it did. A leaked ref means the camera never closes.
+
+    These run the real StreamingResponse on an ASGI 2.3 scope, which is what
+    uvicorn sends. That takes Starlette's anyio path, where the cancel is
+    level-triggered: it comes back at every await until the scope exits.
+    """
+
+    @staticmethod
+    async def _disconnect_while_acquiring(inside):
+        import asyncio
+        from web.auth import issue_stream_token
+        from web.routes import puppet
+
+        async def receive():
+            await asyncio.to_thread(inside.wait, 5)
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            return None
+
+        with patch("web.routes.puppet._check_camera", return_value=True):
+            response = await puppet.puppet_camera_stream(token=issue_stream_token())
+        await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+
+    def test_the_ref_is_released_once_the_acquire_finishes(self, monkeypatch):
+        """The real camera.py. Only the Picamera2 constructor blocks."""
+        import asyncio
+        import threading
+        import time
+        from web.routes import puppet
+
+        inside, unblock = threading.Event(), threading.Event()
+        cam = MagicMock()
+        camera_module = _real_camera(monkeypatch, cam)
+
+        def slow_open():
+            inside.set()
+            unblock.wait(5)
+            return cam
+
+        sys.modules["picamera2"].Picamera2.side_effect = slow_open
+
+        async def drive():
+            await self._disconnect_while_acquiring(inside)
+            unblock.set()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                # Not the refcount alone: it reads 0 before the thread takes its ref.
+                if cam.close.called and camera_module._cam is None:
+                    return
+                await asyncio.sleep(0.01)
+
+        with patch.object(puppet, "_vision", _vision_over(camera_module)):
+            asyncio.run(drive())
+
+        assert camera_module._cam_refcount == 0
+        assert camera_module._cam is None
+        cam.close.assert_called_once()
+
+    @pytest.mark.parametrize("error", [_Busy("lock held"), RuntimeError("no camera")],
+                             ids=["busy", "failed"])
+    def test_a_failed_acquire_releases_nothing(self, error):
+        """That acquire took no ref. A release would take another holder's."""
+        import asyncio
+        import threading
+        from web.routes import puppet
+
+        inside, unblock, finished = (threading.Event() for _ in range(3))
+
+        def slow_failure():
+            inside.set()
+            unblock.wait(5)
+            finished.set()
+            raise error
+
+        fake = _fake_vision()
+        fake.acquire_camera.side_effect = slow_failure
+
+        async def drive():
+            await self._disconnect_while_acquiring(inside)
+            unblock.set()
+            assert await asyncio.to_thread(finished.wait, 5)
+            await asyncio.sleep(0.05)      # room for a wrong release to show up
+
+        with patch.object(puppet, "_vision", fake):
+            asyncio.run(drive())
+
+        fake.release_camera.assert_not_called()
+
+    def test_a_busy_release_after_the_disconnect_is_logged(self, caplog):
+        """The release runs on its own thread, so nothing else would see it."""
+        import asyncio
+        import logging
+        import threading
+        import time
+        from web.routes import puppet
+
+        inside, unblock, released = (threading.Event() for _ in range(3))
+
+        def slow_open():
+            inside.set()
+            unblock.wait(5)
+            return MagicMock()
+
+        def busy_release():
+            released.set()
+            raise _Busy("lock held")
+
+        fake = _fake_vision()
+        fake.acquire_camera.side_effect = slow_open
+        fake.release_camera.side_effect = busy_release
+
+        async def drive():
+            await self._disconnect_while_acquiring(inside)
+            unblock.set()
+            assert await asyncio.to_thread(released.wait, 5)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not any(
+                    r.levelno == logging.ERROR for r in caplog.records):
+                await asyncio.sleep(0.01)
+
+        with caplog.at_level(logging.WARNING, logger="bender.puppet"), \
+                patch.object(puppet, "_vision", fake):
+            asyncio.run(drive())
+
+        assert any(r.levelno == logging.ERROR and "leaked" in r.message
+                   for r in caplog.records)
 
 
 class TestCheckCamera:

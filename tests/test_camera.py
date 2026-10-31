@@ -256,10 +256,43 @@ class TestConstants:
         cam_mod = _make_camera_module()
         assert cam_mod._CAPTURE_TIMEOUT_S < cam_mod._LOCK_TIMEOUT_S
 
-    def test_the_bounds_do_not_come_from_cfg(self):
-        """A cleared Config box must never turn a bound into `wait=None`."""
-        cam_mod = _make_camera_module()
-        assert not hasattr(cam_mod, "cfg")
+    @pytest.mark.parametrize("value", [None, 0, 99.0], ids=["cleared", "zero", "other"])
+    def test_the_bounds_do_not_come_from_cfg(self, value, monkeypatch):
+        """A cleared Config box must never turn a bound into `wait=None`.
+
+        Every cfg key answers `value` here, whatever its name, at import and
+        at call time. The numbers are literals, so a constant that was read
+        from cfg at import cannot pass by comparing with itself.
+        """
+        class EveryKey:
+            def __getattr__(self, name):
+                return value
+
+        class RecordingLock:
+            def __init__(self):
+                self.timeouts = []
+                self._lock = threading.Lock()
+
+            def acquire(self, timeout=-1):
+                self.timeouts.append(timeout)
+                return self._lock.acquire(timeout=timeout)
+
+            def release(self):
+                self._lock.release()
+
+        import config
+        monkeypatch.setattr(config, "cfg", EveryKey())
+        mock_cls = _default_mock_picamera2()
+        cam_mod = _make_camera_module(mock_cls)
+        lock = RecordingLock()
+        monkeypatch.setattr(cam_mod, "_cam_lock", lock)
+
+        cam_mod.acquire_camera()
+        cam_mod.capture_frame()
+        cam_mod.release_camera()
+
+        mock_cls._instance.capture_array.assert_called_once_with("main", wait=3.0)
+        assert lock.timeouts == [5.0, 5.0, 5.0]
 
 
 class TestCaptureTimeout:

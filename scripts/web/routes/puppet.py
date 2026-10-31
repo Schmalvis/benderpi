@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -249,6 +250,48 @@ def _check_camera() -> bool:
     return True
 
 
+def _release_stream_ref() -> None:
+    """Drop See Room's camera ref. Blocking, so run it off the event loop.
+
+    No retry. A CameraBusy here means the lock stayed held for 5 s, and the
+    stream is over either way.
+    """
+    try:
+        _vision.release_camera()
+    except _vision.CameraBusy as exc:
+        log.error("See Room stream: release failed, so the ref is leaked and "
+                  "the camera cannot close until bender-web restarts: %s", exc)
+    except Exception as exc:
+        log.warning("See Room stream: release failed: %s", exc)
+
+
+def _release_abandoned_acquire(acquire: asyncio.Future) -> None:
+    """Done-callback for an acquire whose stream has gone. Releases its ref.
+
+    Runs on the event loop, and a release can wait 5 s for the lock, so it gets
+    its own thread. A failed acquire took no ref, so it releases nothing.
+    """
+    if acquire.cancelled() or acquire.exception() is not None:
+        return
+    threading.Thread(target=_release_stream_ref, name="see-room-release",
+                     daemon=True).start()
+
+
+async def _acquire_for_stream() -> None:
+    """Acquire the camera, and never leak the ref if the client leaves.
+
+    A cancel cannot stop the acquire thread, which still takes its ref after
+    the await is gone. So the await is shielded, and a cancel hands the ref to
+    a done-callback. Only a finished acquire can say if it took one.
+    """
+    acquire = asyncio.ensure_future(asyncio.to_thread(_vision.acquire_camera))
+    try:
+        await asyncio.shield(acquire)
+    except asyncio.CancelledError:
+        acquire.add_done_callback(_release_abandoned_acquire)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -353,7 +396,7 @@ async def puppet_camera_stream(token: str = ""):
         import io
         from PIL import Image
         try:
-            await asyncio.to_thread(_vision.acquire_camera)
+            await _acquire_for_stream()
         except _vision.CameraBusy as exc:
             # The 200 headers have gone, so ending the body is all that is
             # left. No ref was taken, so there is nothing to release.
@@ -382,10 +425,7 @@ async def puppet_camera_stream(token: str = ""):
         except asyncio.CancelledError:
             pass
         finally:
-            try:
-                await asyncio.to_thread(_vision.release_camera)
-            except Exception as exc:
-                log.warning("See Room stream: release failed: %s", exc)
+            await asyncio.to_thread(_release_stream_ref)
 
     return StreamingResponse(_generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
