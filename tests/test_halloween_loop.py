@@ -109,6 +109,67 @@ def _drive(wc, heard, session, stop_after=1):
     return sessions
 
 
+class TestPuppetLinesAreNotLeftWaiting:
+    """Live 2026-10-31: puppet lines waited for the end of the capture and the
+    session, so they played 13-16s late or were discarded as stale."""
+
+    def test_a_pending_line_plays_between_turns(self, wc, monkeypatch):
+        served = []
+        wc.stt = types.SimpleNamespace(
+            listen_and_transcribe=lambda after_playback=True: "more words")
+        monkeypatch.setattr(wc.say_request, "pending", lambda: not served)
+        monkeypatch.setattr(wc, "_serve_say_requests",
+                            lambda: served.append(1) or 1)
+        session = _Session()
+        wc._halloween_turn_loop(session, "hello", wc.log)
+        assert served == [1]
+        assert len(session.turns) == 3
+
+    def test_a_pending_line_drops_the_open_mic_capture(self, wc, monkeypatch):
+        monkeypatch.setattr(wc.say_request, "pending",
+                            lambda: wc.stt.heard_something[0])
+        heard = ["overheard chat"]
+
+        def listen(after_playback=True):
+            if not heard:
+                raise KeyboardInterrupt
+            wc.stt.heard_something[0] = True
+            return heard.pop(0)
+
+        wc.stt = types.SimpleNamespace(listen_and_transcribe=listen,
+                                       heard_something=[False])
+        served = []
+
+        def serve():
+            served.append(1)
+            wc.stt.heard_something[0] = False
+            return 1
+
+        monkeypatch.setattr(wc, "_serve_say_requests", serve)
+        made = []
+        wc.ConversationSession = lambda **kw: made.append(1) or _Session()
+        with pytest.raises(KeyboardInterrupt):
+            wc._halloween_loop(None, object(), object(), wc.log)
+        assert served == [1]
+        assert made == []
+
+
+class TestOpenMicCaptureAfterThePersonLeft:
+    def test_no_session_opens_for_someone_who_has_gone(self, wc, monkeypatch):
+        monkeypatch.setattr(wc.presence, "still_present", lambda: False)
+        session = _Session()
+        sessions = _drive(wc, ["overheard chat"], session)
+        assert sessions == []
+        assert session.started is False
+
+    def test_someone_still_there_gets_the_session(self, wc, monkeypatch):
+        monkeypatch.setattr(wc.presence, "still_present", lambda: True)
+        session = _Session()
+        sessions = _drive(wc, ["trick or treat"], session)
+        assert len(sessions) == 1
+        assert session.started is True
+
+
 class TestGateHoldsDuringTheSession:
     """Live 2026-10-31: one reading opened the mic, then outdoor noise became
     invented sentences and Bender talked to nobody for 2m18s over 11 turns."""

@@ -125,6 +125,10 @@ def _halloween_turn_loop(session, first_text: str, log_) -> None:
             return
         if turn == max_turns - 1:
             break
+        # A puppeteer's line waits for nothing else. Live 2026-10-31 these
+        # waited for the end of the session: 13-16s late, or discarded as stale.
+        if say_request.pending():
+            _serve_say_requests()
         # The gate must hold for the whole session, not only for its first
         # line. Live 2026-10-31: one reading opened the mic, then outdoor noise
         # at RMS 204-291 became invented sentences on Hailo Whisper (no
@@ -240,7 +244,18 @@ def _halloween_loop(ai, ai_local, responder, log_) -> None:
                           "dropping it, NOT starting a session")
                 _cleanup_abort_files()
                 continue
+            # The puppeteer outranks whatever the mic caught. Back to the top
+            # of the loop, which plays the line.
+            if say_request.pending():
+                continue
             if not text:
+                continue
+            # A capture runs up to max_record_seconds on overheard chat, so the
+            # person it opened for can be gone by now. Do not greet nobody.
+            if not presence.still_present():
+                log_.info("Presence gate closed during the open-mic capture: "
+                          "not starting a session")
+                metrics.count("halloween_capture_after_left")
                 continue
             if _is_goodbye_text(text):
                 log_.info("Heard (open mic) a goodbye with no session open, "
