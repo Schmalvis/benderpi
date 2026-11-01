@@ -279,7 +279,7 @@
     <div class="bg-warning/10 border border-warning text-warning rounded-lg px-4 py-3 flex items-center justify-between gap-3 text-sm">
       <span>Config saved — bender-converse won't pick this up until it restarts (it reads config once at startup).</span>
       <button
-        class="bg-warning text-bg-base font-medium px-3 py-1.5 rounded whitespace-nowrap hover:opacity-90 disabled:opacity-50 transition-opacity"
+        class="bg-warning text-bg font-medium px-3 py-1.5 rounded whitespace-nowrap hover:opacity-90 disabled:opacity-50 transition-opacity"
         disabled={restarting} on:click={handleRestartNow}>
         {restarting ? 'Restarting…' : 'Restart Now'}
       </button>
@@ -294,13 +294,13 @@
       <div class="flex gap-2">
         <button
           type="button"
-          class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {halloweenOn ? 'bg-bg-input text-text-muted border border-border' : 'bg-accent text-bg-base'}"
+          class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {halloweenOn ? 'bg-bg-input text-text-muted border border-border' : 'bg-accent text-bg'}"
           on:click={() => setHalloweenMode(false)}>
           Normal
         </button>
         <button
           type="button"
-          class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {halloweenOn ? 'bg-warning text-bg-base' : 'bg-bg-input text-text-muted border border-border'}"
+          class="flex-1 px-3 py-2 rounded text-sm font-medium transition-colors {halloweenOn ? 'bg-warning text-bg' : 'bg-bg-input text-text-muted border border-border'}"
           on:click={() => setHalloweenMode(true)}>
           Halloween
         </button>
@@ -317,7 +317,7 @@
           </p>
           <button
             type="button"
-            class="w-full bg-warning text-bg-base font-medium px-3 py-2 rounded text-sm
+            class="w-full bg-warning text-bg font-medium px-3 py-2 rounded text-sm
                    hover:opacity-90 disabled:opacity-50 transition-opacity"
             disabled={applyingHalloween}
             on:click={handleApplyHalloween}>
