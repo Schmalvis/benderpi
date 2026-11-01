@@ -112,7 +112,7 @@ a hang inside one of them holds the GIL as well as the lock. That freezes all of
 `bender-web`, including STOP BENDER. Recovery is SSH: `sudo systemctl stop
 bender-converse`, then `sudo systemctl restart bender-web`, which can wait the
 default 90 s for SIGKILL. No hang of this kind is on record. Measured on this dev
-clone, python3-libcamera 0.7.2+rpt20261009-1. The device build is not verified.
+clone, python3-libcamera 0.7.2+rpt20261009-1. Checked 2026-11-01: the device has the same package and the same binary by SHA-256.
 
 `worker_stuck_s` shows a hang in the worker thread only. A hang in a pool thread
 reads as a healthy worker, and `failed_today` rises when the next note arrives.

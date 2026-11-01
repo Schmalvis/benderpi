@@ -46,8 +46,8 @@ has no gil_scoped_release. Then the whole process stops, including the event
 loop and STOP BENDER, and the lock timeouts cannot run. Recovery is SSH:
 `sudo systemctl stop bender-converse`, then `sudo systemctl restart
 bender-web`. No hang of this kind is on record. This binding fact was read on
-the dev clone, and the device build is not verified. Whether to accept this
-limit is open for the owner, before turn frames are enabled.
+the dev clone. The device has the same binary by SHA-256 (2026-11-01). Whether
+to accept this limit is open for the owner, before turn frames are enabled.
 """
 from __future__ import annotations
 

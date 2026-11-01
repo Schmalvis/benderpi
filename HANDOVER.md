@@ -22,7 +22,7 @@ Off by default. Merging restarts `bender-converse` and `bender-web`, even with t
 Open before the feature is enabled:
 
 1. **Owner to rule.** A hang in a libcamera C++ call holds the GIL and freezes all of `bender-web`, including STOP BENDER. The plan said STOP BENDER would still work, and the opus gate refuted that. Accept the risk, or move camera ownership to a third process. Recovery and detail: the Turn frames section of `CLAUDE.md`.
-2. Check the device's `python3-libcamera` build. The GIL fact was read from the binding on the dev clone only, and simulated with a fake camera. No real hang was seen.
+2. Done 2026-11-01: the device's `python3-libcamera` is the same package as the dev clone (0.7.2+rpt20261009-1), and the `_libcamera` binary has the same SHA-256. So the GIL fact applies to the device. It was simulated with a fake camera, and no real hang was seen. The same day, `to_pil`, the VLM resize of its read-only array, and JPEG saving ran on the device's versions (Pillow 12.1.1, numpy 2.4.3, cv2 4.10.0) with a synthetic frame. Red stayed red. No camera was involved.
 3. Run `scripts/probe_turn_frames.py` on the device, and the plan's listening test. If he drops out, turn it off.
 
 Pinning `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_settle_s` in the device's `bender_config.json` is optional. With the keys absent, the code defaults apply, and ticking the box writes the first one.
