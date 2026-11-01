@@ -20,7 +20,6 @@ _SCRIPTS_DIR = os.path.dirname(os.path.dirname(_HERE))
 _BASE_DIR = os.path.dirname(_SCRIPTS_DIR)
 sys.path.insert(0, _SCRIPTS_DIR)
 
-import leds
 from logger import get_logger
 
 _audit = get_logger("audit")
@@ -165,10 +164,3 @@ async def volume_set(body: dict = Body(...)):
         raise HTTPException(status_code=500, detail="Could not set volume")
     return {"status": "ok", "level": level}
 
-
-@router.post("/api/config/led-brightness")
-async def set_led_brightness(body: dict = Body(...)):
-    value = float(body.get("brightness", 1.0))
-    value = max(0.0, min(1.0, value))
-    leds.set_brightness(value)
-    return {"brightness": value}

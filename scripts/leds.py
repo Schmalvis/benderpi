@@ -20,8 +20,24 @@ from logger import get_logger
 
 log = get_logger("leds")
 
+_DEFAULT_BRIGHTNESS = 0.8
+
+
+def brightness_unit(value) -> float:
+    """A saved brightness on the driver's 0-1 scale.
+
+    The driver clamps to 0-1, so it read every older 0-255 save from the Config
+    page as full. Values over 1 are that older scale. None means unset: the
+    schema allows a null, and the driver cannot take one.
+    """
+    if value is None:
+        return _DEFAULT_BRIGHTNESS
+    value = float(value)
+    return max(0.0, min(value / 255 if value > 1 else value, 1.0))
+
+
 NUM_LEDS   = cfg.led_count
-BRIGHTNESS = cfg.led_brightness
+BRIGHTNESS = brightness_unit(cfg.led_brightness)
 
 _spi    = busio.SPI(board.SCK, MOSI=board.MOSI)
 pixels  = neopixel_spi.NeoPixel_SPI(_spi, NUM_LEDS, brightness=BRIGHTNESS, auto_write=False)

@@ -5,12 +5,34 @@
            rebuildResponses, generateStatus, getVolume, setVolume, restartService,
            getFramesStatus } from '../lib/api.js';
   import { toast } from '../lib/stores/toast.js';
+  import { hexToRgb, rgbToHex } from '../lib/ledColour.js';
 
   let saving = false;
   let saveMsg = '';
   let restartRequired = false;
   let watchdog = {};
   let watchdogDirty = false;
+
+  // Both code defaults in config.py are white.
+  const LED_WHITE = '#ffffff';
+  const ledColours = [
+    { key: 'led_listening_colour', label: 'Listening Colour (hex)' },
+    { key: 'led_talking_colour', label: 'Talking Colour (hex)' },
+  ];
+
+  function setLedColour(key, event) {
+    const rgb = hexToRgb(event.target.value.trim());
+    if (rgb) {
+      config.update(c => ({ ...c, [key]: rgb }));
+      return;
+    }
+    toast.push('Colour not changed: use #rrggbb', 'error');
+    event.target.value = rgbToHex($config[key], LED_WHITE);
+  }
+
+  // Same scale rule as leds.brightness_unit(). A value over 1 is an older 0-255
+  // save, and 0.8 is the code default.
+  const ledBrightness = v => (v == null ? 0.8 : v > 1 ? Math.min(v / 255, 1) : v);
 
   onMount(async () => {
     await loadConfig();
@@ -577,40 +599,36 @@
 
       <div>
         <label class={labelClass} for="led_brightness">
-          Brightness — <span class="text-text-default">{$config.led_brightness ?? 128}</span>
+          Brightness — <span class="text-text-default">{Math.round(ledBrightness($config.led_brightness) * 100)}%</span>
         </label>
         <input
           id="led_brightness"
           type="range"
-          min="0" max="255" step="1"
+          min="0" max="1" step="0.05"
           class="w-full accent-accent"
-          bind:value={$config.led_brightness}
+          value={ledBrightness($config.led_brightness)}
+          on:input={e => config.update(c => ({ ...c, led_brightness: Number(e.target.value) }))}
         />
         <div class="flex justify-between text-[11px] text-text-muted mt-1">
-          <span>Off (0)</span>
-          <span>Full (255)</span>
+          <span>Off</span>
+          <span>Full</span>
         </div>
       </div>
 
-      <div>
-        <label class={labelClass} for="led_listening_color">Listening Color (hex)</label>
-        <div class="flex gap-2 items-center">
-          <input id="led_listening_color" type="text" class="{inputClass} font-mono" bind:value={$config.led_listening_color} placeholder="#00aaff" />
-          <input type="color" class="h-10 w-10 rounded border border-border bg-bg-input cursor-pointer flex-shrink-0"
-            value={$config.led_listening_color ?? '#00aaff'}
-            on:input={e => config.update(c => ({ ...c, led_listening_color: e.target.value }))} />
+      {#each ledColours as { key, label }}
+        <div>
+          <label class={labelClass} for={key}>{label}</label>
+          <div class="flex gap-2 items-center">
+            <input id={key} type="text" class="{inputClass} font-mono"
+              value={rgbToHex($config[key], LED_WHITE)}
+              on:change={e => setLedColour(key, e)} />
+            <input type="color" aria-label={label}
+              class="h-10 w-10 rounded border border-border bg-bg-input cursor-pointer flex-shrink-0"
+              value={rgbToHex($config[key], LED_WHITE)}
+              on:input={e => setLedColour(key, e)} />
+          </div>
         </div>
-      </div>
-
-      <div>
-        <label class={labelClass} for="led_talking_color">Talking Color (hex)</label>
-        <div class="flex gap-2 items-center">
-          <input id="led_talking_color" type="text" class="{inputClass} font-mono" bind:value={$config.led_talking_color} placeholder="#ff6600" />
-          <input type="color" class="h-10 w-10 rounded border border-border bg-bg-input cursor-pointer flex-shrink-0"
-            value={$config.led_talking_color ?? '#ff6600'}
-            on:input={e => config.update(c => ({ ...c, led_talking_color: e.target.value }))} />
-        </div>
-      </div>
+      {/each}
 
     </div>
   </details>

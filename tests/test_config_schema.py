@@ -154,7 +154,7 @@ def test_string_where_number_rejected():
 
 
 def test_led_brightness_accepts_0_255():
-    # UI slider is 0-255; production value is 1.0. Both must pass.
+    # The page sends 0-1. Older saves hold 0-255. Both must pass.
     assert clean_bender_config({"led_brightness": 200})["led_brightness"] == 200
     assert clean_bender_config({"led_brightness": 1.0})["led_brightness"] == 1.0
 

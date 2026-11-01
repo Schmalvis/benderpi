@@ -13,8 +13,7 @@ Design constraint — DO NOT switch to ``extra="forbid"``
 The Svelte Config editor (``web/src/pages/Config.svelte`` via
 ``lib/stores/config.js``) PUTs the *entire* config blob back on save, not a diff.
 That blob legitimately contains keys this module does not model (``vision_model``,
-``vision_confidence_threshold``, ``vision_allowlist``, the UI-only hex colour
-fields ``led_listening_color`` / ``led_talking_color``, etc.). Rejecting unknown
+``vision_confidence_threshold``, ``vision_allowlist``, etc.). Rejecting unknown
 keys would 422 every save and brick the admin panel on a headless device.
 
 So the policy is:
@@ -199,8 +198,12 @@ class BenderConfigUpdate(BaseModel):
     http_timeout_s: float | None = None
     mic_read_timeout_s: float | None = None
 
-    # --- LED (brightness accepts 0-1 float OR 0-255 int; the UI slider is 0-255) ---
+    # --- LED. The page sends brightness 0-1. Older saves hold 0-255, and
+    # leds.brightness_unit() scales them, so both still pass here. ---
     led_brightness: float | None = None
+    led_colour: list[int] | None = None
+    led_listening_colour: list[int] | None = None
+    led_talking_colour: list[int] | None = None
     led_listening_enabled: bool | None = None
     silent_wakeword: bool | None = None
 
@@ -297,6 +300,15 @@ class BenderConfigUpdate(BaseModel):
     def _brightness_range(cls, v):
         if v is not None and not (0.0 <= v <= 255.0):
             raise ValueError("led_brightness must be between 0 and 255")
+        return v
+
+    @field_validator("led_colour", "led_listening_colour", "led_talking_colour")
+    @classmethod
+    def _led_colour(cls, v):
+        # A sent null is refused too: config.py lets a null through by design,
+        # and pixels.fill(None) would raise in the listening path.
+        if v is None or len(v) != 3 or not all(0 <= n <= 255 for n in v):
+            raise ValueError("an LED colour must be three numbers from 0 to 255")
         return v
 
     @field_validator("vad_aggressiveness")

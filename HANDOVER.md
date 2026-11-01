@@ -29,7 +29,9 @@ Pinning `turn_frames_enabled`, `turn_frames_retention_days` and `turn_frames_set
 
 See Room and the VLM now see the right colours (owner request, 2026-10-31). `capture_frame()` gives BGR, and both treated it as RGB. Both go through `camera.to_pil`. `vlm.py` swaps nothing, so saved JPEG frames stay valid input for a later VLM pass.
 
-The listening LED is now white (owner request, 2026-10-31). If the device's `bender_config.json` differs from the tracked copy, `git_pull.sh` keeps the device copy, so merging alone leaves it blue. Edit `led_listening_colour` to `[255, 255, 255]` in that file by hand, then restart `bender-converse`. The Config page colour box does nothing: it writes `led_listening_color`, a key nothing reads, and it still shows blue. Save a Config tab opened before the edit and the old value comes back.
+The listening LED is now white (owner request, 2026-10-31). If the device's `bender_config.json` differs from the tracked copy, `git_pull.sh` keeps the device copy, so merging alone leaves it blue. After the merge, set Listening Colour to `#ffffff` on the Config page, save, and restart `bender-converse`. The LED section shows in Normal mode only. Save a Config tab opened before the change and the old value comes back.
+
+LED controls fixed 2026-11-01. The colour boxes now edit `led_listening_colour` and `led_talking_colour`, and they had never reached the LEDs before. The brightness slider now runs 0-1, because the driver clamps to 0-1 and every old value from 1 to 255 meant full. `leds.brightness_unit()` scales an older 0-255 save. `POST /api/config/led-brightness` is deleted: it had no caller, it raised on every request, and a setter there would change only bender-web's strip object. Brightness changes need a restart of `bender-converse`.
 
 Solid white draws about 2.3 times the current of the old blue, by the usual 60 mA per LED figure. Not measured, and what powers the strip is not recorded. Read `vcgencmd get_throttled` during the listening test. Change the colour before the plan's night image test, so the test sees the real light.
 
