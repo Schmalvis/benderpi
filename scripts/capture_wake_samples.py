@@ -500,10 +500,11 @@ def _summarise(args, items, mode: str, threshold: float) -> None:
         with open(path) as f:
             for line in f:
                 try:
-                    e = json.loads(line)
+                    # A power loss mid-write leaves NULs before the next row.
+                    e = json.loads(line.replace("\x00", ""))
                 except ValueError:
                     continue
-                if (e.get("mode") == mode and e.get("speaker") == args.speaker
+                if isinstance(e, dict) and (e.get("mode") == mode and e.get("speaker") == args.speaker
                         and e.get("current_model_score", -1) >= 0):
                     scores.append(e["current_model_score"])
     if scores and mode == "positive":

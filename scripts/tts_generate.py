@@ -385,9 +385,14 @@ def _prune_cache() -> None:
         total = 0
         with os.scandir(cfg.tts_cache_dir) as it:
             for entry in it:
-                if not entry.is_file():
+                # A temp file from _cache_put can be renamed away between the
+                # listing and the stat. Skip it; do not abandon the prune.
+                try:
+                    if not entry.is_file():
+                        continue
+                    st = entry.stat()
+                except FileNotFoundError:
                     continue
-                st = entry.stat()
                 entries.append((st.st_mtime, st.st_size, entry.path))
                 total += st.st_size
         if total <= max_bytes:

@@ -604,7 +604,8 @@ def _read_outcomes(day: str):
         with open(path) as f:
             for line in f:
                 try:
-                    row = json.loads(line)
+                    # A power loss mid-write leaves NULs before the next row.
+                    row = json.loads(line.replace("\x00", ""))
                 except ValueError:
                     continue
                 if isinstance(row, dict):

@@ -58,7 +58,7 @@ async def log_conversations_date(date: str):
     try:
         with open(fpath, "r", encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                line = line.replace("\x00", "").strip()  # NUL run: power loss mid-write
                 if not line:
                     continue
                 try:
@@ -116,7 +116,7 @@ async def log_metrics(name: str = "", hours: int = 24):
     try:
         with open(_METRICS_LOG, "r", encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                line = line.replace("\x00", "").strip()  # NUL run: power loss mid-write
                 if not line:
                     continue
                 try:

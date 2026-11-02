@@ -323,3 +323,43 @@ def test_prune_cache_noop_under_cap(tmp_path, monkeypatch):
 
     tts._prune_cache()
     assert os.path.exists(str(p))
+
+
+def test_prune_cache_survives_a_file_that_vanishes(tmp_path, monkeypatch):
+    # _cache_put writes tmpXXXX.wav and then renames it. A prune that lists the
+    # folder in between finds the temp name gone when it stats it. That raised
+    # FileNotFoundError out of the scan and skipped the whole prune (device log:
+    # "TTS cache prune failed", 9 times from 2026-10-21 to 2026-11-02).
+    import tts_generate as tts
+
+    monkeypatch.setattr(tts.cfg, "tts_cache_dir", str(tmp_path))
+    monkeypatch.setattr(tts.cfg, "tts_cache_max_mb", 0.01)  # ~10.24KB cap
+
+    now = time.time()
+    for i in range(5):
+        p = tmp_path / f"{i}.wav"
+        p.write_bytes(b"\x00" * 4096)
+        os.utime(str(p), (now - (5 - i) * 10,) * 2)
+    gone = tmp_path / "tmpgone.wav"
+    gone.write_bytes(b"\x00" * 4096)
+
+    real_scandir = os.scandir
+
+    def scandir_then_vanish(path):
+        entries = list(real_scandir(path))
+        os.unlink(str(gone))  # the rename lands between the listing and the stat
+
+        class _It:
+            def __enter__(self):
+                return iter(entries)
+
+            def __exit__(self, *a):
+                return False
+        return _It()
+
+    monkeypatch.setattr(tts.os, "scandir", scandir_then_vanish)
+    tts._prune_cache()
+
+    remaining = sorted(os.listdir(str(tmp_path)))
+    assert "0.wav" not in remaining, "the prune must still run"
+    assert "4.wav" in remaining

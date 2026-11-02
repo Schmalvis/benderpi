@@ -34,13 +34,16 @@ def load_turns(days: int | None) -> list[dict]:
         files = [f for f in files if os.path.basename(f) >= cutoff + ".jsonl"]
     turns = []
     for path in files:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
-                line = line.strip()
+                line = line.replace("\x00", "").strip()  # NUL run: power loss mid-write
                 if not line:
                     continue
-                rec = json.loads(line)
-                if rec.get("type") == "turn":
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue  # a torn line must not stop the whole review
+                if isinstance(rec, dict) and rec.get("type") == "turn":
                     turns.append(rec)
     return turns
 

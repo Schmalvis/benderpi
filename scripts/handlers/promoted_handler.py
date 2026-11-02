@@ -11,7 +11,8 @@ class PromotedHandler(Handler):
     intents = ["PROMOTED"]
 
     def __init__(self, index_path: str = None, base_dir: str = None):
-        _base = base_dir or os.path.join(os.path.dirname(__file__), "..")
+        # Repo root: index.json paths are repo-relative, as in the sibling handlers.
+        _base = base_dir or os.path.join(os.path.dirname(__file__), "..", "..")
         self._base_dir = os.path.normpath(_base)
 
     def handle(self, text: str, intent: str, sub_key: str | None = None) -> Response | None:

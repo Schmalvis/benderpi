@@ -47,7 +47,7 @@ def _load_metrics(path: str, lookback_hours: int) -> list[dict]:
         try:
             with open(candidate) as f:
                 for line in f:
-                    line = line.strip()
+                    line = line.replace("\x00", "").strip()  # NUL run: power loss mid-write
                     if not line:
                         continue
                     try:
@@ -94,7 +94,7 @@ def _find_latest_session_start(logs_dir: str):
         try:
             with open(path) as f:
                 for line in f:
-                    line = line.strip()
+                    line = line.replace("\x00", "").strip()  # NUL run: power loss mid-write
                     if not line or '"session_start"' not in line:
                         continue
                     try:

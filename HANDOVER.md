@@ -1,5 +1,5 @@
 # BenderPi Handover Context
-Last updated: 2026-10-31
+Last updated: 2026-11-02
 
 ---
 
@@ -10,6 +10,23 @@ Last updated: 2026-10-31
   508-2227ms (worst 4551ms) of dead air after the speaker stops, in front of the
   LLM's own 1.0-3.5s. A partial hypothesis could start the turn early. Not
   started, and not before the Halloween safety work.
+
+---
+
+## 2026-11-02 — four bugs from the device logs
+
+Found by grouping 7 days of device warnings. Deployed the same day.
+
+1. **Blue mouth all morning.** A WS2812B strip keeps its power-on colour until it gets data, and only a conversation sent any. `wake_converse._leds_dark()` now sends an off frame first thing in `main()` and again at exit. The SIGTERM handler is now set in every mode, so a stop always exits through Python and runs atexit. It used to be set only when the local AI came up.
+2. **TTS cache prune.** A `_cache_put` temp file renamed away between `scandir` and `stat` aborted the whole prune (9 times, 21 Oct to 2 Nov). The prune now skips that entry.
+3. **Power loss on 31 Oct at 19:03** (no shutdown) left 322 NUL bytes in front of a valid `session_start` in `logs/2026-10-31.jsonl`. `review_log.py` crashed on it, and the other readers dropped the record. Seven readers now strip NUL before parsing. Tests: `tests/test_logs_after_power_loss.py`.
+4. `PromotedHandler`'s default `base_dir` pointed at `scripts/`. `Responder` always passes the repo root, so live turns never hit it.
+
+No code fault: 120 "Network unreachable" lines were all 26-27 Oct, before the WiFi keepalive went in on 29 Oct. The 31 Oct 13:26 mic stall was the XVF3800 dropping off USB; the reinit recovered it in 3 s.
+
+Parked from review: no lock around `pixels.show()` at exit; a record torn mid-line by a power loss is still lost.
+
+Not yet confirmed by eye: that the mouth goes dark after this restart.
 
 ---
 

@@ -59,3 +59,15 @@ def test_intents_declaration():
     from handlers.promoted_handler import PromotedHandler
 
     assert "PROMOTED" in PromotedHandler.intents
+
+
+def test_the_default_base_is_the_repo_root():
+    # index.json paths are repo-relative ("speech/responses/..."). The default
+    # pointed at scripts/, so a handler built without base_dir looked for
+    # scripts/speech/... and missed every clip. Responder always passes the
+    # repo root, so only a caller built by hand (as on the device 2026-10-29,
+    # 13:04:17) ever hit it.
+    from handlers.promoted_handler import PromotedHandler
+
+    root = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+    assert PromotedHandler()._base_dir == root

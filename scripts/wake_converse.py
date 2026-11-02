@@ -366,6 +366,25 @@ def _recover_corrupt_mic(selftest: dict) -> None:
                     100.0 * float(again.get("zero_frac", 0.0)))
 
 
+def _leds_dark() -> None:
+    """Start the mouth dark, and leave it dark when the process exits.
+
+    A WS2812B strip keeps whatever colour it latched at power-on until it gets
+    data, and only a conversation used to send any. On 2026-11-02 the mouth sat
+    solid blue from the 07:00 boot, with no session all morning. At exit, a STOP
+    in the middle of a reply left the mouth at its last level.
+    """
+    def _off(quiet: bool) -> None:
+        try:
+            leds.all_off()
+        except Exception as exc:  # a dead strip must not stop the service
+            if not quiet:
+                log.warning("LED strip did not take the off frame: %s", exc)
+
+    _off(quiet=False)
+    atexit.register(_off, True)
+
+
 def _cleanup_abort_files():
     """Remove abort and end-session IPC files."""
     for f in [cfg.end_session_file, cfg.abort_file]:
@@ -792,6 +811,12 @@ def wait_for_wakeword(_oww_model=None) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
+    # First, so no init path below runs with the power-on colour still showing.
+    _leds_dark()
+    # SIGTERM (systemctl stop, STOP BENDER, puppet) must exit through Python,
+    # or atexit never runs and the mouth keeps its last level. This used to be
+    # set only when the local AI responder came up.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     for _secret in cfg.validate():
         metrics.count("secrets_missing", secret=_secret)
     # An empty ANTHROPIC_API_KEY is a documented degraded state (offline-first),
@@ -811,7 +836,6 @@ def main():
                      cfg.local_llm_model, cfg.local_llm_url)
             threading.Thread(target=ai_local.warm_up, daemon=True, name="ollama-warmup").start()
             atexit.register(ai_local.close)
-            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         except Exception as e:
             log.warning("Local AI init failed: %s — cloud-only mode", e)
     responder = Responder()
